@@ -1,0 +1,7 @@
+pyshark>=0.6
+pandas>=2.0
+scikit-learn>=1.3
+requests>=2.31
+dash>=2.17
+plotly>=5.15
+scapy>=2.5
