@@ -19,9 +19,10 @@ NetForensicAI is a user-friendly tool for analyzing network traffic (PCAP files)
 
 ### Step-by-Step Setup
 1. **Clone the Repository**:
-   ```bash
-   git clone https://github.com/Sh3n0bi/NetForensicAI.git
-   cd NetForensicAI
+```
+git clone https://github.com/Sh3n0bi/NetForensicAI.git
+cd NetForensicAI 
+```   
 2. Set Up the Development Environment:
 Why: Avoid errors like missing dependencies (e.g., pyshark not found).
 Steps:
