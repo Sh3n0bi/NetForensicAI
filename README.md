@@ -22,7 +22,7 @@ NetForensicAI is a user-friendly tool for analyzing network traffic (PCAP files)
    ```bash
    git clone https://github.com/Sh3n0bi/NetForensicAI.git
    cd NetForensicAI
-## 2. Set Up the Development Environment:
+2. Set Up the Development Environment:
 Why: Avoid errors like missing dependencies (e.g., pyshark not found).
 Steps:
 Install Python 3.9+ and required tools (Linux):
@@ -33,7 +33,6 @@ sudo apt install python3 python3-pip python3-venv tshark
 On Windows, install Python from python.org and Wireshark (includes tshark) from wireshark.org.
 
 Create a virtual environment:
-
 ```
 python3 -m venv netforensicai_env
 source netforensicai_env/bin/activate  # On Windows: netforensicai_env\Scripts\activate
@@ -51,25 +50,25 @@ Tip: Manage dependencies with requirements.txt:
 pip freeze > requirements.txt
 pip install -r requirements.txt
 ```
-## 3.Run the Tool:
+3.Run the Tool:
 Analyze the sample PCAP
 ```
 python3 netforensicai.py sample.pcap
 ```
 To save extracted files.
 ```
-python3 src/netforensicai.py demo/sample.pcap --save-files
+python3 snetforensicai.py demo/sample.pcap --save-files
 ```
 To skip the dashboard (terminal output only):
 ```
 python3 netforensicai.py sample.pcap --no-dashboard
 ```
-## 4. View Results:
+4. View Results:
 Check the terminal for files found, anomalies, and IP checks.
 If the dashboard opens, visit http://127.0.0.1:8050 in your browser.
 Extracted files are saved in extracted_files/.
 
-## 🛠️ For Advanced Users
+## For Advanced Users
 VirusTotal Integration: Get a free API key from virustotal.com and run:
 ```
 python src/netforensicai.py demo/sample.pcap --vt-api your_api_key
@@ -85,16 +84,16 @@ Development: Add tests in tests/ or extend file signatures in src/netforensicai.
 2025-05-15 11:27:01,458 - INFO - Stream: 192.168.1.1:12345->8.8.8.8:80 | Type: pdf | Size: 10240 bytes
 2025-05-15 11:27:01,459 - INFO - Found 5 anomalous packets
 ```
-## 🛠️ Troubleshooting
+## 🛠️Troubleshooting
 "tshark not found": Install Wireshark or tshark (see Setup).
 "Module not found": Ensure you're in the virtual environment and run pip install -r requirements.txt.
 No dashboard?: Ensure demo/sample.pcap contains TCP packets, or use --no-dashboard.
 Still stuck? Open an issue at https://github.com/Sh3n0bi/NetForensicAI/issues.
 
-🤝 Contributing
+## 🤝 Contributing
 Want to improve NetForensicAI? Fork the repo, make changes, and submit a pull request. See CONTRIBUTING.md for details.
 
-📜 License
+## 📜 License
 This project is licensed under the MIT License - see LICENSE for details
 
 
