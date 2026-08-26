@@ -7,17 +7,84 @@ subcommands land in later steps of the DFIR-platform migration.
 
 import logging
 import sys
+from pathlib import Path
 
 import typer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+DEFAULT_CASES_DIR = "cases"
+
 app = typer.Typer(
     name="netforensic",
     help="NetForensicAI - local-first DFIR investigation platform.",
     no_args_is_help=True,
 )
+
+case_app = typer.Typer(help="Manage investigation cases.", no_args_is_help=True)
+app.add_typer(case_app, name="case")
+
+
+@case_app.command("create")
+def case_create(
+    name: str = typer.Option(..., "--name", help="Case name"),
+    description: str = typer.Option("", "--description", help="Case description"),
+    investigator: str = typer.Option(
+        None, "--investigator", help="Investigator name (defaults to the OS username)"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Create a new case."""
+    import getpass
+
+    from netforensicai.core.case import CaseError, CaseManager
+
+    manager = CaseManager(cases_dir)
+    try:
+        case = manager.create(
+            name=name,
+            description=description,
+            investigator=investigator or getpass.getuser(),
+        )
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Created case {case.case_id}: {case.name}")
+    typer.echo(f"  Investigator: {case.investigator}")
+    typer.echo(f"  Location:     {Path(cases_dir) / case.case_id}")
+
+
+@case_app.command("list")
+def case_list_cmd(
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """List all cases."""
+    from netforensicai.core.case import CaseManager
+
+    manager = CaseManager(cases_dir)
+    cases = manager.list()
+    if not cases:
+        typer.echo(f"No cases found in {cases_dir}/")
+        return
+
+    header = f"{'CASE ID':<10} {'STATUS':<14} {'INVESTIGATOR':<16} {'CREATED':<20} NAME"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for case in cases:
+        created = case.created_at.split("T")[0]
+        typer.echo(f"{case.case_id:<10} {case.status:<14} {case.investigator:<16} {created:<20} {case.name}")
 
 
 @app.command()
