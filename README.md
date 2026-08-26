@@ -38,31 +38,26 @@ Create a virtual environment:
 python3 -m venv netforensicai_env
 source netforensicai_env/bin/activate  # On Windows: netforensicai_env\Scripts\activate
 ```
-Install required libraries:
+Install the package with the extras you need:
 ```
-pip install pyshark pandas scikit-learn requests dash plotly scapy
+pip install -e ".[pcap,intel,dashboard]"
 ```
 Verify tshark is installed:
 ```
 tshark -v
 ```
-Tip: Manage dependencies with requirements.txt:
+3. Run the Tool:
+Analyze a PCAP:
 ```
-pip freeze > requirements.txt
-pip install -r requirements.txt
+netforensic scan your_capture.pcap
 ```
-3.Run the Tool:
-Analyze the sample PCAP
+To save extracted files:
 ```
-python3 netforensicai.py sample.pcap
-```
-To save extracted files.
-```
-python3 snetforensicai.py demo/sample.pcap --save-files
+netforensic scan your_capture.pcap --save-files
 ```
 To skip the dashboard (terminal output only):
 ```
-python3 netforensicai.py sample.pcap --no-dashboard
+netforensic scan your_capture.pcap --no-dashboard
 ```
 4. View Results:
 Check the terminal for files found, anomalies, and IP checks.
@@ -72,10 +67,10 @@ Extracted files are saved in extracted_files/.
 ## For Advanced Users
 VirusTotal Integration: Get a free API key from virustotal.com and run:
 ```
-python src/netforensicai.py demo/sample.pcap --vt-api your_api_key
+netforensic scan your_capture.pcap --vt-api your_api_key
+# or export VT_API_KEY=your_api_key and omit --vt-api
 ```
-Custom PCAPs: Replace demo/sample.pcap with your own PCAP file.
-Development: Add tests in tests/ or extend file signatures in src/netforensicai.py
+Development: Add tests in tests/ or extend file signatures in netforensicai/parsers/pcap.py
 
 ## Example Output
 ```

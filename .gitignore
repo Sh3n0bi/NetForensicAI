@@ -8,8 +8,20 @@ env/
 venv/
 *.venv
 
+# Packaging
+*.egg-info/
+build/
+dist/
+
 # Output directories
 extracted_files/
+cases/
+
+# Local databases
+*.duckdb
+*.duckdb.wal
+*.sqlite
+*.sqlite3
 
 # IDE
 .vscode/
