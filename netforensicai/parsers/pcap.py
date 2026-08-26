@@ -1,19 +1,31 @@
-"""PCAP deep packet inspection, embedded-file extraction, and anomaly detection.
+"""PCAP -> normalized Event parsing.
 
-Relocated from the original top-level netforensicai.py script. Logic is
-unchanged from the original; only the module layout and class name changed
-(NetForensicAI -> PcapAnalyzer, since it now sits under parsers/) and unused
-imports (scapy.rdpcap, multiprocessing.Pool, binascii) were dropped.
+Uses scapy (pure Python) to read .pcap files instead of pyshark/tshark.
+Reading and writing pcap *files* with scapy needs no external binary or
+capture driver (only live sniffing does), which is what makes it possible
+to build synthetic pcap fixtures for tests in this repo.
+
+Three analyses, carried over from the original single-file script, each
+producing a distinct event_type:
+  - network_connection: one event per TCP packet carrying a payload
+    (raw payload preview kept in `message`, same as the original DPI output)
+  - file_transfer: one event per TCP stream whose reassembled data matches
+    a known file signature (magic bytes), optionally saved to disk
+  - anomaly: one event per packet flagged as a statistical outlier by
+    IsolationForest over [size, inter_arrival, src_port, dst_port]
 """
 
+import hashlib
 import logging
-import os
-import shutil
-import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
-import pyshark
+from scapy.all import IP, TCP, Raw, rdpcap
 from sklearn.ensemble import IsolationForest
+
+from netforensicai.core.event import Event, generate_event_id
+from netforensicai.parsers import base
 
 logger = logging.getLogger(__name__)
 
@@ -26,125 +38,218 @@ FILE_SIGNATURES = {
     "gif": b"GIF89a",
 }
 
+SIGNATURE_SCAN_WINDOW = 1024
+DPI_PREVIEW_BYTES = 50
+DEFAULT_ANOMALY_CONTAMINATION = 0.05
 
-class PcapAnalyzer:
-    def __init__(self, pcap_file, output_dir="extracted_files"):
-        self.pcap_file = pcap_file
-        self.output_dir = output_dir
-        self.validate_pcap()
 
-    def validate_pcap(self):
-        """Check if the PCAP file exists and is readable."""
-        if not os.path.exists(self.pcap_file):
-            logger.error(f"PCAP file '{self.pcap_file}' not found. Please provide a valid file.")
-            sys.exit(1)
-        if not shutil.which("tshark"):
-            logger.error("tshark not found. Install it with 'sudo apt install tshark' on Linux.")
-            sys.exit(1)
+class PcapParseError(Exception):
+    """Raised when a pcap file cannot be read."""
 
-    def deep_packet_inspection(self):
-        """Perform deep packet inspection on the PCAP file."""
-        logger.info(f"Analyzing packets in {self.pcap_file}")
-        try:
-            capture = pyshark.FileCapture(self.pcap_file, display_filter="tcp")
-            findings = []
-            for packet in capture:
-                try:
-                    if "TCP" in packet and hasattr(packet.tcp, "payload"):
-                        payload = packet.tcp.payload.replace(":", "")
-                        payload_bytes = bytes.fromhex(payload)
-                        findings.append({
-                            "src_ip": packet.ip.src,
-                            "dst_ip": packet.ip.dst,
-                            "src_port": packet.tcp.srcport,
-                            "dst_port": packet.tcp.dstport,
-                            "payload": payload_bytes.decode("utf-8", errors="ignore")[:50]
-                        })
-                except AttributeError:
-                    continue
-            capture.close()
-            return findings
-        except Exception as e:
-            logger.error(f"Error during DPI: {e}")
-            return []
 
-    def extract_files(self, save_files=False):
-        """Extract files from the PCAP file."""
-        logger.info(f"Extracting files from {self.pcap_file}")
-        try:
-            capture = pyshark.FileCapture(self.pcap_file, display_filter="tcp")
-            streams = {}
-            packet_num = 0
+class _Sequence:
+    """A per-parse-run counter for generate_event_id, shared across all
+    analyses so every event for one evidence item gets a unique id."""
 
-            if save_files and not os.path.exists(self.output_dir):
-                os.makedirs(self.output_dir)
+    def __init__(self, start=1):
+        self._next = start
 
-            for packet in capture:
-                packet_num += 1
-                try:
-                    if "TCP" in packet and hasattr(packet.tcp, "payload"):
-                        payload = packet.tcp.payload.replace(":", "")
-                        payload_bytes = bytes.fromhex(payload)
-                        stream_key = f"{packet.ip.src}:{packet.tcp.srcport}->{packet.ip.dst}:{packet.tcp.dstport}"
-                        if stream_key not in streams:
-                            streams[stream_key] = {"data": [], "packets": []}
-                        streams[stream_key]["data"].append(payload_bytes)
-                        streams[stream_key]["packets"].append(packet_num)
-                except AttributeError:
-                    continue
-            capture.close()
+    def next(self):
+        value = self._next
+        self._next += 1
+        return value
 
-            files_found = []
-            for stream_key, stream_info in streams.items():
-                full_data = b"".join(stream_info["data"])
-                file_type = None
-                for ext, signature in FILE_SIGNATURES.items():
-                    if signature in full_data[:1024]:
-                        file_type = ext
-                        break
-                if file_type:
-                    total_size = len(full_data)
-                    files_found.append({
-                        "stream": stream_key,
-                        "file_type": file_type,
-                        "size_bytes": total_size,
-                        "packet_numbers": stream_info["packets"]
-                    })
-                    if save_files:
-                        filename = f"{self.output_dir}/{stream_key.replace(':', '_')}.{file_type}"
-                        with open(filename, "wb") as f:
-                            f.write(full_data)
-                        logger.info(f"Saved file: {filename} ({total_size} bytes)")
-            return files_found
-        except Exception as e:
-            logger.error(f"Error extracting files: {e}")
-            return []
 
-    def anomaly_detection(self):
-        """Detect anomalies in packet traffic."""
-        logger.info("Running anomaly detection")
-        try:
-            capture = pyshark.FileCapture(self.pcap_file)
-            features = []
-            prev_time = None
-            for packet in capture:
-                try:
-                    size = int(packet.length)
-                    timestamp = float(packet.sniff_time.timestamp())
-                    src_port = int(packet.tcp.srcport) if "TCP" in packet else 0
-                    dst_port = int(packet.tcp.dstport) if "TCP" in packet else 0
-                    inter_arrival = timestamp - prev_time if prev_time else 0
-                    prev_time = timestamp
-                    features.append([size, inter_arrival, src_port, dst_port])
-                except AttributeError:
-                    continue
-            capture.close()
-            df = pd.DataFrame(features, columns=["size", "inter_arrival", "src_port", "dst_port"])
-            model = IsolationForest(contamination=0.05, random_state=42)
-            predictions = model.fit_predict(df)
-            anomalies = df[predictions == -1]
-            logger.info(f"Found {len(anomalies)} anomalous packets")
-            return anomalies
-        except Exception as e:
-            logger.error(f"Error during anomaly detection: {e}")
-            return pd.DataFrame()
+def _load_packets(pcap_path):
+    try:
+        return rdpcap(str(pcap_path))
+    except Exception as e:
+        raise PcapParseError(f"Failed to read pcap file '{pcap_path}': {e}") from e
+
+
+def _tcp_payload_packets(packets):
+    """Yield (packet_number, packet) for packets with an IP+TCP layer and a payload."""
+    for i, packet in enumerate(packets, start=1):
+        if packet.haslayer(IP) and packet.haslayer(TCP) and packet.haslayer(Raw):
+            yield i, packet
+
+
+def _packet_timestamp(packet):
+    return datetime.fromtimestamp(float(packet.time), tz=timezone.utc)
+
+
+def _network_connection_events(packets, evidence_id, sequence):
+    events = []
+    for packet_number, packet in _tcp_payload_packets(packets):
+        payload = bytes(packet[Raw].load)
+        events.append(
+            Event(
+                event_id=generate_event_id(evidence_id, sequence.next()),
+                evidence_id=evidence_id,
+                source="pcap",
+                event_type="network_connection",
+                timestamp=_packet_timestamp(packet),
+                src_ip=packet[IP].src,
+                src_port=int(packet[TCP].sport),
+                dst_ip=packet[IP].dst,
+                dst_port=int(packet[TCP].dport),
+                protocol="tcp",
+                message=payload[:DPI_PREVIEW_BYTES].decode("utf-8", errors="ignore"),
+                raw_event_reference={"packet_number": packet_number},
+            )
+        )
+    return events
+
+
+def _file_transfer_events(packets, evidence_id, sequence, output_dir=None):
+    streams = {}
+    for packet_number, packet in _tcp_payload_packets(packets):
+        stream_key = (
+            f"{packet[IP].src}:{packet[TCP].sport}->{packet[IP].dst}:{packet[TCP].dport}"
+        )
+        stream = streams.setdefault(
+            stream_key, {"data": [], "packet_numbers": [], "first_timestamp": None}
+        )
+        stream["data"].append(bytes(packet[Raw].load))
+        stream["packet_numbers"].append(packet_number)
+        if stream["first_timestamp"] is None:
+            stream["first_timestamp"] = float(packet.time)
+
+    if output_dir is not None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    events = []
+    for stream_key, info in streams.items():
+        full_data = b"".join(info["data"])
+        file_type = next(
+            (ext for ext, sig in FILE_SIGNATURES.items() if sig in full_data[:SIGNATURE_SCAN_WINDOW]),
+            None,
+        )
+        if not file_type:
+            continue
+
+        src, dst = stream_key.split("->")
+        src_ip, src_port = src.split(":")
+        dst_ip, dst_port = dst.split(":")
+        file_name = f"{stream_key.replace(':', '_').replace('->', '_to_')}.{file_type}"
+
+        stored_path = None
+        if output_dir is not None:
+            stored_path = output_dir / file_name
+            stored_path.write_bytes(full_data)
+            logger.info(f"Saved extracted file: {stored_path} ({len(full_data)} bytes)")
+
+        events.append(
+            Event(
+                event_id=generate_event_id(evidence_id, sequence.next()),
+                evidence_id=evidence_id,
+                source="pcap",
+                event_type="file_transfer",
+                timestamp=datetime.fromtimestamp(info["first_timestamp"], tz=timezone.utc),
+                src_ip=src_ip,
+                src_port=int(src_port),
+                dst_ip=dst_ip,
+                dst_port=int(dst_port),
+                protocol="tcp",
+                file_name=file_name,
+                file_path=str(stored_path) if stored_path else None,
+                file_hash=hashlib.sha256(full_data).hexdigest(),
+                message=f"Detected embedded {file_type} file ({len(full_data)} bytes) in TCP stream {stream_key}",
+                raw_event_reference={"packet_numbers": info["packet_numbers"], "stream": stream_key},
+            )
+        )
+    return events
+
+
+def _packet_features(packets):
+    """Return (feature_rows, meta) for every packet, in packet order."""
+    features = []
+    meta = []
+    prev_time = None
+    for i, packet in enumerate(packets, start=1):
+        timestamp = float(packet.time)
+        size = len(packet)
+        src_port = int(packet[TCP].sport) if packet.haslayer(TCP) else 0
+        dst_port = int(packet[TCP].dport) if packet.haslayer(TCP) else 0
+        inter_arrival = timestamp - prev_time if prev_time is not None else 0.0
+        prev_time = timestamp
+        features.append([size, inter_arrival, src_port, dst_port])
+        meta.append(
+            {
+                "packet_number": i,
+                "timestamp": timestamp,
+                "size": size,
+                "inter_arrival": inter_arrival,
+                "src_ip": packet[IP].src if packet.haslayer(IP) else None,
+                "dst_ip": packet[IP].dst if packet.haslayer(IP) else None,
+                "src_port": src_port or None,
+                "dst_port": dst_port or None,
+            }
+        )
+    return features, meta
+
+
+def _anomaly_events(packets, evidence_id, sequence, contamination=DEFAULT_ANOMALY_CONTAMINATION):
+    if len(packets) < 2:
+        return []
+
+    features, meta = _packet_features(packets)
+    df = pd.DataFrame(features, columns=["size", "inter_arrival", "src_port", "dst_port"])
+    model = IsolationForest(contamination=contamination, random_state=42)
+    predictions = model.fit_predict(df)
+
+    events = []
+    for is_anomalous, info in zip(predictions == -1, meta):
+        if not is_anomalous:
+            continue
+        events.append(
+            Event(
+                event_id=generate_event_id(evidence_id, sequence.next()),
+                evidence_id=evidence_id,
+                source="pcap",
+                event_type="anomaly",
+                timestamp=datetime.fromtimestamp(info["timestamp"], tz=timezone.utc),
+                src_ip=info["src_ip"],
+                dst_ip=info["dst_ip"],
+                src_port=info["src_port"],
+                dst_port=info["dst_port"],
+                severity="medium",
+                message="Packet flagged as a statistical outlier (size/timing/port profile) by IsolationForest.",
+                raw_event_reference={
+                    "packet_number": info["packet_number"],
+                    "size": info["size"],
+                    "inter_arrival": info["inter_arrival"],
+                },
+            )
+        )
+    return events
+
+
+class PcapParser(base.BaseParser):
+    evidence_types = ("pcap",)
+
+    def parse(
+        self,
+        file_path,
+        evidence_id,
+        output_dir=None,
+        anomaly_contamination=DEFAULT_ANOMALY_CONTAMINATION,
+        **_ignored,
+    ):
+        """Parse a pcap file into normalized Events. Raises PcapParseError if unreadable.
+
+        output_dir: if given, extracted embedded files are saved there and
+        file_transfer events get a populated file_path.
+        """
+        packets = _load_packets(file_path)
+        sequence = _Sequence()
+
+        events = []
+        events.extend(_network_connection_events(packets, evidence_id, sequence))
+        events.extend(_file_transfer_events(packets, evidence_id, sequence, output_dir))
+        events.extend(_anomaly_events(packets, evidence_id, sequence, anomaly_contamination))
+        return events
+
+
+base.register(PcapParser())

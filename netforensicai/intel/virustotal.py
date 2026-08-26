@@ -3,12 +3,14 @@
 This is opt-in, explicit enrichment only: it is never called unless the
 caller supplies an API key, and it must never be wired up to run
 automatically against evidence.
+
+`requests` (the [intel] extra) is only imported inside check_ip(), so
+callers can import this module just to resolve an API key (get_api_key)
+without requests being installed.
 """
 
 import logging
 import os
-
-import requests
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,9 @@ def check_ip(ip, api_key):
     if not api_key:
         logger.warning("VirusTotal API key not provided. Skipping threat intel.")
         return False
+
+    import requests
+
     logger.info(f"Checking threat intel for IP: {ip}")
     try:
         response = requests.get(

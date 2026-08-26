@@ -178,47 +178,59 @@ def scan(
     no_dashboard: bool = typer.Option(False, "--no-dashboard", help="Skip launching the dashboard"),
 ):
     """Run PCAP deep packet inspection, file extraction, and anomaly detection."""
+    import os
+
     from netforensicai.intel import virustotal
-    from netforensicai.parsers.pcap import PcapAnalyzer
+    from netforensicai.parsers.pcap import PcapParseError, PcapParser
 
-    tool = PcapAnalyzer(pcap_file)
+    if not os.path.exists(pcap_file):
+        typer.echo(f"Error: PCAP file '{pcap_file}' not found.", err=True)
+        raise typer.Exit(code=1)
 
-    dpi_results = tool.deep_packet_inspection()
-    if dpi_results:
+    # `scan` predates case/evidence tracking, so events use a synthetic
+    # evidence_id rather than a real Evidence record's id.
+    evidence_id = f"scan:{Path(pcap_file).name}"
+    output_dir = "extracted_files" if save_files else None
+
+    try:
+        events = PcapParser().parse(pcap_file, evidence_id=evidence_id, output_dir=output_dir)
+    except PcapParseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    connections = [e for e in events if e.event_type == "network_connection"]
+    files_found = [e for e in events if e.event_type == "file_transfer"]
+    anomalies = [e for e in events if e.event_type == "anomaly"]
+
+    if connections:
         logger.info("Top 5 DPI Results:")
-        for result in dpi_results[:5]:
-            logger.info(
-                f"Source: {result['src_ip']}:{result['src_port']} -> "
-                f"Destination: {result['dst_ip']}:{result['dst_port']}"
-            )
-            logger.info(f"Payload Preview: {result['payload']}...")
+        for event in connections[:5]:
+            logger.info(f"Source: {event.src_ip}:{event.src_port} -> Destination: {event.dst_ip}:{event.dst_port}")
+            logger.info(f"Payload Preview: {event.message}...")
     else:
         logger.warning("No TCP packets found for DPI.")
 
-    files_found = tool.extract_files(save_files=save_files)
     logger.info(f"Total Files Found: {len(files_found)}")
     if files_found:
         logger.info("Detected Files:")
-        for file in files_found:
-            logger.info(
-                f"Stream: {file['stream']} | Type: {file['file_type']} | Size: {file['size_bytes']} bytes"
-            )
+        for event in files_found:
+            logger.info(f"Stream: {event.raw_event_reference['stream']} | Type: {event.file_name.rsplit('.', 1)[-1]} | Hash: {event.file_hash}")
 
-    anomalies = tool.anomaly_detection()
-    if not anomalies.empty:
-        logger.info("Anomalies Detected:")
-        logger.info(anomalies.head().to_string())
+    if anomalies:
+        logger.info(f"Found {len(anomalies)} anomalous packets")
+        for event in anomalies[:5]:
+            logger.info(f"Packet {event.raw_event_reference['packet_number']}: {event.src_ip} -> {event.dst_ip}")
     else:
         logger.warning("No anomalies detected.")
 
     api_key = virustotal.get_api_key(vt_api)
-    if api_key and dpi_results:
+    if api_key and connections:
         logger.info("Checking threat intelligence for top IPs...")
-        for result in dpi_results[:5]:
-            if virustotal.check_ip(result["src_ip"], api_key):
-                logger.warning(f"Malicious IP detected: {result['src_ip']}")
+        for event in connections[:5]:
+            if event.src_ip and virustotal.check_ip(event.src_ip, api_key):
+                logger.warning(f"Malicious IP detected: {event.src_ip}")
 
-    if not no_dashboard and not anomalies.empty:
+    if not no_dashboard and anomalies:
         from netforensicai import dashboard
 
         dashboard.launch(anomalies)
