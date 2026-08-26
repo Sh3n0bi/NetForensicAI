@@ -24,7 +24,7 @@ import pandas as pd
 from scapy.all import IP, TCP, Raw, rdpcap
 from sklearn.ensemble import IsolationForest
 
-from netforensicai.core.event import Event, generate_event_id
+from netforensicai.core.event import Event, EventSequence, generate_event_id
 from netforensicai.parsers import base
 
 logger = logging.getLogger(__name__)
@@ -45,19 +45,6 @@ DEFAULT_ANOMALY_CONTAMINATION = 0.05
 
 class PcapParseError(Exception):
     """Raised when a pcap file cannot be read."""
-
-
-class _Sequence:
-    """A per-parse-run counter for generate_event_id, shared across all
-    analyses so every event for one evidence item gets a unique id."""
-
-    def __init__(self, start=1):
-        self._next = start
-
-    def next(self):
-        value = self._next
-        self._next += 1
-        return value
 
 
 def _load_packets(pcap_path):
@@ -243,7 +230,7 @@ class PcapParser(base.BaseParser):
         file_transfer events get a populated file_path.
         """
         packets = _load_packets(file_path)
-        sequence = _Sequence()
+        sequence = EventSequence()
 
         events = []
         events.extend(_network_connection_events(packets, evidence_id, sequence))

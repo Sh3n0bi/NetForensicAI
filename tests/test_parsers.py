@@ -140,3 +140,203 @@ def test_pcap_parser_is_registered_in_base_registry():
     from netforensicai.parsers import base
 
     assert isinstance(base.get_parser("pcap"), PcapParser)
+
+
+# --- JSON / CSV normalization ---
+
+import csv as csv_module  # noqa: E402
+import json  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+
+from netforensicai.parsers.generic import CsvParser, JsonParser, NormalizationError  # noqa: E402
+
+
+def _write_json(tmp_path, name, data):
+    path = tmp_path / name
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def _write_csv(tmp_path, name, fieldnames, rows):
+    path = tmp_path / name
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv_module.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def test_json_array_of_records_normalizes_each_into_an_event(tmp_path):
+    data = [
+        {"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "alice", "src_ip": "10.0.0.5"},
+        {"timestamp": "2026-08-27T09:05:00Z", "type": "process_start", "process": "powershell.exe", "pid": "1234"},
+    ]
+    path = _write_json(tmp_path, "events.json", data)
+
+    events = JsonParser().parse(path, evidence_id="EV-0001")
+
+    assert len(events) == 2
+    assert events[0].event_type == "authentication"
+    assert events[0].user == "alice"
+    assert events[0].src_ip == "10.0.0.5"
+    assert events[0].timestamp == datetime(2026, 8, 27, 9, 0, 0, tzinfo=timezone.utc)
+    assert events[1].process_name == "powershell.exe"
+    assert events[1].process_id == 1234
+    assert events[0].evidence_id == "EV-0001"
+    assert events[0].source == "json"
+    assert events[0].raw_event_reference == {"record_index": 0}
+    assert events[1].raw_event_reference == {"record_index": 1}
+
+
+def test_json_wrapped_in_events_key(tmp_path):
+    data = {"events": [{"type": "dns_query", "domain": "example.com"}]}
+    path = _write_json(tmp_path, "wrapped.json", data)
+
+    events = JsonParser().parse(path, evidence_id="EV-0002")
+
+    assert len(events) == 1
+    assert events[0].domain == "example.com"
+
+
+def test_json_single_object_becomes_one_record(tmp_path):
+    data = {"type": "anomaly", "message": "single record, no wrapper"}
+    path = _write_json(tmp_path, "single.json", data)
+
+    events = JsonParser().parse(path, evidence_id="EV-0003")
+
+    assert len(events) == 1
+    assert events[0].message == "single record, no wrapper"
+
+
+def test_json_invalid_syntax_raises(tmp_path):
+    path = tmp_path / "bad.json"
+    path.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(NormalizationError):
+        JsonParser().parse(path, evidence_id="EV-0004")
+
+
+def test_json_top_level_scalar_raises(tmp_path):
+    path = _write_json(tmp_path, "scalar.json", 42)
+
+    with pytest.raises(NormalizationError):
+        JsonParser().parse(path, evidence_id="EV-0005")
+
+
+def test_json_record_not_object_raises(tmp_path):
+    path = _write_json(tmp_path, "badrecord.json", [{"type": "ok"}, "not an object"])
+
+    with pytest.raises(NormalizationError):
+        JsonParser().parse(path, evidence_id="EV-0006")
+
+
+def test_json_empty_array_returns_no_events(tmp_path):
+    path = _write_json(tmp_path, "empty.json", [])
+
+    assert JsonParser().parse(path, evidence_id="EV-0007") == []
+
+
+def test_csv_rows_normalize_into_events(tmp_path):
+    path = _write_csv(
+        tmp_path,
+        "events.csv",
+        ["timestamp", "event_type", "hostname", "dst_ip", "dst_port"],
+        [
+            {"timestamp": "1700000000", "event_type": "network_connection", "hostname": "ws01", "dst_ip": "8.8.8.8", "dst_port": "53"},
+            {"timestamp": "1700000100", "event_type": "network_connection", "hostname": "ws02", "dst_ip": "1.1.1.1", "dst_port": "443"},
+        ],
+    )
+
+    events = CsvParser().parse(path, evidence_id="EV-0008")
+
+    assert len(events) == 2
+    assert events[0].hostname == "ws01"
+    assert events[0].dst_port == 53
+    assert events[0].source == "csv"
+    assert events[0].raw_event_reference == {"row_number": 1}
+    assert events[1].raw_event_reference == {"row_number": 2}
+
+
+def test_csv_missing_file_raises(tmp_path):
+    with pytest.raises(NormalizationError):
+        CsvParser().parse(tmp_path / "does_not_exist.csv", evidence_id="EV-0009")
+
+
+def test_csv_empty_returns_no_events(tmp_path):
+    path = _write_csv(tmp_path, "empty.csv", ["timestamp", "event_type"], [])
+
+    assert CsvParser().parse(path, evidence_id="EV-0010") == []
+
+
+def test_field_aliasing_is_case_insensitive_with_multiple_variants(tmp_path):
+    data = [
+        {"SourceIP": "10.0.0.9", "DestinationIP": "10.0.0.10", "Type": "network_connection"},
+        {"srcip": "10.0.0.11", "dstip": "10.0.0.12", "type": "network_connection"},
+    ]
+    path = _write_json(tmp_path, "aliases.json", data)
+
+    events = JsonParser().parse(path, evidence_id="EV-0011")
+
+    assert events[0].src_ip == "10.0.0.9"
+    assert events[0].dst_ip == "10.0.0.10"
+    assert events[1].src_ip == "10.0.0.11"
+    assert events[1].dst_ip == "10.0.0.12"
+
+
+def test_record_without_event_type_defaults_to_unknown(tmp_path):
+    path = _write_json(tmp_path, "notype.json", [{"message": "no type field here"}])
+
+    events = JsonParser().parse(path, evidence_id="EV-0012")
+
+    assert events[0].event_type == "unknown"
+
+
+def test_epoch_seconds_and_milliseconds_both_parse(tmp_path):
+    data = [
+        {"type": "x", "timestamp": 1700000000},
+        {"type": "x", "timestamp": 1700000000000},
+    ]
+    path = _write_json(tmp_path, "epoch.json", data)
+
+    events = JsonParser().parse(path, evidence_id="EV-0013")
+
+    assert events[0].timestamp == events[1].timestamp
+    assert events[0].timestamp == datetime.fromtimestamp(1700000000, tz=timezone.utc)
+
+
+def test_unparseable_timestamp_leaves_field_unset(tmp_path):
+    path = _write_json(tmp_path, "badtime.json", [{"type": "x", "timestamp": "not-a-date"}])
+
+    events = JsonParser().parse(path, evidence_id="EV-0014")
+
+    assert events[0].timestamp is None
+
+
+def test_invalid_port_and_pid_values_become_none(tmp_path):
+    path = _write_json(tmp_path, "badport.json", [{"type": "x", "src_port": "not-a-number", "pid": "also-not-a-number"}])
+
+    events = JsonParser().parse(path, evidence_id="EV-0015")
+
+    assert events[0].src_port is None
+    assert events[0].process_id is None
+
+
+def test_record_cannot_override_generated_identity_fields(tmp_path):
+    # event_id/evidence_id/source aren't in FIELD_ALIASES, so even a record
+    # that includes those exact keys can't spoof or collide with the ids
+    # this parser assigns itself.
+    data = [{"event_id": "SPOOFED", "evidence_id": "SPOOFED", "source": "SPOOFED", "type": "x"}]
+    path = _write_json(tmp_path, "spoof.json", data)
+
+    events = JsonParser().parse(path, evidence_id="EV-0016")
+
+    assert events[0].evidence_id == "EV-0016"
+    assert events[0].source == "json"
+    assert events[0].event_id.startswith("EVT-EV-0016-")
+
+
+def test_json_and_csv_parsers_registered_in_base_registry():
+    from netforensicai.parsers import base
+
+    assert isinstance(base.get_parser("json"), JsonParser)
+    assert isinstance(base.get_parser("csv"), CsvParser)

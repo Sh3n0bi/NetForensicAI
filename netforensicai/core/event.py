@@ -31,6 +31,20 @@ COMMON_EVENT_TYPES = (
 )
 
 
+class EventSequence:
+    """A per-parse-run counter for generate_event_id, shared across every
+    analysis/pass a parser runs so all events for one evidence item get a
+    unique, ordered id."""
+
+    def __init__(self, start=1):
+        self._next = start
+
+    def next(self):
+        value = self._next
+        self._next += 1
+        return value
+
+
 def generate_event_id(evidence_id, sequence):
     """Deterministic, human-traceable event id scoped to one evidence item's parse run.
 
