@@ -24,14 +24,15 @@ git clone https://github.com/Sh3n0bi/NetForensicAI.git
 cd NetForensicAI 
 ```   
 2. Set Up the Development Environment:
-Why: Avoid errors like missing dependencies (e.g., pyshark not found).
 Steps:
-Install Python 3.9+ and required tools (Linux):
+Install Python 3.9+ (Linux):
 ```
 sudo apt update
-sudo apt install python3 python3-pip python3-venv tshark
+sudo apt install python3 python3-pip python3-venv
 ```
-On Windows, install Python from python.org and Wireshark (includes tshark) from wireshark.org.
+On Windows, install Python from python.org.
+
+No Wireshark/tshark install needed - pcap parsing uses scapy (pure Python).
 
 Create a virtual environment:
 ```
@@ -41,10 +42,6 @@ source netforensicai_env/bin/activate  # On Windows: netforensicai_env\Scripts\a
 Install the package with the extras you need:
 ```
 pip install -e ".[pcap,intel,dashboard]"
-```
-Verify tshark is installed:
-```
-tshark -v
 ```
 3. Run the Tool:
 Analyze a PCAP:
@@ -81,9 +78,8 @@ Development: Add tests in tests/ or extend file signatures in netforensicai/pars
 2025-05-15 11:27:01,459 - INFO - Found 5 anomalous packets
 ```
 ## 🛠️Troubleshooting
-"tshark not found": Install Wireshark or tshark (see Setup).
-"Module not found": Ensure you're in the virtual environment and run pip install -r requirements.txt.
-No dashboard?: Ensure demo/sample.pcap contains TCP packets, or use --no-dashboard.
+"Module not found": Ensure you're in the virtual environment and reinstall with `pip install -e ".[pcap,intel,dashboard]"`.
+No dashboard?: Ensure your pcap contains TCP packets, or use --no-dashboard.
 Still stuck? Open an issue at https://github.com/Sh3n0bi/NetForensicAI/issues.
 
 ## 🤝 Contributing
