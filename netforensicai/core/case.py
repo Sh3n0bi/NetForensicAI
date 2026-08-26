@@ -140,3 +140,12 @@ class CaseManager:
         case.updated_at = datetime.now(timezone.utc).isoformat()
         self._save(case)
         return case
+
+    def register_evidence(self, case_id, evidence_id):
+        """Record an evidence_id against the case's evidence index. Idempotent."""
+        case = self.load(case_id)
+        if evidence_id not in case.evidence:
+            case.evidence.append(evidence_id)
+            case.updated_at = datetime.now(timezone.utc).isoformat()
+            self._save(case)
+        return case

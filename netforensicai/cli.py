@@ -87,6 +87,87 @@ def case_list_cmd(
         typer.echo(f"{case.case_id:<10} {case.status:<14} {case.investigator:<16} {created:<20} {case.name}")
 
 
+evidence_app = typer.Typer(help="Manage evidence within a case.", no_args_is_help=True)
+app.add_typer(evidence_app, name="evidence")
+
+
+@evidence_app.command("add")
+def evidence_add(
+    file_path: str = typer.Argument(..., help="Path to the evidence file to ingest"),
+    case_id: str = typer.Option(..., "--case", help="Case ID to add evidence to (e.g. INC-0001)"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Ingest a file as evidence: hash it, copy it read-only into the case, and record provenance."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceError, EvidenceManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    evidence_manager = EvidenceManager(Path(cases_dir) / case.case_id)
+    try:
+        evidence = evidence_manager.add(file_path, case_id=case.case_id)
+    except EvidenceError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_manager.register_evidence(case.case_id, evidence.evidence_id)
+
+    typer.echo(f"Ingested {evidence.evidence_id}: {evidence.filename}")
+    typer.echo(f"  Type:      {evidence.evidence_type}")
+    typer.echo(f"  SHA256:    {evidence.sha256}")
+    typer.echo(f"  Size:      {evidence.size_bytes} bytes")
+    typer.echo(f"  Imported:  {evidence.imported_at}")
+    typer.echo(f"  Source:    {evidence.source_path}")
+
+
+@evidence_app.command("list")
+def evidence_list_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID to list evidence for"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """List evidence recorded for a case."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    evidence_manager = EvidenceManager(Path(cases_dir) / case.case_id)
+    items = evidence_manager.list()
+    if not items:
+        typer.echo(f"No evidence recorded for {case.case_id}.")
+        return
+
+    header = f"{'EVIDENCE ID':<12} {'TYPE':<8} {'SIZE':>12} {'IMPORTED':<20} FILENAME"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for evidence in items:
+        imported = evidence.imported_at.split("T")[0]
+        typer.echo(
+            f"{evidence.evidence_id:<12} {evidence.evidence_type:<8} "
+            f"{evidence.size_bytes:>12} {imported:<20} {evidence.filename}"
+        )
+
+
 @app.command()
 def scan(
     pcap_file: str = typer.Argument(..., help="Path to the .pcap file"),
