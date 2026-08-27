@@ -8,6 +8,7 @@ subcommands land in later steps of the DFIR-platform migration.
 import logging
 import sys
 from pathlib import Path
+from typing import List
 
 import typer
 
@@ -524,6 +525,160 @@ def investigate(
                 typer.echo("  VirusTotal: not checked (no API key - use --vt-api or set VT_API_KEY)")
         else:
             typer.echo("  (no threat intelligence source available for this entity type yet)")
+
+
+finding_app = typer.Typer(help="Manage investigator-owned findings.", no_args_is_help=True)
+app.add_typer(finding_app, name="finding")
+
+
+@finding_app.command("create")
+def finding_create(
+    case_id: str = typer.Option(..., "--case", help="Case ID this finding belongs to"),
+    title: str = typer.Option(..., "--title", help="Finding title"),
+    severity: str = typer.Option("Medium", "--severity", help="Low, Medium, High, or Critical"),
+    status: str = typer.Option("Open", "--status", help="Open, Investigating, Confirmed, Rejected, False Positive, or Resolved"),
+    assessment: str = typer.Option("", "--assessment", help="Free-text assessment"),
+    event_ids: List[str] = typer.Option(
+        [], "--event", help="Event ID this finding is based on, e.g. EVT-EV-0001-000003 (repeatable)"
+    ),
+    investigator: str = typer.Option(
+        None, "--investigator", help="Investigator name (defaults to the OS username)"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Create an investigator-owned finding. Only the investigator confirms
+    what counts as a finding - this command never infers or auto-generates one."""
+    import getpass
+
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.finding import FindingError, FindingManager
+    from netforensicai.core.store import CaseStore
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    evidence_refs = []
+    if event_ids:
+        with CaseStore(case_dir) as store:
+            for event_id in event_ids:
+                event = store.get_event(event_id)
+                if event is None:
+                    typer.echo(f"Error: event_id '{event_id}' not found in {case.case_id}.", err=True)
+                    raise typer.Exit(code=1)
+                evidence_refs.append({"evidence_id": event.evidence_id, "event_id": event.event_id})
+
+    finding_manager = FindingManager(case_dir)
+    try:
+        finding = finding_manager.create(
+            case_id=case.case_id,
+            title=title,
+            created_by=investigator or getpass.getuser(),
+            severity=severity,
+            status=status,
+            assessment=assessment,
+            evidence_refs=evidence_refs,
+        )
+    except FindingError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_manager.register_finding(case.case_id, finding.finding_id)
+
+    typer.echo(f"Created finding {finding.finding_id}: {finding.title}")
+    typer.echo(f"  Status:   {finding.status}")
+    typer.echo(f"  Severity: {finding.severity}")
+    if finding.evidence_refs:
+        typer.echo(f"  Evidence: {', '.join(r['event_id'] for r in finding.evidence_refs)}")
+
+
+@finding_app.command("list")
+def finding_list_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID to list findings for"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """List findings recorded for a case."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.finding import FindingManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    findings = FindingManager(Path(cases_dir) / case.case_id).list()
+    if not findings:
+        typer.echo(f"No findings recorded for {case.case_id}.")
+        return
+
+    header = f"{'FINDING ID':<12} {'STATUS':<14} {'SEVERITY':<10} TITLE"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for finding in findings:
+        typer.echo(f"{finding.finding_id:<12} {finding.status:<14} {finding.severity:<10} {finding.title}")
+
+
+@finding_app.command("update")
+def finding_update(
+    case_id: str = typer.Option(..., "--case", help="Case ID the finding belongs to"),
+    finding_id: str = typer.Option(..., "--finding", help="Finding ID to update, e.g. F-0001"),
+    status: str = typer.Option(None, "--status", help="New status"),
+    note: str = typer.Option(None, "--note", help="Append an investigator note"),
+    investigator: str = typer.Option(
+        None, "--investigator", help="Note author (defaults to the OS username)"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Update a finding's status and/or append an investigator note."""
+    import getpass
+
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.finding import FindingError, FindingManager
+
+    if not status and not note:
+        typer.echo("Error: provide --status and/or --note", err=True)
+        raise typer.Exit(code=1)
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    finding_manager = FindingManager(Path(cases_dir) / case.case_id)
+    try:
+        finding = None
+        if status:
+            finding = finding_manager.update_status(finding_id, status)
+        if note:
+            finding = finding_manager.add_note(finding_id, note, investigator or getpass.getuser())
+    except FindingError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Updated {finding.finding_id}: status={finding.status}, notes={len(finding.investigator_notes)}")
 
 
 @app.command()

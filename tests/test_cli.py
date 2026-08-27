@@ -184,3 +184,86 @@ def test_investigate_requires_exactly_one_entity_flag(tmp_path):
         ["investigate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--ip", "10.0.0.5", "--user", "alice"],
     )
     assert two_flags_result.exit_code == 1
+
+
+def test_finding_create_list_and_update(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "finding_events.json",
+        [{"timestamp": "2026-08-27T09:00:00Z", "type": "process_start", "process": "powershell.exe"}],
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "Finding test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    create_result = runner.invoke(
+        app,
+        [
+            "finding", "create",
+            "--case", "INC-0001",
+            "--cases-dir", str(cases_dir),
+            "--title", "Suspicious PowerShell Execution",
+            "--severity", "High",
+            "--event", "EVT-EV-0001-000001",
+        ],
+    )
+    assert create_result.exit_code == 0, create_result.output
+    assert "F-0001" in create_result.output
+    assert "EVT-EV-0001-000001" in create_result.output
+
+    list_result = runner.invoke(app, ["finding", "list", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    assert "F-0001" in list_result.output
+    assert "Open" in list_result.output
+    assert "High" in list_result.output
+
+    update_result = runner.invoke(
+        app,
+        [
+            "finding", "update",
+            "--case", "INC-0001",
+            "--cases-dir", str(cases_dir),
+            "--finding", "F-0001",
+            "--status", "Confirmed",
+            "--note", "Verified via process ancestry.",
+        ],
+    )
+    assert update_result.exit_code == 0, update_result.output
+    assert "status=Confirmed" in update_result.output
+    assert "notes=1" in update_result.output
+
+    final_list = runner.invoke(app, ["finding", "list", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    assert "Confirmed" in final_list.output
+
+
+def test_finding_create_rejects_unknown_event_id(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Bad event ref test", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(
+        app,
+        [
+            "finding", "create",
+            "--case", "INC-0001",
+            "--cases-dir", str(cases_dir),
+            "--title", "X",
+            "--event", "EVT-DOES-NOT-EXIST",
+        ],
+    )
+
+    assert result.exit_code == 1
+
+
+def test_finding_update_requires_status_or_note(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Update validation test", "--cases-dir", str(cases_dir)])
+    runner.invoke(
+        app,
+        ["finding", "create", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--title", "X"],
+    )
+
+    result = runner.invoke(
+        app, ["finding", "update", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--finding", "F-0001"]
+    )
+
+    assert result.exit_code == 1

@@ -106,6 +106,16 @@ def test_update_status_rejects_invalid_value(tmp_path):
         pass
 
 
+def test_register_finding_updates_index_and_is_idempotent(tmp_path):
+    manager = CaseManager(tmp_path / "cases")
+    case = manager.create(name="Findings index test")
+
+    manager.register_finding(case.case_id, "F-0001")
+    updated = manager.register_finding(case.case_id, "F-0001")
+
+    assert updated.findings == ["F-0001"]
+
+
 def test_case_to_dict_and_from_dict_round_trip():
     case = Case(
         case_id="INC-0001",

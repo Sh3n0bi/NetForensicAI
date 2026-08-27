@@ -160,3 +160,12 @@ class CaseManager:
             case.updated_at = datetime.now(timezone.utc).isoformat()
             self._save(case)
         return case
+
+    def register_finding(self, case_id, finding_id):
+        """Record a finding_id against the case's findings index. Idempotent."""
+        case = self.load(case_id)
+        if finding_id not in case.findings:
+            case.findings.append(finding_id)
+            case.updated_at = datetime.now(timezone.utc).isoformat()
+            self._save(case)
+        return case

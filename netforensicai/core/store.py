@@ -208,6 +208,10 @@ class CaseStore:
     def events_for_evidence(self, evidence_id):
         return self._select_events("WHERE evidence_id = ?", [evidence_id])
 
+    def get_event(self, event_id):
+        rows = self._select_events("WHERE event_id = ?", [event_id])
+        return rows[0] if rows else None
+
     def count_events(self):
         return self.conn.execute("SELECT count(*) FROM events").fetchone()[0]
 
