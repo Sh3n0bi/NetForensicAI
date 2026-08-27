@@ -265,6 +265,9 @@ def test_threat_intel_endpoint_calls_provider(prepared_case):
 
 
 def test_ai_hypothesis_endpoint(prepared_case):
+    # patch("anthropic.Anthropic", ...) needs anthropic importable to
+    # resolve the target, even though it's only ever mocked here.
+    pytest.importorskip("anthropic")
     client, case, _cases_dir = prepared_case
     from netforensicai.core.ai_assistant import EvidenceCitation, Hypothesis
 
@@ -295,6 +298,7 @@ def test_ai_hypothesis_endpoint(prepared_case):
 
 
 def test_ai_hypothesis_endpoint_reports_assistant_error(prepared_case):
+    pytest.importorskip("anthropic")
     client, case, _cases_dir = prepared_case
 
     with patch(

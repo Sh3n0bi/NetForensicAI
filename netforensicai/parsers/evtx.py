@@ -23,7 +23,7 @@ schema. Two tiers of mapping:
 """
 
 import logging
-import os
+import ntpath
 from xml.etree import ElementTree
 
 from netforensicai.core.event import Event, EventSequence, generate_event_id, parse_timestamp
@@ -196,7 +196,13 @@ def record_to_event(xml_text, evidence_id, sequence):
             target = event_data.get("TargetFilename")
             if target:
                 fields["file_path"] = target
-                fields["file_name"] = os.path.basename(target)
+                # ntpath, not os.path: TargetFilename is always a Windows
+                # path (it comes from a Windows EVTX record) regardless of
+                # which OS is running this parser. os.path.basename() uses
+                # the *host* platform's separator rules, so on Linux/macOS
+                # it would silently fail to split a backslash-separated
+                # path at all and return the full path as "file_name".
+                fields["file_name"] = ntpath.basename(target)
 
         hashes = event_data.get("Hashes")
         if hashes:

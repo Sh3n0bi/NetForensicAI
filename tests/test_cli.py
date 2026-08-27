@@ -4,6 +4,7 @@ are actually wired together correctly, not just individually correct."""
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from netforensicai.cli import app
@@ -369,6 +370,9 @@ def test_report_generate_missing_case_reports_error(tmp_path):
 
 
 def test_investigate_ai_flag_shows_hypothesis(tmp_path):
+    # patch("anthropic.Anthropic", ...) needs anthropic importable to
+    # resolve the target, even though it's only ever mocked here.
+    pytest.importorskip("anthropic")
     from unittest.mock import MagicMock, patch
 
     from netforensicai.core.ai_assistant import EvidenceCitation, Hypothesis
@@ -412,6 +416,7 @@ def test_investigate_ai_flag_shows_hypothesis(tmp_path):
 
 
 def test_investigate_ai_flag_reports_unavailable_without_credentials(tmp_path):
+    pytest.importorskip("anthropic")
     from unittest.mock import patch
 
     import anthropic

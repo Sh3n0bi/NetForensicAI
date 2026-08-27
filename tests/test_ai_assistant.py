@@ -7,6 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# unittest.mock.patch("anthropic.Anthropic", ...) needs to *import*
+# anthropic to resolve that target string, even though every call in this
+# file mocks it rather than using it for real - so these tests need the
+# package installed to run at all, not just to pass. anthropic's 1.x line
+# requires Python >=3.10, so this also naturally skips on older Pythons
+# rather than failing with an import error.
+pytest.importorskip("anthropic")
+
 from netforensicai.core.ai_assistant import (
     MAX_EVENTS,
     AssistantError,
