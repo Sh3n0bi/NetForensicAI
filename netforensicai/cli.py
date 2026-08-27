@@ -170,40 +170,12 @@ def evidence_list_cmd(
 
 
 def _parse_one_evidence(evidence, case_dir, case_manager, case_id, store):
-    """Parse one evidence item, persist its events + extracted entities into
-    `store`, and register any newly saved artifact files against the case.
+    """Thin wrapper kept for callers already importing this name; the real
+    logic lives in core/pipeline.py so cli.py, the web UI, and the live
+    capture module all share exactly one implementation."""
+    from netforensicai.core.pipeline import parse_evidence_item
 
-    Returns (event_count, entity_count, error). error is None on success.
-    """
-    import os
-
-    from netforensicai.core.entities import extract_and_store
-    from netforensicai.parsers import base, load_parsers
-
-    load_parsers()
-    parser = base.get_parser(evidence.evidence_type)
-    if parser is None:
-        return None, None, f"No parser registered for evidence type '{evidence.evidence_type}'"
-
-    from netforensicai.core.evidence import EvidenceManager
-
-    stored_path = EvidenceManager(case_dir).stored_file_path(evidence.evidence_id)
-    output_dir = case_dir / "artifacts" / evidence.evidence_id
-
-    try:
-        events = parser.parse(stored_path, evidence_id=evidence.evidence_id, output_dir=str(output_dir))
-    except Exception as e:
-        return None, None, str(e)
-
-    store.replace_events_for_evidence(evidence.evidence_id, events)
-    entity_count = extract_and_store(store, events)
-
-    for event in events:
-        if event.event_type == "file_transfer" and event.file_path:
-            relative_path = os.path.relpath(event.file_path, case_dir).replace(os.sep, "/")
-            case_manager.register_artifact(case_id, relative_path)
-
-    return len(events), entity_count, None
+    return parse_evidence_item(evidence, case_dir, case_manager, case_id, store)
 
 
 @app.command("parse")
@@ -873,6 +845,84 @@ def web(
     # this is a local single-user tool, not a production multi-user
     # server - see netforensicai/web/app.py's module docstring.
     flask_app.run(host=host, port=port, debug=False, threaded=False)
+
+
+@app.command("capture")
+def capture_cmd(
+    case_id: str = typer.Option(None, "--case", help="Case ID to capture into"),
+    interface: str = typer.Option(None, "--interface", help="Network interface to capture on (see --list-interfaces)"),
+    bpf_filter: str = typer.Option(None, "--filter", help="BPF filter, e.g. 'tcp port 443'"),
+    rotate_seconds: int = typer.Option(
+        30,
+        "--rotate-seconds",
+        help="Seconds of traffic per capture window before it's rotated and ingested as evidence",
+    ),
+    list_interfaces_flag: bool = typer.Option(
+        False, "--list-interfaces", help="List available network interfaces and exit"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Capture live traffic into rotating pcap windows, auto-ingested as evidence as each completes.
+
+    Needs a packet-capture driver (Npcap on Windows, libpcap on Linux/macOS)
+    and elevated privileges - this command does not install or grant either.
+    """
+    import time
+
+    from netforensicai.core import capture as capture_module
+    from netforensicai.core.case import CaseError, CaseManager
+
+    if list_interfaces_flag:
+        try:
+            interfaces = capture_module.list_interfaces()
+        except Exception as e:
+            typer.echo(f"Error listing interfaces: {e}", err=True)
+            raise typer.Exit(code=1)
+        for iface in interfaces:
+            typer.echo(iface)
+        return
+
+    if not case_id:
+        typer.echo("Error: --case is required (unless using --list-interfaces).", err=True)
+        raise typer.Exit(code=1)
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    session = capture_module.CaptureSession(
+        case.case_id, case_dir, case_manager, interface=interface, bpf_filter=bpf_filter, rotate_seconds=rotate_seconds
+    )
+
+    try:
+        session.start()
+    except capture_module.CaptureError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Capturing into {case.case_id} on interface {interface or '(default)'} - Ctrl+C to stop.")
+    typer.echo(f"Rotating every {rotate_seconds}s; each finished window is ingested as evidence automatically.")
+    try:
+        while True:
+            time.sleep(2)
+            snap = session.snapshot()
+            typer.echo(
+                f"  window: {snap['window_packet_count']} packets ({snap['window_elapsed_seconds']:.0f}s) "
+                f"| total: {snap['total_packet_count']} packets"
+            )
+    except KeyboardInterrupt:
+        typer.echo("Stopping capture...")
+        session.stop()
+        typer.echo("Stopped.")
 
 
 def main():

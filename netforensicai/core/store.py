@@ -9,10 +9,21 @@ Re-parsing an evidence item is idempotent: replace_events_for_evidence()
 deletes that evidence's previous events (and their entity links) before
 inserting the new ones, so running `parse`/`analyze` again never
 accumulates duplicates.
+
+The CLI is single-threaded, so it never needs to worry about the
+single-writer rule above - each command opens one CaseStore, uses it, and
+closes it before exiting. The web UI is different: it can have a live
+capture session's background thread ingesting a just-rotated pcap into
+the store at the same moment a browser request is reading the timeline.
+GLOBAL_WRITE_LOCK / locked_store() exist for exactly that situation -
+use locked_store() instead of CaseStore(...) directly anywhere a
+background capture might be running concurrently with the call.
 """
 
+import contextlib
 import json
 import logging
+import threading
 from pathlib import Path
 
 import duckdb
@@ -20,6 +31,12 @@ import duckdb
 from netforensicai.core.event import Event
 
 logger = logging.getLogger(__name__)
+
+# A single, coarse, process-wide lock rather than one per case: this is a
+# local single-user tool, true multi-case concurrent access is rare, and
+# a simple lock that's always correct beats a per-case lock dict that's
+# marginally faster but easier to get wrong.
+GLOBAL_WRITE_LOCK = threading.Lock()
 
 # Event model field, in insertion/selection order. "user" is stored under
 # a different column name (see _column) since it's close enough to a SQL
@@ -417,3 +434,13 @@ class CaseStore:
         columns_sql = ", ".join(THREAT_INTEL_FIELDS)
         rows = self.conn.execute(f"SELECT {columns_sql} FROM threat_intel ORDER BY checked_at DESC").fetchall()
         return [dict(zip(THREAT_INTEL_FIELDS, row)) for row in rows]
+
+
+@contextlib.contextmanager
+def locked_store(case_dir):
+    """CaseStore usage serialized against GLOBAL_WRITE_LOCK. Use this
+    instead of CaseStore(...) directly in the web UI and the capture
+    module - see the module docstring for why."""
+    with GLOBAL_WRITE_LOCK:
+        with CaseStore(case_dir) as store:
+            yield store

@@ -77,11 +77,24 @@ actually present in those events is rejected outright rather than shown. It neve
 its own; that's always an explicit `netforensic finding create` by the investigator.
 
 Web UI (optional, `[web]` extra): `pip install -e ".[web]"` then `netforensic web --cases-dir cases` opens
-a local, read-only dashboard at http://127.0.0.1:8000 - case overview, evidence, timeline, an entity graph
-with the same investigate/threat-intel/AI-hypothesis actions as the CLI, findings, and reports. It's a thin
-visualization layer over the same case data the CLI reads and writes, not a second implementation of any
-of it; there's no authentication, so only pass `--host` to something other than `127.0.0.1` on a network
-you trust. Creating or updating a finding remains CLI-only for now.
+a local dashboard at http://127.0.0.1:8000 - case overview, evidence (including uploading new evidence
+files and running analyze from the browser), timeline, an entity graph with the same investigate/threat-
+intel/AI-hypothesis actions as the CLI, findings, reports, and live capture. It's a thin visualization
+layer over the same case data the CLI reads and writes, not a second implementation of any of it; there's
+no authentication, so only pass `--host` to something other than `127.0.0.1` on a network you trust.
+Creating or updating a finding remains CLI-only for now.
+
+Live Capture (needs the `[pcap]` extra, already required for pcap support): `netforensic capture --case
+<ID> --interface <iface> [--filter "tcp port 443"] [--rotate-seconds 30]` (or `--list-interfaces` to see
+available interfaces) captures live traffic into rotating pcap windows, each one automatically ingested
+through the exact same evidence pipeline as `evidence add` + `analyze` (hashed, parsed, correlated) as
+soon as it completes - so a live-captured window becomes a normal, traceable piece of case evidence, not
+a separate, less rigorous path. The web UI's "Live Capture" tab drives the same mechanism with start/stop
+controls and a polled live view of packet/protocol counts and ingested windows. This needs a real
+packet-capture driver (Npcap on Windows, libpcap on Linux/macOS) and elevated privileges on the machine
+running the command - neither is installed or granted by this tool, and it captures real traffic on
+whatever interface you point it at, so only run it against a network and interface you're authorized to
+capture on.
 
 Development: Add tests in tests/ or extend file signatures in netforensicai/parsers/pcap.py
 

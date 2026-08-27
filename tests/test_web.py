@@ -308,3 +308,135 @@ def test_ai_hypothesis_endpoint_reports_assistant_error(prepared_case):
 
     assert response.status_code == 502
     assert "credentials" in response.get_json()["error"]
+
+
+# --- evidence upload + analyze ---
+
+
+def test_upload_evidence(prepared_case):
+    import io
+
+    client, case, cases_dir = prepared_case
+
+    content = b'[{"timestamp": "2026-08-27T10:00:00Z", "type": "authentication", "user": "newuser"}]'
+    response = client.post(
+        f"/api/cases/{case.case_id}/evidence",
+        data={"file": (io.BytesIO(content), "uploaded.json")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201, response.get_json()
+    data = response.get_json()
+    assert data["evidence_id"] == "EV-0002"
+    assert data["filename"] == "uploaded.json"
+    assert data["evidence_type"] == "json"
+
+    stored_path = cases_dir / case.case_id / "evidence" / "EV-0002" / "original" / "uploaded.json"
+    assert stored_path.exists()
+    assert stored_path.read_bytes() == content
+
+
+def test_upload_evidence_no_file_returns_400(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(f"/api/cases/{case.case_id}/evidence", data={}, content_type="multipart/form-data")
+
+    assert response.status_code == 400
+
+
+def test_upload_evidence_missing_case_returns_404(prepared_case):
+    import io
+
+    client, _case, _cases_dir = prepared_case
+
+    response = client.post(
+        "/api/cases/INC-9999/evidence",
+        data={"file": (io.BytesIO(b"{}"), "x.json")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 404
+
+
+def test_analyze_endpoint_parses_new_evidence(prepared_case):
+    import io
+
+    client, case, _cases_dir = prepared_case
+
+    client.post(
+        f"/api/cases/{case.case_id}/evidence",
+        data={"file": (io.BytesIO(b'[{"timestamp": "2026-08-27T10:00:00Z", "type": "x", "user": "newuser"}]'), "more.json")},
+        content_type="multipart/form-data",
+    )
+
+    response = client.post(f"/api/cases/{case.case_id}/analyze")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data["results"]) == 2  # original EV-0001 + the newly uploaded EV-0002
+    assert data["total_events"] >= 3
+    assert all(r["error"] is None for r in data["results"])
+
+    entities = client.get(f"/api/cases/{case.case_id}/entities?q=newuser").get_json()
+    assert len(entities) == 1
+
+
+# --- live capture ---
+
+
+def test_capture_status_when_not_running(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.get(f"/api/cases/{case.case_id}/capture/status")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"running": False}
+
+
+def test_capture_start_status_stop_lifecycle(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    with patch("scapy.all.AsyncSniffer") as mock_sniffer_cls:
+        mock_sniffer_cls.return_value = MagicMock()
+
+        start_response = client.post(f"/api/cases/{case.case_id}/capture/start", json={"interface": "fake0"})
+        assert start_response.status_code == 200, start_response.get_json()
+
+        status_response = client.get(f"/api/cases/{case.case_id}/capture/status")
+        status = status_response.get_json()
+        assert status["running"] is True
+        assert status["interface"] == "fake0"
+
+        second_start = client.post(f"/api/cases/{case.case_id}/capture/start", json={"interface": "fake0"})
+        assert second_start.status_code == 409
+
+        stop_response = client.post(f"/api/cases/{case.case_id}/capture/stop")
+        assert stop_response.status_code == 200
+
+        status_after_stop = client.get(f"/api/cases/{case.case_id}/capture/status").get_json()
+        assert status_after_stop["running"] is False
+
+
+def test_capture_stop_when_never_started_returns_404(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(f"/api/cases/{case.case_id}/capture/stop")
+
+    assert response.status_code == 404
+
+
+def test_capture_start_missing_case_returns_404(prepared_case):
+    client, _case, _cases_dir = prepared_case
+
+    response = client.post("/api/cases/INC-9999/capture/start", json={})
+
+    assert response.status_code == 404
+
+
+def test_list_interfaces_endpoint(prepared_case):
+    client, _case, _cases_dir = prepared_case
+
+    response = client.get("/api/interfaces")
+
+    assert response.status_code == 200
+    assert isinstance(response.get_json(), list)

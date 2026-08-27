@@ -1,5 +1,14 @@
 const API = "/api";
 
+let _capturePollTimer = null;
+
+function stopCapturePolling() {
+  if (_capturePollTimer) {
+    clearInterval(_capturePollTimer);
+    _capturePollTimer = null;
+  }
+}
+
 async function apiGet(path) {
   const res = await fetch(API + path);
   const data = await res.json().catch(() => ({}));
@@ -13,6 +22,15 @@ async function apiPost(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
   });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function apiUpload(path, formData) {
+  // No Content-Type header: the browser sets multipart/form-data with the
+  // correct boundary itself when the body is a FormData instance.
+  const res = await fetch(API + path, { method: "POST", body: formData });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -92,11 +110,13 @@ async function route() {
 }
 
 async function renderCaseTab(app, c, tab, rest) {
+  stopCapturePolling(); // leaving (or re-rendering) any tab cancels a live capture-status poll loop
   if (tab === "evidence") return renderEvidence(app, c);
   if (tab === "timeline") return renderTimeline(app, c);
   if (tab === "entities") return renderEntities(app, c, rest[0]);
   if (tab === "findings") return renderFindings(app, c);
   if (tab === "reports") return renderReports(app, c);
+  if (tab === "capture") return renderCapture(app, c);
   return renderOverview(app, c);
 }
 
@@ -170,36 +190,104 @@ function renderOverview(app, c) {
 
 async function renderEvidence(app, c) {
   app.appendChild(el("h1", { text: "Evidence" }));
+
+  const uploadBar = el("div", { class: "filter-bar" });
+  const fileInput = el("input", { type: "file" });
+  const uploadBtn = el("button", { text: "Upload Evidence" });
+  const analyzeBtn = el("button", { class: "secondary", text: "Run Analyze" });
+  uploadBar.appendChild(fileInput);
+  uploadBar.appendChild(uploadBtn);
+  uploadBar.appendChild(analyzeBtn);
+  app.appendChild(uploadBar);
+
+  const statusBox = el("div");
+  app.appendChild(statusBox);
+
   const panel = el("div", { class: "panel" });
   app.appendChild(panel);
-  panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
-  try {
-    const items = await apiGet(`/cases/${c.case_id}/evidence`);
+
+  async function loadList() {
     panel.innerHTML = "";
-    if (!items.length) {
-      panel.appendChild(el("div", { class: "empty", text: "No evidence recorded." }));
+    panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+    try {
+      const items = await apiGet(`/cases/${c.case_id}/evidence`);
+      panel.innerHTML = "";
+      if (!items.length) {
+        panel.appendChild(el("div", { class: "empty", text: "No evidence recorded." }));
+        return;
+      }
+      const table = el("table");
+      table.innerHTML =
+        "<tr><th>ID</th><th>Filename</th><th>Type</th><th>Size</th><th>SHA-256</th><th>Imported</th></tr>" +
+        items
+          .map(
+            (e) => `<tr>
+          <td class="mono">${escapeHtml(e.evidence_id)}</td>
+          <td>${escapeHtml(e.filename)}</td>
+          <td>${escapeHtml(e.evidence_type)}</td>
+          <td>${e.size_bytes}</td>
+          <td class="mono" title="${escapeHtml(e.sha256)}">${escapeHtml(e.sha256.slice(0, 16))}…</td>
+          <td>${escapeHtml((e.imported_at || "").split("T")[0])}</td>
+        </tr>`
+          )
+          .join("");
+      panel.appendChild(table);
+    } catch (e) {
+      panel.innerHTML = "";
+      panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    }
+  }
+
+  uploadBtn.addEventListener("click", async () => {
+    const file = fileInput.files[0];
+    if (!file) {
+      toast("Choose a file first.", true);
       return;
     }
-    const table = el("table");
-    table.innerHTML =
-      "<tr><th>ID</th><th>Filename</th><th>Type</th><th>Size</th><th>SHA-256</th><th>Imported</th></tr>" +
-      items
-        .map(
-          (e) => `<tr>
-        <td class="mono">${escapeHtml(e.evidence_id)}</td>
-        <td>${escapeHtml(e.filename)}</td>
-        <td>${escapeHtml(e.evidence_type)}</td>
-        <td>${e.size_bytes}</td>
-        <td class="mono" title="${escapeHtml(e.sha256)}">${escapeHtml(e.sha256.slice(0, 16))}…</td>
-        <td>${escapeHtml((e.imported_at || "").split("T")[0])}</td>
-      </tr>`
-        )
-        .join("");
-    panel.appendChild(table);
-  } catch (e) {
-    panel.innerHTML = "";
-    panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
-  }
+    uploadBtn.disabled = true;
+    statusBox.innerHTML = "";
+    statusBox.appendChild(el("div", { class: "loading", text: `Uploading ${file.name}...` }));
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const evidence = await apiUpload(`/cases/${c.case_id}/evidence`, formData);
+      statusBox.innerHTML = "";
+      statusBox.appendChild(
+        el("div", { text: `Ingested ${evidence.evidence_id}: ${evidence.filename} (${evidence.evidence_type})` })
+      );
+      fileInput.value = "";
+      await loadList();
+    } catch (e) {
+      statusBox.innerHTML = "";
+      statusBox.appendChild(el("div", { class: "error-box", text: "Upload failed: " + e.message }));
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  });
+
+  analyzeBtn.addEventListener("click", async () => {
+    analyzeBtn.disabled = true;
+    statusBox.innerHTML = "";
+    statusBox.appendChild(el("div", { class: "loading", text: "Analyzing (parsing evidence + correlating)..." }));
+    try {
+      const result = await apiPost(`/cases/${c.case_id}/analyze`);
+      statusBox.innerHTML = "";
+      const lines = result.results.map((r) =>
+        r.error
+          ? `${r.evidence_id}: skipped - ${r.error}`
+          : `${r.evidence_id} (${r.evidence_type}): ${r.event_count} events, ${r.entity_count} entities`
+      );
+      lines.push(`Total: ${result.total_events} events, ${result.total_entities} distinct entities`);
+      statusBox.appendChild(el("div", { text: lines.join(" · ") }));
+    } catch (e) {
+      statusBox.innerHTML = "";
+      statusBox.appendChild(el("div", { class: "error-box", text: "Analyze failed: " + e.message }));
+    } finally {
+      analyzeBtn.disabled = false;
+    }
+  });
+
+  await loadList();
 }
 
 // --- Timeline ---
@@ -667,4 +755,152 @@ async function renderReports(app, c) {
     tabs.appendChild(btn);
   }
   await show("markdown");
+}
+
+// --- Live Capture ---
+//
+// Polled (not streamed via SSE): the server runs single-threaded so DuckDB
+// access from the web request thread and a capture session's background
+// ingestion thread stay serialized through one lock - see web/app.py.
+// ~1.5s polling is plenty responsive for this dashboard.
+
+async function renderCapture(app, c) {
+  app.appendChild(el("h1", { text: "Live Capture" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Captures real traffic on the chosen interface into rotating pcap windows, each auto-ingested as " +
+        "case evidence when it completes. Needs a packet-capture driver (Npcap/libpcap) and elevated " +
+        "privileges on the machine running `netforensic web` - this UI does not grant those.",
+    })
+  );
+
+  const controlBar = el("div", { class: "filter-bar" });
+  const interfaceSelect = el("select", {});
+  interfaceSelect.innerHTML = '<option value="">Loading interfaces...</option>';
+  const filterInput = el("input", { placeholder: "BPF filter, e.g. tcp port 443" });
+  const rotateInput = el("input", { type: "number", value: "30", min: "5", style: "width:80px;" });
+  const rotateLabel = el("span", { text: "sec/window", style: "color:var(--text-dim); font-size:12px;" });
+  const startBtn = el("button", { text: "Start Capture" });
+  const stopBtn = el("button", { class: "secondary", text: "Stop Capture" });
+  stopBtn.disabled = true;
+  controlBar.appendChild(interfaceSelect);
+  controlBar.appendChild(filterInput);
+  controlBar.appendChild(rotateInput);
+  controlBar.appendChild(rotateLabel);
+  controlBar.appendChild(startBtn);
+  controlBar.appendChild(stopBtn);
+  app.appendChild(controlBar);
+
+  const statusPanel = el("div", { class: "panel" });
+  statusPanel.appendChild(el("div", { class: "empty", text: "Not running." }));
+  app.appendChild(statusPanel);
+
+  const feedPanel = el("div", { class: "panel" });
+  feedPanel.appendChild(el("h3", { text: "Ingested Windows" }));
+  const feedList = el("div");
+  feedPanel.appendChild(feedList);
+  app.appendChild(feedPanel);
+
+  apiGet("/interfaces")
+    .then((interfaces) => {
+      interfaceSelect.innerHTML = interfaces.length
+        ? interfaces.map((i) => `<option value="${escapeHtml(i)}">${escapeHtml(i)}</option>`).join("")
+        : '<option value="">(none found)</option>';
+    })
+    .catch((e) => {
+      interfaceSelect.innerHTML = '<option value="">(could not list interfaces)</option>';
+      toast("Could not list interfaces: " + e.message, true);
+    });
+
+  function renderStatus(snap) {
+    statusPanel.innerHTML = "";
+    if (!snap.running) {
+      statusPanel.appendChild(el("div", { class: "empty", text: "Not running." }));
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      return;
+    }
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    const stats = el("div", { class: "grid-stats" });
+    const defs = [
+      ["Total Packets", snap.total_packet_count],
+      ["Window Packets", snap.window_packet_count],
+      ["Window Bytes", snap.window_byte_count],
+      ["Window Age (s)", Math.round(snap.window_elapsed_seconds)],
+      ["Elapsed (s)", Math.round(snap.elapsed_seconds)],
+    ];
+    for (const [l, n] of defs) {
+      stats.appendChild(el("div", { class: "stat" }, [el("div", { class: "n", text: n }), el("div", { class: "l", text: l })]));
+    }
+    statusPanel.appendChild(stats);
+
+    const protoEntries = Object.entries(snap.window_protocols || {});
+    if (protoEntries.length) {
+      const protoBox = el("div", { style: "margin-top:12px;" });
+      protoBox.appendChild(el("h3", { text: "Current Window - Protocol Breakdown" }));
+      for (const [proto, count] of protoEntries.sort((a, b) => b[1] - a[1])) {
+        protoBox.appendChild(el("div", { class: "lead", text: `${proto}: ${count}` }));
+      }
+      statusPanel.appendChild(protoBox);
+    }
+  }
+
+  function renderFeed(events) {
+    feedList.innerHTML = "";
+    if (!events || !events.length) {
+      feedList.appendChild(el("div", { class: "empty", text: "No windows ingested yet." }));
+      return;
+    }
+    for (const evt of [...events].reverse()) {
+      const line = evt.error
+        ? `${evt.at}: error - ${evt.error}`
+        : `${evt.at}: ${evt.evidence_id} - ${evt.packet_count} packets -> ${evt.event_count} events, ${evt.entity_count} entities`;
+      feedList.appendChild(el("div", { class: evt.error ? "lead error-box" : "lead", text: line }));
+    }
+  }
+
+  async function poll() {
+    try {
+      const snap = await apiGet(`/cases/${c.case_id}/capture/status`);
+      renderStatus(snap);
+      renderFeed(snap.recent_events);
+    } catch (e) {
+      toast("Capture status error: " + e.message, true);
+    }
+  }
+
+  startBtn.addEventListener("click", async () => {
+    startBtn.disabled = true;
+    try {
+      await apiPost(`/cases/${c.case_id}/capture/start`, {
+        interface: interfaceSelect.value || undefined,
+        filter: filterInput.value.trim() || undefined,
+        rotate_seconds: parseInt(rotateInput.value, 10) || 30,
+      });
+      toast("Capture started.");
+      await poll();
+    } catch (e) {
+      toast("Could not start capture: " + e.message, true);
+      startBtn.disabled = false;
+    }
+  });
+
+  stopBtn.addEventListener("click", async () => {
+    stopBtn.disabled = true;
+    try {
+      await apiPost(`/cases/${c.case_id}/capture/stop`);
+      toast("Capture stopped.");
+      await poll();
+    } catch (e) {
+      toast("Could not stop capture: " + e.message, true);
+    }
+  });
+
+  await poll();
+  stopCapturePolling();
+  _capturePollTimer = setInterval(poll, 1500);
 }
