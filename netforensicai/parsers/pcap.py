@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
-from scapy.all import DNS, IP, TCP, UDP, PcapReader
+from scapy.all import DNS, ICMP, IP, IPv6, TCP, UDP, PcapReader
 from sklearn.ensemble import IsolationForest
 
 from netforensicai.core.event import Event, EventSequence, generate_event_id
@@ -129,6 +129,22 @@ def _tcp_payload(packet):
 
 def _packet_timestamp(packet):
     return datetime.fromtimestamp(float(packet.time), tz=timezone.utc)
+
+
+def _ip_layer(packet):
+    """The packet's network layer, IPv4 or IPv6, or None.
+
+    scapy's `IP` class is IPv4 ONLY - an IPv6 packet has no `IP` layer at
+    all. Checking `haslayer(IP)` therefore silently discarded every IPv6
+    packet: a capture of IPv6 web traffic parsed to zero events. Every
+    address lookup goes through here so a v4-only assumption cannot creep
+    back into one call site.
+    """
+    if packet.haslayer(IP):
+        return packet[IP]
+    if packet.haslayer(IPv6):
+        return packet[IPv6]
+    return None
 
 
 def _dns_qname(dns):
@@ -243,11 +259,14 @@ class _StreamCollector:
         self._emitted = []
         self._collect_anomaly_features(packet_number, packet)
 
-        if packet.haslayer(IP):
+        ip = _ip_layer(packet)
+        if ip is not None:
             if packet.haslayer(TCP):
-                self._feed_tcp(packet_number, packet)
+                self._feed_tcp(packet_number, packet, ip)
             elif packet.haslayer(UDP):
-                self._feed_udp(packet_number, packet)
+                self._feed_udp(packet_number, packet, ip)
+            elif packet.haslayer(ICMP):
+                self._feed_icmp(packet_number, packet, ip)
         return self._emitted
 
     def _collect_anomaly_features(self, packet_number, packet):
@@ -266,6 +285,7 @@ class _StreamCollector:
             )
             return
 
+        anomaly_ip = _ip_layer(packet)
         timestamp = float(packet.time)
         size = len(packet)
         has_tcp = packet.haslayer(TCP)
@@ -280,15 +300,15 @@ class _StreamCollector:
                 "timestamp": timestamp,
                 "size": size,
                 "inter_arrival": inter_arrival,
-                "src_ip": packet[IP].src if packet.haslayer(IP) else None,
-                "dst_ip": packet[IP].dst if packet.haslayer(IP) else None,
+                "src_ip": anomaly_ip.src if anomaly_ip is not None else None,
+                "dst_ip": anomaly_ip.dst if anomaly_ip is not None else None,
                 "src_port": src_port or None,
                 "dst_port": dst_port or None,
             }
         )
 
-    def _record_flow(self, packet, protocol, src_port, dst_port, payload):
-        key = (protocol, packet[IP].src, src_port, packet[IP].dst, dst_port)
+    def _record_flow(self, packet, ip, protocol, src_port, dst_port, payload):
+        key = (protocol, ip.src, src_port, ip.dst, dst_port)
         flow = self._flows.get(key)
         if flow is None:
             flow = self._flows[key] = {
@@ -304,18 +324,32 @@ class _StreamCollector:
         if flow["payload_preview"] is None and payload:
             flow["payload_preview"] = payload[:DPI_PREVIEW_BYTES].decode("utf-8", errors="ignore")
 
-    def _feed_udp(self, packet_number, packet):
+    def _feed_udp(self, packet_number, packet, ip):
         if packet.haslayer(DNS):
             # DNS gets its own, more specific event type - recording it as a
             # generic flow as well would double-count the same packet.
-            self._feed_dns(packet_number, packet)
+            self._feed_dns(packet_number, packet, ip)
             return
         payload = bytes(packet[UDP].payload)
-        self._record_flow(packet, "udp", int(packet[UDP].sport), int(packet[UDP].dport), payload)
+        self._record_flow(packet, ip, "udp", int(packet[UDP].sport), int(packet[UDP].dport), payload)
 
-    def _feed_dns(self, packet_number, packet):
+    def _feed_icmp(self, packet_number, packet, ip):
+        """ICMP recorded as a flow with no ports. Worth keeping rather than
+        discarding: ping sweeps, traceroute and ICMP tunnelling are all
+        ordinary findings, and a capture of pure ICMP previously produced no
+        events at all."""
+        self._record_flow(packet, ip, "icmp", None, None, b"")
+        flow = self._flows.get(("icmp", ip.src, None, ip.dst, None))
+        if flow is not None and flow["payload_preview"] is None:
+            icmp = packet[ICMP]
+            flow["payload_preview"] = f"ICMP type={icmp.type} code={icmp.code}"
+
+    def _feed_dns(self, packet_number, packet, ip):
         dns = packet[DNS]
-        if dns.qr != 0 or not dns.qd:
+        if not dns.qd:
+            return
+        if dns.qr != 0:
+            self._feed_dns_response(packet_number, packet, ip, dns)
             return
         qname = _dns_qname(dns)
         if not qname:
@@ -324,9 +358,9 @@ class _StreamCollector:
             self._event({
                 "event_type": "dns_query",
                 "timestamp": _packet_timestamp(packet),
-                "src_ip": packet[IP].src,
+                "src_ip": ip.src,
                 "src_port": int(packet[UDP].sport),
-                "dst_ip": packet[IP].dst,
+                "dst_ip": ip.dst,
                 "dst_port": int(packet[UDP].dport),
                 "protocol": "udp",
                 "domain": qname,
@@ -335,24 +369,69 @@ class _StreamCollector:
             })
         )
 
-    def _feed_tcp(self, packet_number, packet):
+    def _feed_dns_response(self, packet_number, packet, ip, dns):
+        """A DNS answer records what a name actually resolved to.
+
+        That mapping is the thing that lets an investigator connect a
+        domain seen in one piece of evidence to an IP seen in another, and
+        it only exists in the response - the query alone never carries it.
+        Dropping responses was the same class of gap as dropping HTTP
+        status codes.
+        """
+        qname = _dns_qname(dns)
+        if not qname:
+            return
+        addresses = []
+        try:
+            answers = dns.an if isinstance(dns.an, (list, tuple)) else ([dns.an] if dns.an else [])
+            for record in answers:
+                rdata = getattr(record, "rdata", None)
+                if isinstance(rdata, bytes):
+                    rdata = rdata.decode("utf-8", errors="ignore")
+                if rdata:
+                    addresses.append(str(rdata))
+        except Exception:
+            addresses = []
+
+        resolved = ", ".join(addresses) if addresses else "no answer records"
+        self._emitted.append(
+            self._event({
+                "event_type": "dns_response",
+                "timestamp": _packet_timestamp(packet),
+                "src_ip": ip.src,
+                "src_port": int(packet[UDP].sport),
+                "dst_ip": ip.dst,
+                "dst_port": int(packet[UDP].dport),
+                "protocol": "udp",
+                "domain": qname,
+                "message": f"DNS response: {qname} -> {resolved}",
+                "raw_event_reference": {
+                    "packet_number": packet_number,
+                    "query": qname,
+                    "answers": addresses,
+                    "rcode": int(getattr(dns, "rcode", 0) or 0),
+                },
+            })
+        )
+
+    def _feed_tcp(self, packet_number, packet, ip):
         src_port = int(packet[TCP].sport)
         dst_port = int(packet[TCP].dport)
         payload = _tcp_payload(packet)
-        self._record_flow(packet, "tcp", src_port, dst_port, payload)
+        self._record_flow(packet, ip, "tcp", src_port, dst_port, payload)
         if not payload:
             return
 
-        self._carve(packet_number, packet, src_port, dst_port, payload)
+        self._carve(packet_number, packet, ip, src_port, dst_port, payload)
 
         # Each branch returns: a payload that is an HTTP request or response
         # is not also a TLS ClientHello, and running the SNI parse over every
         # HTTP packet in a web capture is pure waste.
         if payload.startswith(HTTP_METHODS):
-            self._feed_http_request(packet_number, packet, src_port, dst_port, payload)
+            self._feed_http_request(packet_number, packet, ip, src_port, dst_port, payload)
             return
         if payload.startswith(HTTP_STATUS_PREFIX):
-            self._feed_http_response(packet_number, packet, src_port, dst_port, payload)
+            self._feed_http_response(packet_number, packet, ip, src_port, dst_port, payload)
             return
         sni = _tls_sni(payload)
         if sni:
@@ -360,9 +439,9 @@ class _StreamCollector:
                 self._event({
                     "event_type": "tls_handshake",
                     "timestamp": _packet_timestamp(packet),
-                    "src_ip": packet[IP].src,
+                    "src_ip": ip.src,
                     "src_port": src_port,
-                    "dst_ip": packet[IP].dst,
+                    "dst_ip": ip.dst,
                     "dst_port": dst_port,
                     "protocol": "tcp",
                     "domain": sni,
@@ -371,7 +450,7 @@ class _StreamCollector:
                 })
             )
 
-    def _feed_http_request(self, packet_number, packet, src_port, dst_port, payload):
+    def _feed_http_request(self, packet_number, packet, ip, src_port, dst_port, payload):
         head = payload[:2048]
         try:
             first_line = head.split(b"\r\n", 1)[0].decode("utf-8", errors="ignore")
@@ -402,9 +481,9 @@ class _StreamCollector:
             self._event({
                 "event_type": "http_request",
                 "timestamp": _packet_timestamp(packet),
-                "src_ip": packet[IP].src,
+                "src_ip": ip.src,
                 "src_port": src_port,
-                "dst_ip": packet[IP].dst,
+                "dst_ip": ip.dst,
                 "dst_port": dst_port,
                 "protocol": "tcp",
                 "domain": host.split(":")[0] if host else None,
@@ -419,11 +498,11 @@ class _StreamCollector:
             })
         )
         # Queue for pairing with the response that comes back on this flow.
-        self._pending.setdefault((packet[IP].src, src_port, packet[IP].dst, dst_port), deque()).append(
+        self._pending.setdefault((ip.src, src_port, ip.dst, dst_port), deque()).append(
             (method, url)
         )
 
-    def _feed_http_response(self, packet_number, packet, src_port, dst_port, payload):
+    def _feed_http_response(self, packet_number, packet, ip, src_port, dst_port, payload):
         first_line = payload[:512].split(b"\r\n", 1)[0].decode("utf-8", errors="ignore")
         parts = first_line.split(" ", 2)
         if len(parts) < 2 or not parts[1].isdigit():
@@ -435,16 +514,16 @@ class _StreamCollector:
         # Pairing is FIFO per flow, which is correct for ordinary keep-alive
         # traffic; genuinely pipelined requests could mis-pair, so the URL is
         # recorded as a reference rather than treated as certain.
-        queued = self._pending.get((packet[IP].dst, dst_port, packet[IP].src, src_port))
+        queued = self._pending.get((ip.dst, dst_port, ip.src, src_port))
         method, url = queued.popleft() if queued else (None, None)
 
         self._emitted.append(
             self._event({
                 "event_type": "http_response",
                 "timestamp": _packet_timestamp(packet),
-                "src_ip": packet[IP].src,
+                "src_ip": ip.src,
                 "src_port": src_port,
-                "dst_ip": packet[IP].dst,
+                "dst_ip": ip.dst,
                 "dst_port": dst_port,
                 "protocol": "tcp",
                 "url": url,
@@ -459,12 +538,12 @@ class _StreamCollector:
             })
         )
 
-    def _carve(self, packet_number, packet, src_port, dst_port, payload):
+    def _carve(self, packet_number, packet, ip, src_port, dst_port, payload):
         """Buffer TCP payloads only for streams whose opening bytes matched a
         file signature. Undecided streams hold at most SIGNATURE_SCAN_WINDOW
         bytes and streams that fail the check are dropped outright - without
         that, carving alone would buffer the entire capture in memory."""
-        stream_key = f"{packet[IP].src}:{src_port}->{packet[IP].dst}:{dst_port}"
+        stream_key = f"{ip.src}:{src_port}->{ip.dst}:{dst_port}"
         stream = self._streams.get(stream_key)
         if stream is None:
             stream = self._streams[stream_key] = {

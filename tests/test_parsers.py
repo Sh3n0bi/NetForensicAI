@@ -415,6 +415,117 @@ def test_truncated_capture_keeps_the_packets_read_so_far(tmp_path):
     assert [e for e in events if e.event_type == "http_request"]
 
 
+def test_ipv6_traffic_is_parsed(tmp_path):
+    # Regression: scapy's `IP` class is IPv4 only, so `haslayer(IP)` silently
+    # discarded every IPv6 packet - a capture of IPv6 web traffic parsed to
+    # zero connection and zero HTTP events. Found by testing against a
+    # corpus rather than the single IPv4 capture available.
+    from scapy.all import IPv6
+
+    packets = []
+    for i in range(5):
+        pkt = IPv6(src="2001:db8::5", dst="2001:db8::9") / TCP(sport=51000 + i, dport=80) / Raw(
+            load=f"GET /v6-{i} HTTP/1.1\r\nHost: v6.example\r\n\r\n".encode()
+        )
+        pkt.time = 1_700_006_000.0 + i
+        packets.append(pkt)
+    pcap_path = _write_pcap(tmp_path, "ipv6.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0030")
+
+    connections = [e for e in events if e.event_type == "network_connection"]
+    requests = [e for e in events if e.event_type == "http_request"]
+    assert len(connections) == 5
+    assert len(requests) == 5
+    assert connections[0].src_ip == "2001:db8::5"
+    assert requests[0].url == "http://v6.example/v6-0"
+
+
+def test_icmp_produces_a_flow_event(tmp_path):
+    # A pure-ICMP capture (ping sweep, traceroute, ICMP tunnelling) used to
+    # produce no events at all.
+    from scapy.all import ICMP
+
+    packets = []
+    for i in range(4):
+        pkt = IP(src="10.0.0.5", dst="10.0.0.9") / ICMP()
+        pkt.time = 1_700_007_000.0 + i
+        packets.append(pkt)
+    pcap_path = _write_pcap(tmp_path, "icmp.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0031")
+
+    connections = [e for e in events if e.event_type == "network_connection"]
+    assert len(connections) == 1  # one flow, four packets
+    assert connections[0].protocol == "icmp"
+    assert connections[0].src_port is None and connections[0].dst_port is None
+    assert connections[0].raw_event_reference["packet_count"] == 4
+
+
+def test_dns_response_records_what_the_name_resolved_to(tmp_path):
+    # The query alone never carries the answer; the resolved address is what
+    # links a domain in one piece of evidence to an IP in another.
+    from scapy.all import DNSRR
+
+    query = DNSQR(qname="evil-c2.example.com")
+    response = IP(src="8.8.8.8", dst="10.0.0.5") / UDP(sport=53, dport=40000) / DNS(
+        qr=1, qd=query, an=DNSRR(rrname="evil-c2.example.com", rdata="203.0.113.99")
+    )
+    response.time = 1_700_008_000.0
+    pcap_path = _write_pcap(tmp_path, "dnsresp.pcap", [response])
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0032")
+
+    responses = [e for e in events if e.event_type == "dns_response"]
+    assert len(responses) == 1
+    assert responses[0].domain == "evil-c2.example.com"
+    assert "203.0.113.99" in responses[0].raw_event_reference["answers"]
+
+
+def test_vlan_tagged_traffic_is_parsed(tmp_path):
+    from scapy.all import Dot1Q, Ether
+
+    pkt = Ether() / Dot1Q(vlan=100) / IP(src="10.1.0.5", dst="10.1.0.9") / TCP(sport=53000, dport=80) / Raw(
+        load=b"GET /vlan HTTP/1.1\r\nHost: vlan.example\r\n\r\n"
+    )
+    pkt.time = 1_700_009_000.0
+    pcap_path = _write_pcap(tmp_path, "vlan.pcap", [pkt])
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0033")
+
+    assert [e for e in events if e.event_type == "http_request"]
+
+
+def test_empty_capture_parses_to_no_events(tmp_path):
+    pcap_path = _write_pcap(tmp_path, "empty.pcap", [])
+
+    assert PcapParser().parse(pcap_path, evidence_id="EV-0034") == []
+
+
+def test_malformed_payloads_do_not_raise(tmp_path):
+    # Truncated TLS records, bogus HTTP lines and binary noise all occur in
+    # real captures; none of them may abort the parse.
+    payloads = [
+        b"\x16\x03\x01\x00",                      # truncated TLS record
+        b"\x16\x03\x01\xff\xff\x01\x00\xff\xff",  # TLS with impossible lengths
+        b"GET",                                    # truncated request line
+        b"GET \x00\xff\xfe / HTTP/9.9\r\n",       # binary in the request line
+        b"HTTP/1.1 abc NotANumber\r\n",           # non-numeric status code
+        b"\xff" * 200,                             # pure binary
+    ]
+    packets = []
+    for i, payload in enumerate(payloads):
+        pkt = IP(src="10.0.0.5", dst="10.0.0.9") / TCP(sport=54000 + i, dport=443) / Raw(load=payload)
+        pkt.time = 1_700_010_000.0 + i
+        packets.append(pkt)
+    pcap_path = _write_pcap(tmp_path, "malformed.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0035")
+
+    # Every flow is still recorded even though none of the payloads parse.
+    assert len([e for e in events if e.event_type == "network_connection"]) == len(payloads)
+
+
 def test_parse_missing_file_raises():
     with pytest.raises(PcapParseError):
         PcapParser().parse("does/not/exist.pcap", evidence_id="EV-0001")
