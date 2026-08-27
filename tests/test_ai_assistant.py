@@ -198,6 +198,81 @@ def test_model_override_is_passed_through():
     assert mock_client.messages.parse.call_args.kwargs["model"] == "claude-haiku-4-5-20251001"
 
 
+def test_transient_capacity_failure_is_retried_then_succeeds():
+    # Observed live: Gemini returned "currently experiencing high demand"
+    # while a sibling model answered fine. Overload is an ordinary
+    # condition, not a failed investigation.
+    events = [_event("EVT-0001")]
+    hyp = _valid_hypothesis([("EV-0001", "EVT-0001")])
+    calls = {"n": 0}
+
+    def flaky(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise AssistantError("AI request failed: This model is currently experiencing high demand.")
+        return _mock_client(hyp)
+
+    with patch("netforensicai.core.ai_assistant.RETRY_BACKOFF_SECONDS", 0):
+        with patch("anthropic.Anthropic", side_effect=flaky):
+            result = generate_hypothesis(events, api_key="fake-key")
+
+    assert calls["n"] == 2
+    assert result.claim == hyp.claim
+
+
+def test_transient_failure_gives_up_after_the_retry_limit():
+    from netforensicai.core.ai_assistant import MAX_TRANSIENT_RETRIES
+
+    calls = {"n": 0}
+
+    def always_overloaded(*_args, **_kwargs):
+        calls["n"] += 1
+        raise AssistantError("AI request failed: server overloaded, try again later")
+
+    with patch("netforensicai.core.ai_assistant.RETRY_BACKOFF_SECONDS", 0):
+        with patch("anthropic.Anthropic", side_effect=always_overloaded):
+            with pytest.raises(AssistantError, match="overloaded"):
+                generate_hypothesis([_event("EVT-0001")], api_key="fake-key")
+
+    assert calls["n"] == MAX_TRANSIENT_RETRIES + 1
+
+
+def test_credential_failure_is_not_retried():
+    # Retrying a bad key fails identically every time and only delays a
+    # clear message - the opposite of the overload case.
+    calls = {"n": 0}
+
+    def bad_credentials(*_args, **_kwargs):
+        calls["n"] += 1
+        raise TypeError("Could not resolve authentication method.")
+
+    with patch("netforensicai.core.ai_assistant.RETRY_BACKOFF_SECONDS", 0):
+        with patch("anthropic.Anthropic", side_effect=bad_credentials):
+            with pytest.raises(AssistantError, match="credentials"):
+                generate_hypothesis([_event("EVT-0001")], api_key=None)
+
+    assert calls["n"] == 1
+
+
+def test_retired_model_error_is_not_retried():
+    # A retired model 404s identically forever; the API's message names the
+    # replacement, so surfacing it immediately is the useful behavior.
+    calls = {"n": 0}
+
+    def retired(*_args, **_kwargs):
+        calls["n"] += 1
+        raise AssistantError(
+            "AI request failed: This model models/gemini-2.0-flash is no longer available."
+        )
+
+    with patch("netforensicai.core.ai_assistant.RETRY_BACKOFF_SECONDS", 0):
+        with patch("anthropic.Anthropic", side_effect=retired):
+            with pytest.raises(AssistantError, match="no longer available"):
+                generate_hypothesis([_event("EVT-0001")], api_key="fake-key")
+
+    assert calls["n"] == 1
+
+
 def test_unknown_provider_raises_assistant_error():
     with pytest.raises(AssistantError, match="Unknown AI provider"):
         generate_hypothesis([_event("EVT-0001")], provider="chatgpt-3000")

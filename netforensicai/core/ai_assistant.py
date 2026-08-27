@@ -49,14 +49,41 @@ logger = logging.getLogger(__name__)
 SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "gemini")
 
 # Sane defaults, not the only option - every entry point (CLI --model,
-# the web API's "model" field) lets the investigator override these, so a
-# provider renaming/retiring a model doesn't require a code change here.
+# the web API's "model" field) lets the investigator override these.
+#
+# The Gemini entry is pinned rather than using the gemini-flash-latest
+# alias, which is the opposite of the obvious choice and was settled by
+# testing both against the live API. A pinned model eventually retires
+# (gemini-2.0-flash, the previous default, now 404s) - but the API's
+# retirement error names its replacement, so the failure is loud and
+# actionable once. The rolling alias never retires but tracks whichever
+# model is newest and therefore most contended: it was returning "this
+# model is currently experiencing high demand" while the pinned model
+# answered in 8 seconds. A default that intermittently fails is worse
+# than one that fails once, clearly, years from now.
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5",
     "openai": "gpt-4o-mini",
     "ollama": "llama3.1",
-    "gemini": "gemini-2.0-flash",
+    "gemini": "gemini-3.6-flash",
 }
+
+# Substrings marking a failure that is worth retrying: provider capacity
+# and rate limiting, not bad credentials or a malformed request. Matched
+# against the message text because each SDK signals these differently and
+# this module deliberately does not depend on provider-specific classes.
+_TRANSIENT_MARKERS = (
+    "high demand",
+    "overloaded",
+    "rate limit",
+    "too many requests",
+    "temporarily unavailable",
+    "try again",
+    "503",
+    "429",
+)
+MAX_TRANSIENT_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 2.0
 
 MAX_TOKENS = 4096
 MAX_EVENTS = 50
@@ -176,14 +203,16 @@ def generate_hypothesis(events, provider="anthropic", api_key=None, model=None, 
         "[evidence_id/event_id]. Cite only these evidence_id/event_id pairs.\n\n" + event_lines
     )
 
-    if provider == "anthropic":
-        raw = _call_anthropic(SYSTEM_PROMPT, prompt, api_key, model)
-    elif provider == "openai":
-        raw = _call_openai(SYSTEM_PROMPT, prompt, api_key, model)
-    elif provider == "ollama":
-        raw = _call_ollama(SYSTEM_PROMPT, prompt, model, base_url or DEFAULT_OLLAMA_BASE_URL)
-    elif provider == "gemini":
-        raw = _call_gemini(SYSTEM_PROMPT, prompt, api_key, model)
+    def call_provider():
+        if provider == "anthropic":
+            return _call_anthropic(SYSTEM_PROMPT, prompt, api_key, model)
+        if provider == "openai":
+            return _call_openai(SYSTEM_PROMPT, prompt, api_key, model)
+        if provider == "ollama":
+            return _call_ollama(SYSTEM_PROMPT, prompt, model, base_url or DEFAULT_OLLAMA_BASE_URL)
+        return _call_gemini(SYSTEM_PROMPT, prompt, api_key, model)
+
+    raw = _with_transient_retry(call_provider, provider)
 
     try:
         hypothesis = Hypothesis.model_validate(raw)
@@ -199,6 +228,41 @@ def generate_hypothesis(events, provider="anthropic", api_key=None, model=None, 
             )
 
     return hypothesis
+
+
+def _is_transient(error):
+    message = str(error).lower()
+    return any(marker in message for marker in _TRANSIENT_MARKERS)
+
+
+def _with_transient_retry(call, provider):
+    """Retry a provider call when it fails for capacity reasons.
+
+    Provider overload and rate limiting are ordinary conditions, not
+    errors in the investigation - observed live, the Gemini flash alias
+    returned "currently experiencing high demand" while a sibling model
+    answered fine. Retrying those is the difference between a tool that
+    works and one that intermittently doesn't. Credential and
+    malformed-request failures are NOT retried: they will fail
+    identically every time, and retrying only delays a clear message.
+    """
+    import time
+
+    last_error = None
+    for attempt in range(MAX_TRANSIENT_RETRIES + 1):
+        try:
+            return call()
+        except AssistantError as e:
+            last_error = e
+            if not _is_transient(e) or attempt == MAX_TRANSIENT_RETRIES:
+                raise
+            delay = RETRY_BACKOFF_SECONDS * (2**attempt)
+            logger.info(
+                f"{provider} reported a temporary capacity problem; retrying in {delay:.0f}s "
+                f"(attempt {attempt + 2} of {MAX_TRANSIENT_RETRIES + 1})"
+            )
+            time.sleep(delay)
+    raise last_error
 
 
 def _call_anthropic(system_prompt, user_prompt, api_key, model):
@@ -309,6 +373,11 @@ def _call_gemini(system_prompt, user_prompt, api_key, model):
                 system_instruction=system_prompt,
                 response_mime_type="application/json",
                 response_schema=Hypothesis,
+                # This module never passes tools, so automatic function
+                # calling has nothing to do - but the SDK enables it by
+                # default and logs a warning on every single call, which
+                # lands in the investigator's terminal mid-investigation.
+                automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
             ),
         )
     except ValueError as e:

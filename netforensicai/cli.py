@@ -682,13 +682,41 @@ def investigate(
             typer.echo("\nAI Investigation Hypothesis (optional - requires investigator review):")
             from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
 
+            from netforensicai.core import audit
+
+            # An AI hypothesis sends case events to a third party and may
+            # shape what the investigator looks at next, so both the request
+            # and its outcome belong in the custody record - including the
+            # failures, which show an attempt was made.
+            def _record_ai(outcome, **extra):
+                audit.record(
+                    case_dir,
+                    audit.AI_HYPOTHESIS_REQUESTED,
+                    {
+                        "provider": ai_provider,
+                        "model": ai_model or "(provider default)",
+                        "entity_type": entity_type,
+                        "value": value,
+                        "events_sent": len(result.events),
+                        "outcome": outcome,
+                        **extra,
+                    },
+                )
+
             try:
                 hypothesis = generate_hypothesis(
                     result.events, provider=ai_provider, api_key=api_key, model=ai_model, base_url=ollama_url
                 )
             except AssistantError as e:
+                _record_ai("failed", error=str(e))
                 typer.echo(f"  Not available: {e}")
             else:
+                _record_ai(
+                    "returned",
+                    evidence_sufficient=hypothesis.evidence_sufficient,
+                    confidence=hypothesis.confidence,
+                    cited_events=[c.event_id for c in hypothesis.evidence],
+                )
                 if not hypothesis.evidence_sufficient:
                     typer.echo(f"  {hypothesis.claim}")
                     typer.echo(f"  Recommended validation: {hypothesis.recommended_validation}")
