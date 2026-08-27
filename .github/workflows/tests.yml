@@ -1,0 +1,36 @@
+name: Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor declared in pyproject.toml's requires-python;
+        # 3.12 is what this project has actually been developed/tested
+        # against day to day.
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install package with test-relevant extras
+        # dashboard (dash/plotly) is deliberately omitted: nothing in the
+        # test suite imports netforensicai.dashboard, so installing it
+        # here would just be extra time spent on an untested code path.
+        run: pip install -e ".[dev,pcap,intel,evtx,ai,web]"
+
+      - name: Run tests
+        run: pytest -q

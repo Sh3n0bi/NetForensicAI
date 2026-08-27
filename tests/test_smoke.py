@@ -1,10 +1,8 @@
-"""Packaging smoke tests for Step 1 (installable package restructure).
-
-Deliberately does not touch pcap/dashboard/VT code paths here: those
-depend on optional extras (pyshark+tshark, dash, requests) and get real
-coverage once the pcap parser is refactored to emit normalized events
-(migration step 5) with synthetic fixtures.
-"""
+"""Packaging smoke tests: is the package importable and does the CLI entry
+point actually run. Deliberately minimal and extras-free - pcap/EVTX/
+threat-intel/AI/web code paths each have their own dedicated test files
+(test_parsers.py, test_evtx.py, test_virustotal.py, test_ai_assistant.py,
+test_web.py) with the relevant optional extra installed."""
 
 import subprocess
 import sys
