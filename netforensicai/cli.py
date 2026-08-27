@@ -273,6 +273,8 @@ def analyze_case(
         typer.echo(f"No evidence recorded for {case.case_id}. Add some with `netforensic evidence add`.")
         return
 
+    from netforensicai.core.correlation import POSSIBLE_RELATIONSHIP, RELATED, correlate_case
+
     total_events = 0
     total_entities = 0
     with CaseStore(case_dir) as store:
@@ -285,7 +287,15 @@ def analyze_case(
             total_events += event_count
             total_entities += entity_count
 
+        # Correlation is case-wide (crosses evidence boundaries), so it
+        # always runs as a full rebuild over everything now in the store,
+        # not just what was parsed in this invocation.
+        links = correlate_case(store)
+        related_count = sum(1 for link in links if link["relationship_type"] == RELATED)
+        possible_count = sum(1 for link in links if link["relationship_type"] == POSSIBLE_RELATIONSHIP)
+
     typer.echo(f"Analysis complete for {case.case_id}: {total_events} events, {total_entities} distinct entities")
+    typer.echo(f"Correlation: {related_count} related, {possible_count} possible_relationship (time-proximity only)")
 
 
 @app.command()

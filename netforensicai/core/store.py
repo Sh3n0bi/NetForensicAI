@@ -60,6 +60,20 @@ def _column(field):
     return _DB_COLUMN.get(field, field)
 
 
+CORRELATION_FIELDS = [
+    "link_id",
+    "event_id_a",
+    "event_id_b",
+    "relationship_type",
+    "basis",
+    "shared_entity_id",
+    "shared_entity_type",
+    "shared_entity_value",
+    "time_delta_seconds",
+    "confidence",
+]
+
+
 class CaseStore:
     def __init__(self, case_dir):
         self.case_dir = Path(case_dir)
@@ -121,6 +135,22 @@ class CaseStore:
                 entity_id TEXT NOT NULL,
                 event_id TEXT NOT NULL,
                 field TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS correlation_links (
+                link_id TEXT PRIMARY KEY,
+                event_id_a TEXT NOT NULL,
+                event_id_b TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                basis TEXT NOT NULL,
+                shared_entity_id TEXT,
+                shared_entity_type TEXT,
+                shared_entity_value TEXT,
+                time_delta_seconds DOUBLE,
+                confidence TEXT NOT NULL
             )
             """
         )
@@ -225,3 +255,50 @@ class CaseStore:
 
     def count_entities(self):
         return self.conn.execute("SELECT count(*) FROM entities").fetchone()[0]
+
+    def entity_ids_by_event(self):
+        """Return {event_id: {entity_id: (entity_type, value)}} for every
+        entity_event link - used by the correlation engine's shared-entity
+        lookups without a query per pair."""
+        rows = self.conn.execute(
+            "SELECT ee.event_id, ee.entity_id, e.entity_type, e.value "
+            "FROM entity_events ee JOIN entities e ON e.entity_id = ee.entity_id"
+        ).fetchall()
+        result = {}
+        for event_id, entity_id, entity_type, value in rows:
+            result.setdefault(event_id, {})[entity_id] = (entity_type, value)
+        return result
+
+    # --- correlation links ---
+
+    def replace_correlation_links(self, links):
+        """Full rebuild: delete every existing correlation_links row, then
+        insert `links`. Correlation is always recomputed for the whole
+        case, not scoped to one evidence item - see core/correlation.py."""
+        self.conn.execute("DELETE FROM correlation_links")
+        for link in links:
+            columns_sql = ", ".join(CORRELATION_FIELDS)
+            placeholders = ", ".join(["?"] * len(CORRELATION_FIELDS))
+            values = [link[field] for field in CORRELATION_FIELDS]
+            self.conn.execute(
+                f"INSERT INTO correlation_links ({columns_sql}) VALUES ({placeholders})", values
+            )
+
+    def list_correlation_links(self, event_id=None, relationship_type=None):
+        conditions = []
+        params = []
+        if event_id:
+            conditions.append("(event_id_a = ? OR event_id_b = ?)")
+            params.extend([event_id, event_id])
+        if relationship_type:
+            conditions.append("relationship_type = ?")
+            params.append(relationship_type)
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        columns_sql = ", ".join(CORRELATION_FIELDS)
+        rows = self.conn.execute(
+            f"SELECT {columns_sql} FROM correlation_links {where_sql}", params
+        ).fetchall()
+        return [dict(zip(CORRELATION_FIELDS, row)) for row in rows]
+
+    def count_correlation_links(self):
+        return self.conn.execute("SELECT count(*) FROM correlation_links").fetchone()[0]
