@@ -69,6 +69,35 @@ _SUSPICIOUS_PORTS = {
 
 _EXECUTABLE_EXTENSIONS = {".exe", ".scr", ".bat", ".cmd", ".com", ".pif", ".vbs", ".js"}
 
+# Substrings that appear in the User-Agent of well-known offensive
+# security tools. Matched case-insensitively as substrings because these
+# tools append version strings ("gobuster/3.6", "sqlmap/1.8.3#stable").
+# Every one of these is dual-use - they are standard in authorized
+# penetration tests - so the description says "commonly used for", and
+# leaves the judgement to the investigator.
+_ATTACK_TOOL_USER_AGENTS = {
+    "gobuster": "directory/content brute-forcing",
+    "sqlmap": "automated SQL injection",
+    "nikto": "web vulnerability scanning",
+    "dirbuster": "directory brute-forcing",
+    "wfuzz": "web fuzzing",
+    "ffuf": "web fuzzing",
+    "nmap": "network/service scanning",
+    "masscan": "high-speed port scanning",
+    "nessus": "vulnerability scanning",
+    "burp": "web proxy/attack tooling",
+    "hydra": "credential brute-forcing",
+    "havij": "automated SQL injection",
+    "acunetix": "web vulnerability scanning",
+    "zgrab": "internet-wide scanning",
+}
+
+# An HTTP client requesting this many distinct URL paths from one host is
+# doing content discovery, not browsing. Set well above what a real page
+# load pulls in (a heavy page is tens of assets, not hundreds) so ordinary
+# traffic doesn't trip it.
+_SCAN_DISTINCT_PATH_THRESHOLD = 100
+
 _CREDENTIAL_ARTIFACT_PATTERNS = (
     "system32\\config\\sam",
     "system32/config/sam",
@@ -76,6 +105,17 @@ _CREDENTIAL_ARTIFACT_PATTERNS = (
     "lsass.dmp",
     "lsass.exe.dmp",
 )
+
+
+def _looks_like_extension(part):
+    """Whether a dot-separated fragment is plausibly a real file extension.
+
+    Guards against dots that aren't extension separators at all. Found via a
+    real capture: the pcap parser names carved files after the TCP stream
+    ("73.124.22.98_80_to_111.224.250.131_43248.exe"), and the IP octets made
+    every one of them look like a disguised double-extension executable.
+    """
+    return 1 <= len(part) <= 5 and part.isalnum() and not part.isdigit()
 
 
 def _double_extension_match(file_name):
@@ -89,7 +129,11 @@ def _double_extension_match(file_name):
     if len(parts) != 3:
         return False
     _stem, first_ext, second_ext = parts
-    return f".{second_ext}" in _EXECUTABLE_EXTENSIONS and first_ext not in ("", None)
+    # BOTH fragments must look like real extensions. The masquerade this
+    # rule targets is "document extension followed by executable one"
+    # (invoice.pdf.exe) - if the first fragment isn't a plausible
+    # extension, the dots are just part of the name.
+    return f".{second_ext}" in _EXECUTABLE_EXTENSIONS and _looks_like_extension(first_ext)
 
 
 def _rules_for_event(event):
@@ -136,6 +180,66 @@ def _rules_for_event(event):
             break
 
 
+def _aggregate_rules(events):
+    """Rules that only make sense across many events, yielding
+    (rule_id, rule_name, severity, description, representative_event).
+
+    Separate from _rules_for_event because emitting one detection per
+    matching packet is actively harmful here: a real directory brute-force
+    is tens of thousands of requests, and reporting each one individually
+    buries the single fact the investigator needs ("this host scanned that
+    host") under 40,000 identical rows. These summarize instead, citing one
+    representative event plus the totals.
+    """
+    tool_hits = {}  # (src_ip, tool) -> [count, first_event, sample_ua]
+    path_probes = {}  # (src_ip, dst_ip) -> [set_of_paths, first_event, count]
+
+    for event in events:
+        if event.event_type != "http_request":
+            continue
+        raw = event.raw_event_reference or {}
+        user_agent = raw.get("user_agent") or ""
+        lowered_ua = user_agent.lower()
+        for tool, purpose in _ATTACK_TOOL_USER_AGENTS.items():
+            if tool in lowered_ua:
+                entry = tool_hits.setdefault((event.src_ip, tool), [0, event, user_agent, purpose])
+                entry[0] += 1
+                break
+
+        if event.url:
+            entry = path_probes.setdefault((event.src_ip, event.dst_ip), [set(), event, 0])
+            entry[0].add(event.url)
+            entry[2] += 1
+
+    for (src_ip, tool), (count, first_event, user_agent, purpose) in sorted(
+        tool_hits.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])
+    ):
+        yield (
+            "ATTACK-TOOL-USER-AGENT",
+            "Offensive security tool identified by User-Agent",
+            "high",
+            f"{count} HTTP request(s) from {src_ip} carry a User-Agent identifying '{tool}', a tool "
+            f"commonly used for {purpose} ({user_agent}). These tools are also used in authorized "
+            f"testing - confirm whether this activity was sanctioned.",
+            first_event,
+        )
+
+    for (src_ip, dst_ip), (paths, first_event, count) in sorted(
+        path_probes.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))
+    ):
+        if len(paths) < _SCAN_DISTINCT_PATH_THRESHOLD:
+            continue
+        yield (
+            "HTTP-PATH-ENUMERATION",
+            "High-volume distinct URL requests (possible content discovery)",
+            "high",
+            f"{src_ip} requested {len(paths)} distinct URL paths from {dst_ip} across {count} "
+            f"request(s) - a volume consistent with automated content discovery or directory "
+            f"brute-forcing rather than ordinary browsing.",
+            first_event,
+        )
+
+
 def scan_case(store):
     """Recompute every detection for the whole case (all events, not just
     newly parsed ones - same reasoning as correlation) and persist via
@@ -143,8 +247,9 @@ def scan_case(store):
     from datetime import datetime, timezone
 
     detected_at = datetime.now(timezone.utc)
+    events = store.all_events()
     detections = []
-    for event in store.all_events():
+    for event in events:
         for rule_id, rule_name, severity, description in _rules_for_event(event):
             detections.append(
                 {
@@ -158,6 +263,22 @@ def scan_case(store):
                     "detected_at": detected_at,
                 }
             )
+
+    for rule_id, rule_name, severity, description, event in _aggregate_rules(events):
+        detections.append(
+            {
+                # Keyed by the representative event so re-running analyze on
+                # unchanged evidence produces the same detection_id.
+                "detection_id": f"DET-{rule_id}-{event.event_id}",
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "severity": severity,
+                "event_id": event.event_id,
+                "evidence_id": event.evidence_id,
+                "description": description,
+                "detected_at": detected_at,
+            }
+        )
 
     store.replace_detections(detections)
     return detections

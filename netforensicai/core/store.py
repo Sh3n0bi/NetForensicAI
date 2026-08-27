@@ -77,6 +77,34 @@ def _column(field):
     return _DB_COLUMN.get(field, field)
 
 
+# Rows per INSERT statement for bulk loads. DuckDB's executemany still
+# executes the prepared statement once per row - measured at ~4ms/row, or
+# over 3 minutes for the 47k events a single 30 MB pcap produces. Folding
+# many rows into one multi-row VALUES clause collapses that to a handful of
+# statements. 500 keeps the parameter count per statement well bounded
+# (500 x 26 columns for events) while capturing nearly all of the win.
+BULK_INSERT_CHUNK_ROWS = 500
+
+
+def _bulk_insert(conn, table, columns, rows, conflict_clause=""):
+    """INSERT many rows using chunked multi-row VALUES clauses.
+
+    Deliberately not executemany (too slow, see BULK_INSERT_CHUNK_ROWS) and
+    not the pandas/Arrow bulk path (that would make pandas a hard dependency
+    of the core install, when today it only arrives with the [pcap] extra).
+    """
+    rows = list(rows)
+    if not rows:
+        return
+    columns_sql = ", ".join(columns)
+    row_placeholder = "(" + ", ".join(["?"] * len(columns)) + ")"
+    for start in range(0, len(rows), BULK_INSERT_CHUNK_ROWS):
+        chunk = rows[start : start + BULK_INSERT_CHUNK_ROWS]
+        values_sql = ", ".join([row_placeholder] * len(chunk))
+        flat = [value for row in chunk for value in row]
+        conn.execute(f"INSERT INTO {table} ({columns_sql}) VALUES {values_sql}{conflict_clause}", flat)
+
+
 CORRELATION_FIELDS = [
     "link_id",
     "event_id_a",
@@ -170,12 +198,19 @@ class CaseStore:
             )
             """
         )
+        # PRIMARY KEY, not a bare table: link_entity_event() used to run a
+        # SELECT before every INSERT to avoid duplicates, and with no index
+        # each of those was a full scan of a table that grows to hundreds of
+        # thousands of rows on a real capture - quadratic, and the reason a
+        # 30 MB pcap took over 15 minutes to ingest. The key lets DuckDB
+        # dedupe with ON CONFLICT in constant time instead.
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS entity_events (
                 entity_id TEXT NOT NULL,
                 event_id TEXT NOT NULL,
-                field TEXT NOT NULL
+                field TEXT NOT NULL,
+                PRIMARY KEY (entity_id, event_id, field)
             )
             """
         )
@@ -230,7 +265,8 @@ class CaseStore:
                 technique_id TEXT NOT NULL,
                 event_id TEXT NOT NULL,
                 evidence_id TEXT NOT NULL,
-                basis TEXT NOT NULL
+                basis TEXT NOT NULL,
+                PRIMARY KEY (technique_id, event_id)
             )
             """
         )
@@ -269,10 +305,9 @@ class CaseStore:
             [evidence_id],
         )
         self.conn.execute("DELETE FROM events WHERE evidence_id = ?", [evidence_id])
-        for event in events:
-            self._insert_event(event)
+        self.insert_events(events)
 
-    def _insert_event(self, event):
+    def _event_row(self, event):
         values = []
         for field in EVENT_FIELDS:
             if field == "raw_event_reference":
@@ -280,9 +315,23 @@ class CaseStore:
             else:
                 value = getattr(event, field)
             values.append(value)
-        columns_sql = ", ".join(_column(f) for f in EVENT_FIELDS)
-        placeholders = ", ".join(["?"] * len(EVENT_FIELDS))
-        self.conn.execute(f"INSERT INTO events ({columns_sql}) VALUES ({placeholders})", values)
+        return values
+
+    def insert_events(self, events):
+        """Insert many events in one round trip. A real pcap yields tens of
+        thousands of events, and DuckDB is an analytical engine - one
+        INSERT statement per row is dramatically slower than a single
+        executemany, so batching here is a correctness-of-experience issue,
+        not micro-optimization."""
+        _bulk_insert(
+            self.conn,
+            "events",
+            [_column(f) for f in EVENT_FIELDS],
+            [self._event_row(event) for event in events],
+        )
+
+    def _insert_event(self, event):
+        self.insert_events([event])
 
     def _row_to_event(self, row):
         data = dict(zip(EVENT_FIELDS, row))
@@ -319,15 +368,40 @@ class CaseStore:
         )
 
     def link_entity_event(self, entity_id, event_id, field):
-        exists = self.conn.execute(
-            "SELECT 1 FROM entity_events WHERE entity_id = ? AND event_id = ? AND field = ?",
-            [entity_id, event_id, field],
-        ).fetchone()
-        if not exists:
-            self.conn.execute(
-                "INSERT INTO entity_events (entity_id, event_id, field) VALUES (?, ?, ?)",
-                [entity_id, event_id, field],
-            )
+        self.link_entity_events([(entity_id, event_id, field)])
+
+    def upsert_entities(self, rows):
+        """Batch form of upsert_entity. `rows` is an iterable of
+        (entity_id, entity_type, value)."""
+        # Collapse duplicate entity_ids within the batch for the same reason
+        # link_entity_events() does - see its docstring.
+        deduped = {row[0]: row for row in rows}
+        _bulk_insert(
+            self.conn,
+            "entities",
+            ["entity_id", "entity_type", "value"],
+            deduped.values(),
+            conflict_clause=" ON CONFLICT (entity_id) DO NOTHING",
+        )
+
+    def link_entity_events(self, rows):
+        """Batch form of link_entity_event. `rows` is an iterable of
+        (entity_id, event_id, field).
+
+        Dedupes via the table's primary key rather than a SELECT-then-INSERT
+        per row - see the entity_events schema comment for why that mattered.
+        Duplicates *within* the batch are collapsed first: ON CONFLICT
+        resolves against rows already committed, not against another row in
+        the same statement, so a repeated key inside one executemany would
+        still raise.
+        """
+        _bulk_insert(
+            self.conn,
+            "entity_events",
+            ["entity_id", "event_id", "field"],
+            dict.fromkeys(rows),
+            conflict_clause=" ON CONFLICT (entity_id, event_id, field) DO NOTHING",
+        )
 
     def list_entities(self, entity_type=None):
         if entity_type:
@@ -410,13 +484,14 @@ class CaseStore:
         insert `links`. Correlation is always recomputed for the whole
         case, not scoped to one evidence item - see core/correlation.py."""
         self.conn.execute("DELETE FROM correlation_links")
-        for link in links:
-            columns_sql = ", ".join(CORRELATION_FIELDS)
-            placeholders = ", ".join(["?"] * len(CORRELATION_FIELDS))
-            values = [link[field] for field in CORRELATION_FIELDS]
-            self.conn.execute(
-                f"INSERT INTO correlation_links ({columns_sql}) VALUES ({placeholders})", values
-            )
+        # Bulk path, not a statement per row: correlation can legitimately
+        # produce tens of thousands of links (DEFAULT_MAX_PAIRS is 50k).
+        _bulk_insert(
+            self.conn,
+            "correlation_links",
+            CORRELATION_FIELDS,
+            [[link[field] for field in CORRELATION_FIELDS] for link in links],
+        )
 
     def list_correlation_links(self, event_id=None, relationship_type=None):
         conditions = []
@@ -501,15 +576,13 @@ class CaseStore:
         )
 
     def link_technique_event(self, technique_id, event_id, evidence_id, basis):
-        exists = self.conn.execute(
-            "SELECT 1 FROM attack_technique_events WHERE technique_id = ? AND event_id = ?",
-            [technique_id, event_id],
-        ).fetchone()
-        if not exists:
-            self.conn.execute(
-                "INSERT INTO attack_technique_events (technique_id, event_id, evidence_id, basis) VALUES (?, ?, ?, ?)",
-                [technique_id, event_id, evidence_id, basis],
-            )
+        # ON CONFLICT against the primary key rather than SELECT-then-INSERT,
+        # for the same scaling reason as link_entity_events().
+        self.conn.execute(
+            "INSERT INTO attack_technique_events (technique_id, event_id, evidence_id, basis) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT (technique_id, event_id) DO NOTHING",
+            [technique_id, event_id, evidence_id, basis],
+        )
 
     def list_techniques(self):
         rows = self.conn.execute(
@@ -562,11 +635,12 @@ class CaseStore:
         across runs, unlike an ATT&CK mapping, so there's nothing an
         upsert would need to protect."""
         self.conn.execute("DELETE FROM detections")
-        for detection in detections:
-            columns_sql = ", ".join(DETECTION_FIELDS)
-            placeholders = ", ".join(["?"] * len(DETECTION_FIELDS))
-            values = [detection[field] for field in DETECTION_FIELDS]
-            self.conn.execute(f"INSERT INTO detections ({columns_sql}) VALUES ({placeholders})", values)
+        _bulk_insert(
+            self.conn,
+            "detections",
+            DETECTION_FIELDS,
+            [[d[field] for field in DETECTION_FIELDS] for d in detections],
+        )
 
     def list_detections(self, severity=None):
         conditions = []

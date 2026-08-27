@@ -246,9 +246,18 @@ def _http_request_events(packets, evidence_id, sequence):
             continue
 
         host = None
+        user_agent = None
         for line in head.split(b"\r\n")[1:]:
-            if line.lower().startswith(b"host:"):
+            lowered = line.lower()
+            if host is None and lowered.startswith(b"host:"):
                 host = line[5:].strip().decode("utf-8", errors="ignore")
+            elif user_agent is None and lowered.startswith(b"user-agent:"):
+                # Kept because it is one of the highest-signal fields in a
+                # web capture: scanners and exploitation tools routinely
+                # identify themselves here (see detections.py's
+                # ATTACK-TOOL-USER-AGENT rule).
+                user_agent = line[11:].strip().decode("utf-8", errors="ignore")[:200]
+            if host is not None and user_agent is not None:
                 break
 
         # A request target is usually a path; combine it with Host to form
@@ -273,7 +282,12 @@ def _http_request_events(packets, evidence_id, sequence):
                 domain=host.split(":")[0] if host else None,
                 url=url,
                 message=f"HTTP {method} {url}",
-                raw_event_reference={"packet_number": packet_number, "method": method, "host": host},
+                raw_event_reference={
+                    "packet_number": packet_number,
+                    "method": method,
+                    "host": host,
+                    "user_agent": user_agent,
+                },
             )
         )
     return events

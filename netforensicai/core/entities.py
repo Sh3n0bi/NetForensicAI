@@ -70,10 +70,17 @@ def extract_entities(event):
 def extract_and_store(store, events):
     """Extract entities from `events` and persist entities + entity_events
     links into `store`. Returns the number of distinct entities touched."""
-    seen_entity_ids = set()
+    entity_rows = {}
+    link_rows = []
     for event in events:
         for entity_id, entity_type, value, field in extract_entities(event):
-            store.upsert_entity(entity_id, entity_type, value)
-            store.link_entity_event(entity_id, event.event_id, field)
-            seen_entity_ids.add(entity_id)
-    return len(seen_entity_ids)
+            # Dedupe entities in memory first: a busy capture references the
+            # same IP tens of thousands of times, so collapsing here keeps
+            # the batch handed to the store proportional to the number of
+            # distinct entities rather than total references.
+            entity_rows.setdefault(entity_id, (entity_id, entity_type, value))
+            link_rows.append((entity_id, event.event_id, field))
+
+    store.upsert_entities(entity_rows.values())
+    store.link_entity_events(link_rows)
+    return len(entity_rows)
