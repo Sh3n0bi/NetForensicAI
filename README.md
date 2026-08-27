@@ -33,7 +33,7 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 - **Investigator-owned findings** — Open/Investigating/Confirmed/Rejected/False Positive/Resolved, each citing specific evidence+event pairs; create/update from the CLI or the web UI, both calling the same `FindingManager`
 - **MITRE ATT&CK technique mapping** — deterministic, rule-based, evidence-cited suggestions (never an automated "this happened" claim), each with an investigator-settable status: potential/confirmed/rejected
 - **Threat intelligence** — optional, explicit, cached VirusTotal lookups for IPs and file hashes (never automatic, never sent evidence content)
-- **AI investigation assistant** *(optional)* — a hedged hypothesis from Claude, constrained to an evidence contract that makes fabricated citations structurally impossible (see below)
+- **AI investigation assistant** *(optional)* — a hedged hypothesis from your choice of Anthropic, OpenAI, a local Ollama server, or Google Gemini, constrained to an evidence contract that makes fabricated citations structurally impossible regardless of provider (see below)
 - **Reports** in Markdown, JSON, and HTML, every section traceable to evidence
 - **Local web UI** *(optional)* — case overview, evidence (including upload), timeline, entity graph, investigate panel, findings, reports, and live capture, all read from the same case data the CLI uses
 - **Live capture** *(optional)* — rotating pcap capture that auto-ingests each finished window through the exact same evidence pipeline as a manually added file
@@ -101,13 +101,15 @@ Extras, all optional beyond the CLI/case-management core:
 | `pcap` | scapy, pandas, scikit-learn | pcap parsing, live capture |
 | `intel` | requests | VirusTotal lookups |
 | `evtx` | python-evtx | Windows Event Log / Sysmon parsing |
-| `ai` | anthropic | The AI investigation assistant |
+| `ai` | anthropic, requests | The AI investigation assistant — Anthropic and Ollama providers (Ollama needs no extra package beyond `requests`, since it's just a local HTTP call) |
+| `ai-openai` | openai | The AI assistant's OpenAI provider |
+| `ai-gemini` | google-genai | The AI assistant's Google Gemini provider |
 | `web` | flask | The local web dashboard |
 | `dashboard` | dash, plotly | The legacy `netforensic scan` visualization |
 | `dev` | pytest | Running the test suite |
 | `build` | build, twine | Building/checking a release package (maintainers) |
 
-Nothing outside `pcap`/`evtx`/`intel`/`ai` reaches the network, and none of those do so unless you explicitly invoke the feature that needs them (pcap/EVTX parsing itself is fully offline; only VT lookups and the AI assistant make real network calls, and only when asked).
+Nothing outside `pcap`/`evtx`/`intel`/`ai`/`ai-openai`/`ai-gemini` reaches the network, and none of those do so unless you explicitly invoke the feature that needs them (pcap/EVTX parsing itself is fully offline; only VT lookups and the AI assistant make real network calls, and only when asked — Ollama's calls stay on your local machine).
 
 ## Quick Start
 
@@ -177,12 +179,16 @@ On ingest, the original file is copied (never opened for writing) into `cases/<I
 
 ## AI Safety Model
 
-The AI assistant (`netforensic investigate --ai`, optional, requires your own Anthropic API key) is deliberately the last, optional step in the pipeline, not a replacement for any step before it:
+The AI assistant (`netforensic investigate --ai`, or the "AI Investigation Hypothesis" panel in the web UI, optional) is deliberately the last, optional step in the pipeline, not a replacement for any step before it. It supports four interchangeable providers — Anthropic, OpenAI, a local Ollama server, or Google Gemini — chosen per-request with `--ai-provider` (CLI) or the provider dropdown (web UI); pick whichever you have credentials for, or Ollama for a fully local/offline model with no API key or external network call at all. ("Codex" isn't a separate API today — OpenAI's current chat-completions models, which the `openai` provider already uses, cover code-focused analysis; there's no separate provider to add for it.)
+
+Every safety property below is enforced identically no matter which provider answered — none of it is delegated to, or trusted from, the provider's own output:
 
 - It only ever sees already-normalized `Event` data for the events you selected by investigating an entity — never raw evidence file contents, and never anything outside that entity's scope
 - Its response is a structured schema, not free text: `evidence_sufficient`, `claim` (phrased as a possibility, never a certainty), `observed_evidence` (fact, kept separate from interpretation), `confidence`, `alternative_explanation`, `recommended_validation`, and `evidence` (the specific evidence_id/event_id pairs it's citing)
-- **Every citation is checked against the events actually sent, after the response comes back.** A hypothesis citing anything not present in that set is rejected outright and never shown — this is enforced in code, not left to the prompt
+- **Every citation is checked against the events actually sent, after the response comes back, in one code path shared by every provider.** A hypothesis citing anything not present in that set is rejected outright and never shown — this is enforced in code, not left to the prompt
 - It never writes a Finding. Turning a hypothesis into a Finding is always an explicit `netforensic finding create` by the investigator
+
+Each provider needs its own credentials and (except Ollama) its own optional package — see the extras table under [Installation](#installation). Model choice defaults to a sane per-provider default but is always overridable (`--model`, or the model field in the web UI) since model names/availability change over time.
 
 ## Limitations
 

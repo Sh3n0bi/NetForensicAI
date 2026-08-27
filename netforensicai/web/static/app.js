@@ -461,7 +461,7 @@ async function renderEntities(app, c, focusEntityId) {
       const result = await apiGet(
         `/cases/${c.case_id}/investigate?type=${encodeURIComponent(item.entity_type)}&value=${encodeURIComponent(item.value)}`
       );
-      renderInvestigatePanel(panel, c, result);
+      await renderInvestigatePanel(panel, c, result);
     } catch (e) {
       panel.innerHTML = "";
       panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
@@ -484,7 +484,7 @@ async function renderEntities(app, c, focusEntityId) {
   }
 }
 
-function renderInvestigatePanel(panel, c, result) {
+async function renderInvestigatePanel(panel, c, result) {
   panel.innerHTML = "";
   panel.appendChild(el("h3", { text: "Investigation" }));
   panel.innerHTML += `
@@ -552,20 +552,60 @@ function renderInvestigatePanel(panel, c, result) {
   const aiBox = el("div");
   aiBox.appendChild(el("div", { class: "empty", text: "Not requested - this calls an external AI service (optional)." }));
   panel.appendChild(aiBox);
-  const aiKeyInput = el("input", {
-    placeholder: "Anthropic API key (optional if ANTHROPIC_API_KEY set server-side)",
+
+  let providerInfo = { providers: ["anthropic", "openai", "ollama", "gemini"], default_models: {} };
+  try {
+    providerInfo = await apiGet("/ai-providers");
+  } catch (e) {
+    /* falls back to the hardcoded list above if the endpoint can't be reached */
+  }
+  const PROVIDER_KEY_HINTS = {
+    anthropic: "Anthropic API key (optional if ANTHROPIC_API_KEY set server-side)",
+    openai: "OpenAI API key (optional if OPENAI_API_KEY set server-side)",
+    gemini: "Gemini API key (optional if GEMINI_API_KEY set server-side)",
+    ollama: "Not needed - Ollama runs locally",
+  };
+
+  const aiRow = el("div", { class: "filter-bar" });
+  const aiProviderSelect = selectEl(providerInfo.providers, "anthropic");
+  const aiKeyInput = el("input", { placeholder: PROVIDER_KEY_HINTS.anthropic, style: "min-width:260px;" });
+  aiRow.appendChild(aiProviderSelect);
+  aiRow.appendChild(aiKeyInput);
+  panel.appendChild(aiRow);
+  const aiModelInput = el("input", {
+    placeholder: `Model override (default: ${providerInfo.default_models.anthropic || "provider default"})`,
     style: "width:100%; margin-bottom:6px;",
   });
+  const aiBaseUrlInput = el("input", {
+    placeholder: "Ollama server URL (default http://localhost:11434)",
+    style: "width:100%; margin-bottom:6px; display:none;",
+  });
+  panel.appendChild(aiModelInput);
+  panel.appendChild(aiBaseUrlInput);
   const aiBtn = el("button", { class: "secondary", text: "Ask AI Assistant" });
-  panel.appendChild(aiKeyInput);
   panel.appendChild(aiBtn);
+
+  aiProviderSelect.addEventListener("change", () => {
+    const p = aiProviderSelect.value;
+    aiKeyInput.placeholder = PROVIDER_KEY_HINTS[p] || "API key";
+    aiKeyInput.style.display = p === "ollama" ? "none" : "";
+    aiBaseUrlInput.style.display = p === "ollama" ? "" : "none";
+    aiModelInput.placeholder = `Model override (default: ${providerInfo.default_models[p] || "provider default"})`;
+  });
+
   aiBtn.addEventListener("click", async () => {
     aiBtn.disabled = true;
     aiBox.innerHTML = "";
     aiBox.appendChild(el("div", { class: "loading", text: "Asking..." }));
     try {
-      const body = { entity_type: result.entity.entity_type, value: result.entity.value };
+      const body = {
+        entity_type: result.entity.entity_type,
+        value: result.entity.value,
+        provider: aiProviderSelect.value,
+      };
       if (aiKeyInput.value.trim()) body.api_key = aiKeyInput.value.trim();
+      if (aiModelInput.value.trim()) body.model = aiModelInput.value.trim();
+      if (aiBaseUrlInput.value.trim()) body.base_url = aiBaseUrlInput.value.trim();
       const h = await apiPost(`/cases/${c.case_id}/ai-hypothesis`, body);
       aiBox.innerHTML = "";
       const box = el("div", { class: "hypothesis-box" });

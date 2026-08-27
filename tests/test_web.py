@@ -457,6 +457,72 @@ def test_ai_hypothesis_endpoint_reports_assistant_error(prepared_case):
     assert "credentials" in response.get_json()["error"]
 
 
+def test_ai_providers_endpoint_lists_all_providers():
+    from netforensicai.core.ai_assistant import DEFAULT_MODELS, SUPPORTED_PROVIDERS
+
+    app = create_app("cases")
+    client = app.test_client()
+
+    response = client.get("/api/ai-providers")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert set(data["providers"]) == set(SUPPORTED_PROVIDERS)
+    assert data["default_models"] == DEFAULT_MODELS
+
+
+def test_ai_hypothesis_endpoint_passes_provider_and_model_through(prepared_case):
+    # Ollama needs no SDK (just `requests`, already a hard dependency of
+    # the test env via other extras), so this exercises the web layer's
+    # provider/model/base_url passthrough without needing an optional
+    # provider package installed.
+    client, case, _cases_dir = prepared_case
+    from netforensicai.core.ai_assistant import EvidenceCitation, Hypothesis
+
+    hypothesis = Hypothesis(
+        evidence_sufficient=True,
+        claim="May represent routine authentication.",
+        assessment="Likely benign",
+        observed_evidence=["User jdoe authenticated."],
+        confidence="low",
+        alternative_explanation="Normal login.",
+        recommended_validation="Confirm work hours.",
+        evidence=[],
+    )
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"message": {"content": hypothesis.model_dump_json()}}
+    mock_response.raise_for_status.return_value = None
+
+    with patch("requests.post", return_value=mock_response) as mock_post:
+        response = client.post(
+            f"/api/cases/{case.case_id}/ai-hypothesis",
+            json={
+                "entity_type": "ip_address",
+                "value": "192.168.1.10",
+                "provider": "ollama",
+                "model": "custom-model",
+                "base_url": "http://192.168.1.50:11434",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.get_json()["claim"] == "May represent routine authentication."
+    assert mock_post.call_args.args[0] == "http://192.168.1.50:11434/api/chat"
+    assert mock_post.call_args.kwargs["json"]["model"] == "custom-model"
+
+
+def test_ai_hypothesis_endpoint_rejects_unknown_provider(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(
+        f"/api/cases/{case.case_id}/ai-hypothesis",
+        json={"entity_type": "ip_address", "value": "192.168.1.10", "provider": "chatgpt-3000"},
+    )
+
+    assert response.status_code == 502
+    assert "Unknown AI provider" in response.get_json()["error"]
+
+
 # --- evidence upload + analyze ---
 
 

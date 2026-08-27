@@ -42,6 +42,13 @@ intel = [
 ]
 ai = [
     "anthropic>=1.0,<2.0",
+    "requests>=2.31,<3.0",
+]
+ai-openai = [
+    "openai>=1.40,<4.0",
+]
+ai-gemini = [
+    "google-genai>=1.0,<2.0",
 ]
 evtx = [
     "python-evtx>=0.8,<0.9",

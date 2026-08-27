@@ -187,3 +187,216 @@ def test_prompt_includes_normalized_fields_and_request_uses_expected_model():
     assert "cmd /c whoami" in prompt_text
     assert call_kwargs["output_format"] is Hypothesis
     assert call_kwargs["model"] == "claude-opus-5"
+
+
+def test_model_override_is_passed_through():
+    hyp = _valid_hypothesis([])
+    mock_client = _mock_client(hyp)
+    with patch("anthropic.Anthropic", return_value=mock_client):
+        generate_hypothesis([_event("EVT-0001")], api_key="fake-key", model="claude-haiku-4-5-20251001")
+
+    assert mock_client.messages.parse.call_args.kwargs["model"] == "claude-haiku-4-5-20251001"
+
+
+def test_unknown_provider_raises_assistant_error():
+    with pytest.raises(AssistantError, match="Unknown AI provider"):
+        generate_hypothesis([_event("EVT-0001")], provider="chatgpt-3000")
+
+
+# --- OpenAI provider ---
+
+
+def _mock_openai_client(hypothesis, refusal=None):
+    mock_message = MagicMock()
+    mock_message.parsed = hypothesis
+    mock_message.refusal = refusal
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock(message=mock_message)]
+    mock_client = MagicMock()
+    mock_client.beta.chat.completions.parse.return_value = mock_response
+    return mock_client
+
+
+def test_openai_provider_returns_hypothesis_when_citations_valid():
+    pytest.importorskip("openai")
+    events = [_event("EVT-0001")]
+    hyp = _valid_hypothesis([("EV-0001", "EVT-0001")])
+
+    with patch("openai.OpenAI", return_value=_mock_openai_client(hyp)):
+        result = generate_hypothesis(events, provider="openai", api_key="fake-key")
+
+    assert result.claim == hyp.claim
+
+
+def test_openai_provider_rejects_unknown_citation():
+    pytest.importorskip("openai")
+    events = [_event("EVT-0001")]
+    hyp = _valid_hypothesis([("EV-0001", "EVT-9999")])
+
+    with patch("openai.OpenAI", return_value=_mock_openai_client(hyp)):
+        with pytest.raises(AssistantError, match="not present"):
+            generate_hypothesis(events, provider="openai", api_key="fake-key")
+
+
+def test_openai_provider_uses_default_model_and_schema():
+    pytest.importorskip("openai")
+    hyp = _valid_hypothesis([])
+    mock_client = _mock_openai_client(hyp)
+    with patch("openai.OpenAI", return_value=mock_client):
+        generate_hypothesis([_event("EVT-0001")], provider="openai", api_key="fake-key")
+
+    call_kwargs = mock_client.beta.chat.completions.parse.call_args.kwargs
+    assert call_kwargs["model"] == "gpt-4o-mini"
+    assert call_kwargs["response_format"] is Hypothesis
+
+
+def test_openai_provider_no_parsed_output_raises():
+    pytest.importorskip("openai")
+    with patch("openai.OpenAI", return_value=_mock_openai_client(None, refusal="policy violation")):
+        with pytest.raises(AssistantError, match="policy violation"):
+            generate_hypothesis([_event("EVT-0001")], provider="openai", api_key="fake-key")
+
+
+def test_openai_provider_authentication_error_raises_assistant_error():
+    pytest.importorskip("openai")
+    import openai
+
+    mock_client = MagicMock()
+    auth_error = openai.AuthenticationError.__new__(openai.AuthenticationError)
+    mock_client.beta.chat.completions.parse.side_effect = auth_error
+
+    with patch("openai.OpenAI", return_value=mock_client):
+        with pytest.raises(AssistantError, match="credentials"):
+            generate_hypothesis([_event("EVT-0001")], provider="openai", api_key="bad-key")
+
+
+def test_openai_provider_no_credentials_at_construction_raises_assistant_error():
+    pytest.importorskip("openai")
+    import openai
+
+    with patch(
+        "openai.OpenAI",
+        side_effect=openai.OpenAIError("Missing credentials. Please pass an `api_key` ... or set OPENAI_API_KEY"),
+    ):
+        with pytest.raises(AssistantError, match="credentials"):
+            generate_hypothesis([_event("EVT-0001")], provider="openai", api_key=None)
+
+
+# --- Gemini provider ---
+
+
+def test_gemini_provider_returns_hypothesis_when_citations_valid():
+    pytest.importorskip("google.genai")
+    events = [_event("EVT-0001")]
+    hyp = _valid_hypothesis([("EV-0001", "EVT-0001")])
+
+    mock_response = MagicMock()
+    mock_response.parsed = hyp
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("google.genai.Client", return_value=mock_client):
+        result = generate_hypothesis(events, provider="gemini", api_key="fake-key")
+
+    assert result.claim == hyp.claim
+
+
+def test_gemini_provider_rejects_unknown_citation():
+    pytest.importorskip("google.genai")
+    events = [_event("EVT-0001")]
+    hyp = _valid_hypothesis([("EV-0001", "EVT-9999")])
+
+    mock_response = MagicMock()
+    mock_response.parsed = hyp
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("google.genai.Client", return_value=mock_client):
+        with pytest.raises(AssistantError, match="not present"):
+            generate_hypothesis(events, provider="gemini", api_key="fake-key")
+
+
+def test_gemini_provider_no_parsed_output_raises():
+    pytest.importorskip("google.genai")
+    mock_response = MagicMock()
+    mock_response.parsed = None
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("google.genai.Client", return_value=mock_client):
+        with pytest.raises(AssistantError, match="could not be parsed"):
+            generate_hypothesis([_event("EVT-0001")], provider="gemini", api_key="fake-key")
+
+
+def test_gemini_provider_no_credentials_raises_assistant_error():
+    pytest.importorskip("google.genai")
+    with patch("google.genai.Client", side_effect=ValueError("No API key was provided. Please pass a valid API key.")):
+        with pytest.raises(AssistantError, match="credentials"):
+            generate_hypothesis([_event("EVT-0001")], provider="gemini", api_key=None)
+
+
+def test_gemini_provider_client_error_with_401_raises_assistant_error():
+    pytest.importorskip("google.genai")
+    from google.genai import errors as genai_errors
+
+    mock_client = MagicMock()
+    client_error = genai_errors.ClientError.__new__(genai_errors.ClientError)
+    client_error.code = 401
+    client_error.message = "unauthorized"
+    mock_client.models.generate_content.side_effect = client_error
+
+    with patch("google.genai.Client", return_value=mock_client):
+        with pytest.raises(AssistantError, match="credentials"):
+            generate_hypothesis([_event("EVT-0001")], provider="gemini", api_key="bad-key")
+
+
+# --- Ollama provider (local, no SDK - mocks `requests`) ---
+
+
+def test_ollama_provider_returns_hypothesis_when_citations_valid():
+    events = [_event("EVT-0001")]
+    hyp = _valid_hypothesis([("EV-0001", "EVT-0001")])
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"message": {"content": hyp.model_dump_json()}}
+    mock_response.raise_for_status.return_value = None
+
+    with patch("requests.post", return_value=mock_response) as mock_post:
+        result = generate_hypothesis(events, provider="ollama", api_key=None)
+
+    assert result.claim == hyp.claim
+    call_kwargs = mock_post.call_args.kwargs
+    assert call_kwargs["json"]["model"] == "llama3.1"
+    assert "properties" in call_kwargs["json"]["format"]  # a JSON schema, not the bare string "json"
+
+
+def test_ollama_provider_rejects_unknown_citation():
+    events = [_event("EVT-0001")]
+    hyp = _valid_hypothesis([("EV-0001", "EVT-9999")])
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"message": {"content": hyp.model_dump_json()}}
+    mock_response.raise_for_status.return_value = None
+
+    with patch("requests.post", return_value=mock_response):
+        with pytest.raises(AssistantError, match="not present"):
+            generate_hypothesis(events, provider="ollama", api_key=None)
+
+
+def test_ollama_provider_connection_error_raises_assistant_error():
+    import requests
+
+    with patch("requests.post", side_effect=requests.exceptions.ConnectionError("refused")):
+        with pytest.raises(AssistantError, match="is `ollama serve` running"):
+            generate_hypothesis([_event("EVT-0001")], provider="ollama")
+
+
+def test_ollama_provider_uses_custom_base_url():
+    hyp = _valid_hypothesis([])
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"message": {"content": hyp.model_dump_json()}}
+    mock_response.raise_for_status.return_value = None
+
+    with patch("requests.post", return_value=mock_response) as mock_post:
+        generate_hypothesis([_event("EVT-0001")], provider="ollama", base_url="http://192.168.1.50:11434")
+
+    assert mock_post.call_args.args[0] == "http://192.168.1.50:11434/api/chat"

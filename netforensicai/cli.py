@@ -418,8 +418,22 @@ def investigate(
     ai: bool = typer.Option(
         False, "--ai", help="Ask the optional AI assistant for one hedged hypothesis about this entity's events"
     ),
+    ai_provider: str = typer.Option(
+        "anthropic",
+        "--ai-provider",
+        help="AI provider for --ai: anthropic, openai, ollama, or gemini",
+    ),
     api_key: str = typer.Option(
-        None, "--api-key", help="Anthropic API key for --ai (falls back to ANTHROPIC_API_KEY / `ant auth login`)"
+        None,
+        "--api-key",
+        help="API key for --ai (falls back to the provider's usual env var: ANTHROPIC_API_KEY / "
+        "OPENAI_API_KEY / GEMINI_API_KEY; not needed for ollama)",
+    ),
+    ai_model: str = typer.Option(
+        None, "--model", help="Model name override for --ai (defaults to a sane per-provider default)"
+    ),
+    ollama_url: str = typer.Option(
+        None, "--ollama-url", help="Ollama server URL for --ai-provider ollama (default http://localhost:11434)"
     ),
     cases_dir: str = typer.Option(
         DEFAULT_CASES_DIR,
@@ -520,7 +534,9 @@ def investigate(
             from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
 
             try:
-                hypothesis = generate_hypothesis(result.events, api_key=api_key)
+                hypothesis = generate_hypothesis(
+                    result.events, provider=ai_provider, api_key=api_key, model=ai_model, base_url=ollama_url
+                )
             except AssistantError as e:
                 typer.echo(f"  Not available: {e}")
             else:

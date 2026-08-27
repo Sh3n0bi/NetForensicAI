@@ -16,13 +16,15 @@ jobs:
         # 3.12 is what this project has actually been developed/tested
         # against day to day. The `ai` extra (anthropic>=1.0) requires
         # Python >=3.10 itself - that's the SDK's own constraint, not
-        # something to work around - so it's only installed on 3.12 here.
-        # Tests that need it skip cleanly on 3.9 via pytest.importorskip.
+        # something to work around - so it (and the other AI provider
+        # extras, ai-openai/ai-gemini) are only installed on 3.12 here.
+        # Tests that need any of them skip cleanly on 3.9 via
+        # pytest.importorskip.
         include:
           - python-version: "3.9"
             extras: "dev,pcap,intel,evtx,web"
           - python-version: "3.12"
-            extras: "dev,pcap,intel,evtx,ai,web"
+            extras: "dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web"
 
     steps:
       - uses: actions/checkout@v4

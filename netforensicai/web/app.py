@@ -305,6 +305,12 @@ def create_app(cases_dir="cases"):
 
     # --- AI hypothesis (opt-in, explicit external call) ---
 
+    @app.route("/api/ai-providers")
+    def list_ai_providers():
+        from netforensicai.core.ai_assistant import DEFAULT_MODELS, SUPPORTED_PROVIDERS
+
+        return jsonify({"providers": list(SUPPORTED_PROVIDERS), "default_models": DEFAULT_MODELS})
+
     @app.route("/api/cases/<case_id>/ai-hypothesis", methods=["POST"])
     def ai_hypothesis(case_id):
         case = _load_case(case_id)
@@ -324,7 +330,13 @@ def create_app(cases_dir="cases"):
             events = result.events
 
         try:
-            hypothesis = generate_hypothesis(events, api_key=payload.get("api_key"))
+            hypothesis = generate_hypothesis(
+                events,
+                provider=payload.get("provider") or "anthropic",
+                api_key=payload.get("api_key"),
+                model=payload.get("model") or None,
+                base_url=payload.get("base_url") or None,
+            )
         except AssistantError as e:
             raise ApiError(str(e), 502)
         return jsonify(hypothesis.model_dump())
