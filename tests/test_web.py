@@ -458,6 +458,108 @@ def test_ai_hypothesis_endpoint_reports_assistant_error(prepared_case):
     assert "credentials" in response.get_json()["error"]
 
 
+@pytest.fixture
+def isolated_config(tmp_path, monkeypatch):
+    from netforensicai.core import config
+
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path / "cfg"))
+    for env_var in config.SECRET_KEYS.values():
+        monkeypatch.delenv(env_var, raising=False)
+    return config
+
+
+def test_settings_endpoint_returns_masked_state(prepared_case, isolated_config):
+    client, _case, _cases_dir = prepared_case
+
+    response = client.get("/api/settings")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["secrets"]["virustotal_api_key"]["set"] is False
+    assert data["preferences"]["ai_provider"] == "anthropic"
+
+
+def test_settings_post_saves_and_never_echoes_the_key(prepared_case, isolated_config):
+    client, _case, _cases_dir = prepared_case
+
+    response = client.post("/api/settings", json={"virustotal_api_key": "secret-key-8888"})
+
+    assert response.status_code == 200
+    assert "secret-key-8888" not in response.get_data(as_text=True)
+    entry = response.get_json()["secrets"]["virustotal_api_key"]
+    assert entry["set"] is True
+    assert entry["hint"] == "...8888"
+    # And it really landed where the rest of the app will look for it.
+    assert isolated_config.get_secret("virustotal_api_key") == "secret-key-8888"
+
+
+def test_settings_post_preserves_untouched_keys(prepared_case, isolated_config):
+    client, _case, _cases_dir = prepared_case
+
+    client.post("/api/settings", json={"virustotal_api_key": "vt-key"})
+    client.post("/api/settings", json={"ai_provider": "ollama"})  # no key field at all
+
+    assert isolated_config.get_secret("virustotal_api_key") == "vt-key"
+    assert isolated_config.get_plain("ai_provider") == "ollama"
+
+
+def test_settings_requires_csrf_header(prepared_case, isolated_config):
+    _client, _case, cases_dir = prepared_case
+    bare_client = create_app(cases_dir).test_client()
+
+    response = bare_client.post("/api/settings", json={"virustotal_api_key": "x"})
+
+    assert response.status_code == 403
+
+
+def test_settings_test_reports_missing_virustotal_key(prepared_case, isolated_config):
+    client, _case, _cases_dir = prepared_case
+
+    response = client.post("/api/settings/test", json={"target": "virustotal"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["ok"] is False
+    assert "no virustotal api key" in data["message"].lower()
+
+
+def test_settings_test_reports_success_for_working_virustotal_key(prepared_case, isolated_config):
+    client, _case, _cases_dir = prepared_case
+    isolated_config.save_settings({"virustotal_api_key": "vt-key"})
+
+    with patch(
+        "netforensicai.intel.virustotal.check_ip",
+        return_value={"malicious": False, "malicious_count": 0, "total_engines": 70, "permalink": None, "error": None},
+    ):
+        response = client.post("/api/settings/test", json={"target": "virustotal"})
+
+    assert response.get_json() == {"ok": True, "message": "VirusTotal key works."}
+
+
+def test_settings_test_reports_ai_provider_failure_cleanly(prepared_case, isolated_config):
+    client, _case, _cases_dir = prepared_case
+
+    # Ollama needs no SDK, so this exercises the real failure path without
+    # requiring an optional provider package to be installed.
+    import requests
+
+    with patch("requests.post", side_effect=requests.exceptions.ConnectionError("refused")):
+        response = client.post("/api/settings/test", json={"target": "ollama"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["ok"] is False
+    assert "ollama serve" in data["message"]
+
+
+def test_settings_test_rejects_unknown_target(prepared_case, isolated_config):
+    client, _case, _cases_dir = prepared_case
+
+    response = client.post("/api/settings/test", json={"target": "nonsense"})
+
+    assert response.status_code == 400
+
+
 def test_ai_providers_endpoint_lists_all_providers():
     from netforensicai.core.ai_assistant import DEFAULT_MODELS, SUPPORTED_PROVIDERS
 

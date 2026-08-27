@@ -150,6 +150,23 @@ def generate_hypothesis(events, provider="anthropic", api_key=None, model=None, 
     if not events:
         raise AssistantError("No events provided.")
 
+    # Fall back to a key saved via the web UI's Settings tab when neither
+    # an explicit key nor the provider's env var is present. Passing None
+    # through to the SDK stays meaningful: it lets the SDK do its own
+    # resolution (e.g. Anthropic's `ant auth login` profile), which a
+    # saved-but-empty key would otherwise pre-empt.
+    from netforensicai.core import config
+
+    config_key_name = {
+        "anthropic": "anthropic_api_key",
+        "openai": "openai_api_key",
+        "gemini": "gemini_api_key",
+    }.get(provider)
+    if config_key_name:
+        api_key = config.get_secret(config_key_name, api_key)
+    if provider == "ollama":
+        base_url = base_url or config.get_plain("ollama_base_url") or None
+
     events = events[:MAX_EVENTS]
     model = model or DEFAULT_MODELS[provider]
 

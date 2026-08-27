@@ -331,6 +331,71 @@ def create_app(cases_dir="cases"):
 
     # --- AI hypothesis (opt-in, explicit external call) ---
 
+    # --- settings (API keys / provider preferences) ---
+    # Keys are stored outside any case directory (see core/config.py) so
+    # they never ride along in a `case export` archive, and are never sent
+    # back to the browser in full - only "is it set" plus a masked hint.
+
+    @app.route("/api/settings")
+    def get_settings():
+        from netforensicai.core import config
+
+        return jsonify(config.masked_settings())
+
+    @app.route("/api/settings", methods=["POST"])
+    def update_settings():
+        from netforensicai.core import config
+
+        payload = request.get_json(force=True, silent=True) or {}
+        config.save_settings(payload)
+        return jsonify(config.masked_settings())
+
+    @app.route("/api/settings/test", methods=["POST"])
+    def test_settings():
+        """Verify a saved/entered credential actually works, rather than
+        leaving the investigator to find out mid-investigation. Makes one
+        real, minimal request to the named provider."""
+        payload = request.get_json(force=True, silent=True) or {}
+        target = payload.get("target")
+
+        if target == "virustotal":
+            from netforensicai.intel import virustotal
+
+            key = virustotal.get_api_key(payload.get("api_key"))
+            if not key:
+                return jsonify({"ok": False, "message": "No VirusTotal API key set."})
+            # 8.8.8.8 is a stable, uncontroversial lookup target - this is
+            # only checking that the credential is accepted.
+            result = virustotal.check_ip("8.8.8.8", key)
+            if result.get("error"):
+                return jsonify({"ok": False, "message": f"VirusTotal rejected the request: {result['error']}"})
+            return jsonify({"ok": True, "message": "VirusTotal key works."})
+
+        if target in ("anthropic", "openai", "gemini", "ollama"):
+            from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
+            from netforensicai.core.event import Event
+
+            probe = Event(
+                event_id="EVT-PROBE-0001",
+                evidence_id="EV-PROBE",
+                source="probe",
+                event_type="authentication",
+                message="Connectivity probe - not real evidence.",
+            )
+            try:
+                generate_hypothesis(
+                    [probe],
+                    provider=target,
+                    api_key=payload.get("api_key") or None,
+                    model=payload.get("model") or None,
+                    base_url=payload.get("base_url") or None,
+                )
+            except AssistantError as e:
+                return jsonify({"ok": False, "message": str(e)})
+            return jsonify({"ok": True, "message": f"{target} responded successfully."})
+
+        raise ApiError(f"Unknown test target '{target}'.")
+
     @app.route("/api/ai-providers")
     def list_ai_providers():
         from netforensicai.core.ai_assistant import DEFAULT_MODELS, SUPPORTED_PROVIDERS

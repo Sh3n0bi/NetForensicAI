@@ -14,7 +14,6 @@ without requests being installed.
 
 import ipaddress
 import logging
-import os
 import re
 
 logger = logging.getLogger(__name__)
@@ -27,8 +26,12 @@ _HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
 
 
 def get_api_key(cli_value=None):
-    """Resolve the VT API key: explicit CLI value first, then VT_API_KEY env var."""
-    return cli_value or os.environ.get("VT_API_KEY")
+    """Resolve the VT API key: explicit CLI value, then VT_API_KEY env
+    var, then whatever was saved via the web UI's Settings tab (see
+    core/config.py for why that order)."""
+    from netforensicai.core import config
+
+    return config.get_secret("virustotal_api_key", cli_value)
 
 
 def _empty_result(error):

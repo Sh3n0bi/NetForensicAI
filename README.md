@@ -26,6 +26,8 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 - **Case management** — `INC-####` cases with a predictable on-disk layout (`cases/<ID>/evidence,artifacts,timeline,findings,reports/`); export a case to one portable, SHA-256-manifested zip archive and import it elsewhere for backup or handoff — every file is verified against its manifest before anything is written, so a tampered or corrupted archive is rejected outright
 - **Evidence integrity** — every evidence item is SHA-256 hashed on ingest, copied read-only, and re-verifiable at any time (report generation re-checks every hash automatically)
 - **Four evidence parsers**, all normalizing into one [Common Event Model](#supported-evidence): pcap, JSON, CSV, and Windows Event Log (EVTX) with dedicated Sysmon field mapping
+- **Network protocol analysis** — pcap parsing extracts TCP/UDP flows, DNS queries, HTTP requests (Host + URL), and TLS SNI hostnames, so domains and URLs become first-class entities you can pivot on even in encrypted traffic
+- **Settings in the web UI** — save VirusTotal and AI provider API keys once from a Settings page instead of passing them on every command, with a one-click connection test per provider. Keys are stored outside your cases directory, so they never end up inside an exported case archive
 - **Entity extraction** — users, hostnames, devices, IPs, domains, URLs, files, hashes, processes, ports, and network connections, each linked to the events they appear in
 - **Correlation engine** — links events by shared entity + time window, explicit about the difference between `related` (shared entity, time-proximate) and `possible_relationship` (time-proximate only) — never implies causality from either
 - **Unified timeline**, filterable by time range, user, IP, hostname, process, file, event type, or evidence source
@@ -127,7 +129,16 @@ netforensic finding create --case INC-0001 --title "..." --event EVT-...
 netforensic report generate --case INC-0001 --format markdown
 ```
 
-Or the same thing from a browser: `netforensic web --cases-dir cases`, then create a case and upload files from the Evidence tab.
+Or do the whole thing from a browser:
+
+```bash
+netforensic web --cases-dir cases     # then open http://127.0.0.1:8000
+```
+
+1. **Settings** (top right) — optionally paste a VirusTotal and/or AI provider API key and hit *Test* to confirm it works. Everything except threat intel and the AI assistant works with no keys at all.
+2. **Cases** — pick or create a case, then go to **Evidence** → *Choose File* → *Upload Evidence* (`.pcap`, `.json`, `.csv`, `.evtx`).
+3. **Run Analyze** — parses, correlates, and runs the bundled detection rules in one step.
+4. Review **Timeline**, **Entities**, **Detections**, **ATT&CK**, record **Findings**, and export a **Report**.
 
 Every command below has an `--help` (`netforensic <command> --help`, or `netforensic <group> <command> --help`) and a `--cases-dir` option (env var `NETFORENSIC_CASES_DIR`, default `cases`) that all of the examples below omit for brevity — pass it explicitly if you're not running from the directory that contains your `cases/` folder.
 
@@ -247,7 +258,7 @@ All four parsers map into the same **Common Event Model**: `event_id`, `evidence
 
 | Format | Parser | Notes |
 |---|---|---|
-| `.pcap` / `.pcapng` | `parsers/pcap.py` | scapy-based (pure Python, no tshark needed): DPI, embedded-file extraction, IsolationForest anomaly detection |
+| `.pcap` / `.pcapng` | `parsers/pcap.py` | scapy-based (pure Python, no tshark needed). Produces six event types: `network_connection` (one per TCP/UDP flow, with packet/byte counts), `dns_query` (queried name → `domain`), `http_request` (Host → `domain`, full URL → `url`, matched on any port), `tls_handshake` (SNI → `domain`), `file_transfer` (embedded files carved by magic bytes), and `anomaly` (IsolationForest outliers) |
 | `.json` | `parsers/generic.py` | Array, `{"events": [...]}`-wrapped, or single-object; case/separator-insensitive field aliasing (`src_ip`/`SourceIP`/`source_ip` all match) |
 | `.csv` | `parsers/generic.py` | Same field-aliasing as JSON, one Event per row |
 | `.evtx` | `parsers/evtx.py` | Sysmon (ProcessCreate/NetworkConnection/ProcessTerminate/FileCreate/DNSQuery) gets rich field mapping; every other provider/channel gets the universal System fields plus full raw EventData preserved |
@@ -292,7 +303,7 @@ Fork the repo, make changes, and submit a pull request — see [CONTRIBUTING.md]
 
 - Extracted files from evidence (embedded files pulled from a pcap, for example) are never executed automatically — they're written to disk as inert bytes
 - Uploaded/ingested filenames are sanitized before touching the filesystem; evidence copies are made read-only after hashing
-- No API key is ever hardcoded — VirusTotal and Anthropic credentials are read from CLI flags, environment variables, or (for Anthropic) `ant auth login`, never stored in a config file by this tool
+- No API key is ever hardcoded. Keys are resolved in order: explicit CLI flag → the provider's environment variable → keys you saved via the web UI's Settings page. Saved keys live in `~/.netforensicai/config.json` (owner-read/write only where the OS enforces it), deliberately **outside** the cases directory so they can never be included in a `case export` archive, and the web API never returns a saved key to the browser — only whether it is set and its last four characters
 - Case IDs are validated against the `INC-####` pattern everywhere a case is loaded (CLI or web), so a crafted case ID can't be used to walk outside the cases directory
 - VirusTotal lookups validate that a value actually looks like an IP address or an MD5/SHA-1/SHA-256 hash before it's sent to the API
 - The web UI has no authentication and binds to `127.0.0.1` by default; the CLI warns if you point `--host` anywhere else. Every state-changing API request (evidence upload, analyze, live capture, threat intel, AI hypothesis) also requires a custom header the browser frontend sets automatically — this blocks the kind of cross-site request forgery where another open tab silently submits requests to your local instance, which for a chain-of-custody tool matters more than most (forged "evidence" or a silently-started packet capture)

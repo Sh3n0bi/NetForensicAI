@@ -107,11 +107,196 @@ async function route() {
       nav.hidden = true;
       app.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
     }
+  } else if (parts[0] === "settings") {
+    stopCapturePolling();
+    nav.hidden = true;
+    document.getElementById("case-nav-name").textContent = "";
+    app.innerHTML = "";
+    await renderSettings(app);
   } else {
     nav.hidden = true;
     document.getElementById("case-nav-name").textContent = "";
     await renderCaseList(app);
   }
+}
+
+// --- Settings (API keys + provider preferences) ---
+
+const SECRET_FIELDS = [
+  ["virustotal_api_key", "VirusTotal API key", "Threat-intel lookups for IPs and file hashes"],
+  ["anthropic_api_key", "Anthropic API key", "AI assistant - Claude"],
+  ["openai_api_key", "OpenAI API key", "AI assistant - GPT"],
+  ["gemini_api_key", "Gemini API key", "AI assistant - Google"],
+];
+
+async function renderSettings(app) {
+  app.appendChild(el("h1", { text: "Settings" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Optional API keys, saved once instead of passed on every command. Stored outside your cases " +
+        "directory, so they are never included in a `case export` archive. Everything here is optional - " +
+        "parsing, correlation, timeline, and the bundled detection rules all work fully offline without any key.",
+    })
+  );
+
+  const panel = el("div", { class: "panel" });
+  app.appendChild(panel);
+  panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+
+  let data;
+  try {
+    data = await apiGet("/settings");
+  } catch (e) {
+    panel.innerHTML = "";
+    panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    return;
+  }
+
+  panel.innerHTML = "";
+  panel.appendChild(el("h3", { text: "API Keys" }));
+  const inputs = {};
+
+  for (const [key, label, help] of SECRET_FIELDS) {
+    const info = data.secrets[key] || {};
+    const row = el("div", { class: "setting-row" });
+    row.appendChild(el("label", { text: label }));
+    const input = el("input", {
+      type: "password",
+      placeholder: info.set ? `Saved (${info.hint}) - type to replace` : help,
+    });
+    inputs[key] = input;
+    row.appendChild(input);
+
+    const status = el("span", {
+      class: "setting-status" + (info.set ? " is-set" : ""),
+      text: info.set ? `set via ${info.source}` : "not set",
+    });
+    row.appendChild(status);
+    panel.appendChild(row);
+
+    if (info.overridden_by_env) {
+      panel.appendChild(
+        el("div", {
+          class: "setting-note",
+          text: `${info.env_var} is set in your environment and takes priority over anything saved here.`,
+        })
+      );
+    }
+  }
+
+  panel.appendChild(el("h3", { text: "AI Defaults", style: "margin-top:18px;" }));
+
+  let providerInfo = { providers: ["anthropic", "openai", "ollama", "gemini"], default_models: {} };
+  try {
+    providerInfo = await apiGet("/ai-providers");
+  } catch (e) {
+    /* keep the fallback list */
+  }
+
+  const providerRow = el("div", { class: "setting-row" });
+  providerRow.appendChild(el("label", { text: "Default AI provider" }));
+  const providerSelect = selectEl(providerInfo.providers, data.preferences.ai_provider || "anthropic");
+  providerRow.appendChild(providerSelect);
+  providerRow.appendChild(el("span", { class: "setting-status", text: "" }));
+  panel.appendChild(providerRow);
+
+  const modelRow = el("div", { class: "setting-row" });
+  modelRow.appendChild(el("label", { text: "Default model (optional)" }));
+  const modelInput = el("input", {
+    type: "text",
+    value: data.preferences.ai_model || "",
+    placeholder: "Leave blank to use each provider's default",
+  });
+  modelRow.appendChild(modelInput);
+  modelRow.appendChild(el("span", { class: "setting-status", text: "" }));
+  panel.appendChild(modelRow);
+
+  const ollamaRow = el("div", { class: "setting-row" });
+  ollamaRow.appendChild(el("label", { text: "Ollama server URL" }));
+  const ollamaInput = el("input", {
+    type: "text",
+    value: data.preferences.ollama_base_url || "",
+    placeholder: "http://localhost:11434",
+  });
+  ollamaRow.appendChild(ollamaInput);
+  ollamaRow.appendChild(el("span", { class: "setting-status", text: "" }));
+  panel.appendChild(ollamaRow);
+
+  const actions = el("div", { class: "filter-bar", style: "margin-top:16px;" });
+  const saveBtn = el("button", { text: "Save Settings" });
+  actions.appendChild(saveBtn);
+  panel.appendChild(actions);
+
+  panel.appendChild(
+    el("div", {
+      class: "subtitle",
+      style: "margin-top:6px; font-size:12px;",
+      text: `Saved to ${data.config_path}`,
+    })
+  );
+
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.disabled = true;
+    try {
+      const body = {
+        ai_provider: providerSelect.value,
+        ai_model: modelInput.value.trim(),
+        ollama_base_url: ollamaInput.value.trim(),
+      };
+      // Only send keys the user actually typed into: an untouched field
+      // must leave the saved key alone, not clear it.
+      for (const [key] of SECRET_FIELDS) {
+        if (inputs[key].value.trim()) body[key] = inputs[key].value.trim();
+      }
+      await apiPost("/settings", body);
+      toast("Settings saved.");
+      // Re-render from the server's masked view so the fields show the
+      // newly-saved state (and clear the plaintext the user just typed).
+      const container = document.getElementById("app");
+      container.innerHTML = "";
+      await renderSettings(container);
+    } catch (e) {
+      toast("Save failed: " + e.message, true);
+      saveBtn.disabled = false;
+    }
+  });
+
+  // --- connection tests ---
+  panel.appendChild(el("h3", { text: "Test Connections", style: "margin-top:18px;" }));
+  panel.appendChild(
+    el("div", {
+      class: "subtitle",
+      style: "font-size:12px;",
+      text: "Makes one real request to confirm a credential works, rather than finding out mid-investigation.",
+    })
+  );
+  const testBar = el("div", { class: "filter-bar" });
+  const testResult = el("div", { style: "margin-top:8px;" });
+  for (const target of ["virustotal", "anthropic", "openai", "gemini", "ollama"]) {
+    const btn = el("button", { class: "secondary", text: target });
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      testResult.innerHTML = "";
+      testResult.appendChild(el("div", { class: "loading", text: `Testing ${target}...` }));
+      try {
+        const r = await apiPost("/settings/test", { target });
+        testResult.innerHTML = "";
+        testResult.appendChild(
+          el("div", { class: r.ok ? "lead" : "error-box", text: `${target}: ${r.message}` })
+        );
+      } catch (e) {
+        testResult.innerHTML = "";
+        testResult.appendChild(el("div", { class: "error-box", text: `${target}: ${e.message}` }));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    testBar.appendChild(btn);
+  }
+  panel.appendChild(testBar);
+  panel.appendChild(testResult);
 }
 
 async function renderCaseTab(app, c, tab, rest) {

@@ -40,7 +40,33 @@ a:hover { text-decoration: underline; }
 
 .brand a { color: var(--text); font-weight: 700; font-size: 16px; text-decoration: none; }
 
+.settings-link { margin-left: auto; color: var(--text-dim); font-size: 13px; }
+.settings-link:hover { color: var(--text); }
+
+.setting-row { display: grid; grid-template-columns: 210px 1fr auto; gap: 10px; align-items: center; margin-bottom: 10px; }
+.setting-row label { color: var(--text-dim); font-size: 13px; }
+.setting-row input, .setting-row select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  width: 100%;
+}
+.setting-status { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+.setting-status.is-set { color: var(--ok); }
+.setting-note { color: var(--warn); font-size: 12px; margin: -4px 0 12px 220px; }
+@media (max-width: 760px) {
+  .setting-row { grid-template-columns: 1fr; }
+  .setting-note { margin-left: 0; }
+}
+
 .case-nav { display: flex; align-items: center; gap: 16px; }
+/* `display: flex` above outranks the browser default [hidden]{display:none},
+   so setting nav.hidden in JS had no visible effect - the case tabs stayed
+   on screen on the case list and settings pages, linking nowhere. */
+.case-nav[hidden] { display: none; }
 .case-nav-name { color: var(--text-dim); font-family: var(--mono); margin-right: 8px; }
 .case-nav a { color: var(--text-dim); padding: 4px 2px; border-bottom: 2px solid transparent; }
 .case-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
