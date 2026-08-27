@@ -677,50 +677,177 @@ function colorForType(t) {
 
 // --- Findings ---
 
+const FINDING_STATUSES = ["Open", "Investigating", "Confirmed", "Rejected", "False Positive", "Resolved"];
+const FINDING_SEVERITIES = ["Low", "Medium", "High", "Critical"];
+
+function selectEl(options, selected) {
+  const s = el("select");
+  for (const opt of options) {
+    const o = el("option", { value: opt, text: opt });
+    if (opt === selected) o.setAttribute("selected", "selected");
+    s.appendChild(o);
+  }
+  return s;
+}
+
 async function renderFindings(app, c) {
   app.appendChild(el("h1", { text: "Findings" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text: "Investigator-owned - nothing here is inferred or auto-generated. Creating or updating a finding here is the same explicit action as `netforensic finding create/update`.",
+    })
+  );
+
+  // --- create form ---
+  const createPanel = el("div", { class: "panel" });
+  createPanel.appendChild(el("h3", { text: "New Finding" }));
+  const titleInput = el("input", { type: "text", placeholder: "Title", style: "min-width:260px;" });
+  const severitySelect = selectEl(FINDING_SEVERITIES, "Medium");
+  const statusSelect = selectEl(FINDING_STATUSES, "Open");
+  const assessmentInput = el("textarea", {
+    placeholder: "Assessment (free text)",
+    rows: "3",
+    style: "width:100%; background:var(--panel-2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:8px; margin-top:8px; font-family:inherit; font-size:13px;",
+  });
+  const eventIdsInput = el("input", {
+    type: "text",
+    placeholder: "Event IDs this is based on, comma-separated (optional)",
+    style: "width:100%; margin-top:8px;",
+  });
+  const createRow = el("div", { class: "filter-bar", style: "margin-top:0;" });
+  createRow.appendChild(titleInput);
+  createRow.appendChild(severitySelect);
+  createRow.appendChild(statusSelect);
+  const createBtn = el("button", { text: "Create Finding" });
+  createRow.appendChild(createBtn);
+  createPanel.appendChild(createRow);
+  createPanel.appendChild(assessmentInput);
+  createPanel.appendChild(eventIdsInput);
+  app.appendChild(createPanel);
+
   const panel = el("div", { class: "panel" });
   app.appendChild(panel);
-  panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
-  try {
-    const findings = await apiGet(`/cases/${c.case_id}/findings`);
+
+  async function loadList() {
     panel.innerHTML = "";
-    if (!findings.length) {
-      panel.appendChild(
-        el("div", {
-          class: "empty",
-          text: `No findings recorded. Create one with: netforensic finding create --case ${c.case_id} --title "..."`,
-        })
-      );
+    panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+    try {
+      const findings = await apiGet(`/cases/${c.case_id}/findings`);
+      panel.innerHTML = "";
+      if (!findings.length) {
+        panel.appendChild(el("div", { class: "empty", text: "No findings recorded yet." }));
+        return;
+      }
+      for (const f of findings) {
+        panel.appendChild(renderFindingCard(f));
+      }
+    } catch (e) {
+      panel.innerHTML = "";
+      panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    }
+  }
+
+  function renderFindingCard(f) {
+    const evidenceList = f.evidence_refs.map((r) => `${escapeHtml(r.evidence_id)}/${escapeHtml(r.event_id)}`).join(", ") || "none";
+    const notesHtml = f.investigator_notes.length
+      ? `<div style="margin-top:8px;"><h3>Notes</h3>` +
+        f.investigator_notes
+          .map((n) => `<div class="lead">${escapeHtml(n.timestamp)} (${escapeHtml(n.author)}): ${escapeHtml(n.text)}</div>`)
+          .join("") +
+        `</div>`
+      : "";
+    const card = el("div", { class: "panel", style: "margin-bottom:10px;" });
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div><b>${escapeHtml(f.finding_id)}</b> &middot; ${escapeHtml(f.title)}</div>
+        <div>
+          <span class="badge badge-${cssClass(f.status)}">${escapeHtml(f.status)}</span>
+          <span class="badge badge-${cssClass(f.severity)}">${escapeHtml(f.severity)}</span>
+        </div>
+      </div>
+      <div style="color:var(--text-dim); margin-top:6px;">${escapeHtml(f.assessment || "(no assessment)")}</div>
+      <div style="margin-top:6px; font-size:12px;" class="mono">Evidence: ${evidenceList}</div>
+      ${notesHtml}`;
+
+    const updateRow = el("div", { class: "filter-bar", style: "margin-top:10px;" });
+    const newStatusSelect = selectEl(FINDING_STATUSES, f.status);
+    const statusBtn = el("button", { class: "secondary", text: "Update Status" });
+    updateRow.appendChild(newStatusSelect);
+    updateRow.appendChild(statusBtn);
+    card.appendChild(updateRow);
+
+    const noteRow = el("div", { class: "filter-bar" });
+    const noteInput = el("input", { type: "text", placeholder: "Add a note...", style: "min-width:300px;" });
+    const noteBtn = el("button", { class: "secondary", text: "Add Note" });
+    noteRow.appendChild(noteInput);
+    noteRow.appendChild(noteBtn);
+    card.appendChild(noteRow);
+
+    statusBtn.addEventListener("click", async () => {
+      statusBtn.disabled = true;
+      try {
+        await apiPost(`/cases/${c.case_id}/findings/${f.finding_id}`, { status: newStatusSelect.value });
+        toast(`${f.finding_id} status updated to ${newStatusSelect.value}.`);
+        await loadList();
+      } catch (e) {
+        toast("Update failed: " + e.message, true);
+      } finally {
+        statusBtn.disabled = false;
+      }
+    });
+
+    noteBtn.addEventListener("click", async () => {
+      if (!noteInput.value.trim()) {
+        toast("Enter a note first.", true);
+        return;
+      }
+      noteBtn.disabled = true;
+      try {
+        await apiPost(`/cases/${c.case_id}/findings/${f.finding_id}`, { note: noteInput.value.trim() });
+        toast(`Note added to ${f.finding_id}.`);
+        await loadList();
+      } catch (e) {
+        toast("Add note failed: " + e.message, true);
+      } finally {
+        noteBtn.disabled = false;
+      }
+    });
+
+    return card;
+  }
+
+  createBtn.addEventListener("click", async () => {
+    if (!titleInput.value.trim()) {
+      toast("Enter a title first.", true);
       return;
     }
-    for (const f of findings) {
-      const evidenceList = f.evidence_refs.map((r) => `${escapeHtml(r.evidence_id)}/${escapeHtml(r.event_id)}`).join(", ") || "none";
-      const notesHtml = f.investigator_notes.length
-        ? `<div style="margin-top:8px;"><h3>Notes</h3>` +
-          f.investigator_notes
-            .map((n) => `<div class="lead">${escapeHtml(n.timestamp)} (${escapeHtml(n.author)}): ${escapeHtml(n.text)}</div>`)
-            .join("") +
-          `</div>`
-        : "";
-      const card = el("div", { class: "panel", style: "margin-bottom:10px;" });
-      card.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <div><b>${escapeHtml(f.finding_id)}</b> &middot; ${escapeHtml(f.title)}</div>
-          <div>
-            <span class="badge badge-${cssClass(f.status)}">${escapeHtml(f.status)}</span>
-            <span class="badge badge-${cssClass(f.severity)}">${escapeHtml(f.severity)}</span>
-          </div>
-        </div>
-        <div style="color:var(--text-dim); margin-top:6px;">${escapeHtml(f.assessment || "(no assessment)")}</div>
-        <div style="margin-top:6px; font-size:12px;" class="mono">Evidence: ${evidenceList}</div>
-        ${notesHtml}`;
-      panel.appendChild(card);
+    createBtn.disabled = true;
+    try {
+      const eventIds = eventIdsInput.value
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const finding = await apiPost(`/cases/${c.case_id}/findings`, {
+        title: titleInput.value.trim(),
+        severity: severitySelect.value,
+        status: statusSelect.value,
+        assessment: assessmentInput.value.trim(),
+        event_ids: eventIds,
+      });
+      toast(`Created ${finding.finding_id}.`);
+      titleInput.value = "";
+      assessmentInput.value = "";
+      eventIdsInput.value = "";
+      await loadList();
+    } catch (e) {
+      toast("Create failed: " + e.message, true);
+    } finally {
+      createBtn.disabled = false;
     }
-  } catch (e) {
-    panel.innerHTML = "";
-    panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
-  }
+  });
+
+  await loadList();
 }
 
 // --- ATT&CK (read-only here - run/validate via `netforensic attack scan|update`) ---

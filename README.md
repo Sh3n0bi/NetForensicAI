@@ -30,7 +30,7 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 - **Correlation engine** — links events by shared entity + time window, explicit about the difference between `related` (shared entity, time-proximate) and `possible_relationship` (time-proximate only) — never implies causality from either
 - **Unified timeline**, filterable by time range, user, IP, hostname, process, file, event type, or evidence source
 - **`investigate <entity>`** — everything the case knows about one IP/user/hash/host/domain/process/file/device: related evidence, a scoped timeline, ranked related entities, and deterministic investigation leads
-- **Investigator-owned findings** — Open/Investigating/Confirmed/Rejected/False Positive/Resolved, each citing specific evidence+event pairs
+- **Investigator-owned findings** — Open/Investigating/Confirmed/Rejected/False Positive/Resolved, each citing specific evidence+event pairs; create/update from the CLI or the web UI, both calling the same `FindingManager`
 - **MITRE ATT&CK technique mapping** — deterministic, rule-based, evidence-cited suggestions (never an automated "this happened" claim), each with an investigator-settable status: potential/confirmed/rejected
 - **Threat intelligence** — optional, explicit, cached VirusTotal lookups for IPs and file hashes (never automatic, never sent evidence content)
 - **AI investigation assistant** *(optional)* — a hedged hypothesis from Claude, constrained to an evidence contract that makes fabricated citations structurally impossible (see below)
@@ -195,7 +195,7 @@ The AI assistant (`netforensic investigate --ai`, optional, requires your own An
 
 ## Roadmap
 
-Roughly in priority order, not committed dates: more ATT&CK rules, deeper EVTX/Sysmon event coverage, write parity for findings in the web UI, and whatever real usage surfaces as actually missing rather than speculatively planned.
+Roughly in priority order, not committed dates: more ATT&CK rules, deeper EVTX/Sysmon event coverage, and whatever real usage surfaces as actually missing rather than speculatively planned.
 
 ## Contributing
 

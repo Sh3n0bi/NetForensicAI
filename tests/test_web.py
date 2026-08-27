@@ -260,6 +260,93 @@ def test_list_attack_techniques_after_scan(prepared_case):
     assert data[0]["event_count"] == 1
 
 
+def test_create_finding(prepared_case):
+    client, case, _cases_dir = prepared_case
+    timeline = client.get(f"/api/cases/{case.case_id}/timeline").get_json()
+    event_id = timeline[0]["event_id"]
+
+    response = client.post(
+        f"/api/cases/{case.case_id}/findings",
+        json={
+            "title": "New finding from the web UI",
+            "severity": "High",
+            "status": "Investigating",
+            "assessment": "Looks like a beacon.",
+            "event_ids": [event_id],
+        },
+    )
+
+    assert response.status_code == 201, response.get_json()
+    data = response.get_json()
+    assert data["finding_id"] == "F-0002"  # F-0001 already exists from the fixture
+    assert data["title"] == "New finding from the web UI"
+    assert data["severity"] == "High"
+    assert data["status"] == "Investigating"
+    assert data["evidence_refs"] == [{"evidence_id": data["evidence_refs"][0]["evidence_id"], "event_id": event_id}]
+
+    listed = client.get(f"/api/cases/{case.case_id}/findings").get_json()
+    assert len(listed) == 2
+
+
+def test_create_finding_requires_title(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(f"/api/cases/{case.case_id}/findings", json={})
+
+    assert response.status_code == 400
+
+
+def test_create_finding_rejects_unknown_event_id(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(
+        f"/api/cases/{case.case_id}/findings",
+        json={"title": "Bad ref", "event_ids": ["EVT-does-not-exist"]},
+    )
+
+    assert response.status_code == 400
+    assert "not found" in response.get_json()["error"]
+
+
+def test_update_finding_status(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(f"/api/cases/{case.case_id}/findings/F-0001", json={"status": "Confirmed"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "Confirmed"
+
+
+def test_update_finding_note(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(
+        f"/api/cases/{case.case_id}/findings/F-0001", json={"note": "Confirmed with the network team."}
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data["investigator_notes"]) == 1
+    assert data["investigator_notes"][0]["text"] == "Confirmed with the network team."
+
+
+def test_update_finding_requires_status_or_note(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(f"/api/cases/{case.case_id}/findings/F-0001", json={})
+
+    assert response.status_code == 400
+
+
+def test_update_nonexistent_finding_returns_404(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.post(f"/api/cases/{case.case_id}/findings/F-9999", json={"status": "Confirmed"})
+
+    assert response.status_code == 404
+
+
 def test_report_markdown(prepared_case):
     client, case, _cases_dir = prepared_case
 

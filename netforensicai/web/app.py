@@ -28,7 +28,10 @@ pipeline calls) - not a second ingestion path. Threat-intel check and AI
 hypothesis trigger the same explicit, opt-in external lookups
 `investigate --vt-api` / `--ai` already perform. Live capture start/stop
 control a CaptureSession (core/capture.py) the same way `netforensic
-capture` does. Creating or updating a Finding remains CLI-only.
+capture` does. Creating or updating a Finding calls straight into
+FindingManager, the same as `netforensic finding create/update` - still
+always an explicit, investigator-initiated action, just from either
+interface.
 
 All CaseStore access here goes through locked_store() rather than
 CaseStore(...) directly: a live capture session's background ingestion
@@ -326,13 +329,79 @@ def create_app(cases_dir="cases"):
             raise ApiError(str(e), 502)
         return jsonify(hypothesis.model_dump())
 
-    # --- findings (read-only) ---
+    # --- findings ---
+    # Creating/updating a finding remains an explicit, investigator-owned
+    # action (see core/finding.py's module docstring) - the web UI is a
+    # second way to perform that same action, not a second implementation
+    # of it. Both routes call straight into FindingManager, exactly like
+    # `netforensic finding create/update` do.
 
     @app.route("/api/cases/<case_id>/findings")
     def list_findings(case_id):
         case = _load_case(case_id)
         findings = FindingManager(_case_dir(case)).list()
         return jsonify([f.to_dict() for f in findings])
+
+    @app.route("/api/cases/<case_id>/findings", methods=["POST"])
+    def create_finding(case_id):
+        case = _load_case(case_id)
+        payload = request.get_json(force=True, silent=True) or {}
+        title = (payload.get("title") or "").strip()
+        if not title:
+            raise ApiError("title is required")
+
+        event_ids = payload.get("event_ids") or []
+        evidence_refs = []
+        with locked_store(_case_dir(case)) as store:
+            valid_event_ids = {e.event_id for e in store.all_events()}
+            for event_id in event_ids:
+                event = store.get_event(event_id)
+                if event is None:
+                    raise ApiError(f"event_id '{event_id}' not found in {case.case_id}.")
+                evidence_refs.append({"evidence_id": event.evidence_id, "event_id": event.event_id})
+
+        from netforensicai.core.finding import FindingError
+
+        finding_manager = FindingManager(_case_dir(case))
+        try:
+            finding = finding_manager.create(
+                case_id=case.case_id,
+                title=title,
+                created_by=payload.get("investigator") or "web-ui",
+                severity=payload.get("severity") or "Medium",
+                status=payload.get("status") or "Open",
+                assessment=payload.get("assessment") or "",
+                evidence_refs=evidence_refs,
+                valid_event_ids=valid_event_ids,
+            )
+        except FindingError as e:
+            raise ApiError(str(e))
+
+        case_manager.register_finding(case.case_id, finding.finding_id)
+        return jsonify(finding.to_dict()), 201
+
+    @app.route("/api/cases/<case_id>/findings/<finding_id>", methods=["POST"])
+    def update_finding(case_id, finding_id):
+        case = _load_case(case_id)
+        payload = request.get_json(force=True, silent=True) or {}
+        status = payload.get("status")
+        note = payload.get("note")
+        if not status and not note:
+            raise ApiError("status and/or note is required")
+
+        from netforensicai.core.finding import FindingError
+
+        finding_manager = FindingManager(_case_dir(case))
+        try:
+            finding = None
+            if status:
+                finding = finding_manager.update_status(finding_id, status)
+            if note:
+                finding = finding_manager.add_note(finding_id, note, payload.get("investigator") or "web-ui")
+        except FindingError as e:
+            raise ApiError(str(e), 404 if "not found" in str(e).lower() else 400)
+
+        return jsonify(finding.to_dict())
 
     # --- ATT&CK technique mappings (read-only; run/validate via the CLI) ---
 

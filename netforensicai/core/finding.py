@@ -61,6 +61,11 @@ class FindingManager:
         self.findings_dir = self.case_dir / "findings"
 
     def _finding_path(self, finding_id):
+        # finding_id is about to be reachable from web API URL/payload
+        # input - validate before building a path from it, same reasoning
+        # as CaseManager._case_path() (see its comment).
+        if not FINDING_ID_PATTERN.match(finding_id or ""):
+            raise FindingError(f"Invalid finding ID: {finding_id!r}")
         return self.findings_dir / f"{finding_id}.json"
 
     def _next_finding_id(self):
