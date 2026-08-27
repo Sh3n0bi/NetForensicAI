@@ -681,6 +681,51 @@ def finding_update(
     typer.echo(f"Updated {finding.finding_id}: status={finding.status}, notes={len(finding.investigator_notes)}")
 
 
+report_app = typer.Typer(help="Generate case reports.", no_args_is_help=True)
+app.add_typer(report_app, name="report")
+
+
+@report_app.command("generate")
+def report_generate(
+    case_id: str = typer.Option(..., "--case", help="Case ID to generate a report for"),
+    format: str = typer.Option("markdown", "--format", help="markdown, json, or html"),
+    output: str = typer.Option(
+        None, "--output", help="Output file path (defaults to cases/<ID>/reports/report.<ext>)"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Generate a case report. Never makes an external call - only reflects what's already in the case."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.report import EXTENSION_BY_FORMAT, RENDERERS, build_report
+
+    format_key = format.lower()
+    if format_key not in RENDERERS:
+        typer.echo(f"Error: unsupported format '{format}'. Choose from: {', '.join(RENDERERS)}", err=True)
+        raise typer.Exit(code=1)
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    report = build_report(case, case_dir)
+    content = RENDERERS[format_key](report)
+
+    output_path = Path(output) if output else case_dir / "reports" / f"report.{EXTENSION_BY_FORMAT[format_key]}"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content, encoding="utf-8")
+
+    typer.echo(f"Generated {format_key} report for {case.case_id}: {output_path}")
+
+
 @app.command()
 def scan(
     pcap_file: str = typer.Argument(..., help="Path to the .pcap file"),

@@ -267,3 +267,68 @@ def test_finding_update_requires_status_or_note(tmp_path):
     )
 
     assert result.exit_code == 1
+
+
+def test_report_generate_all_formats(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "report_events.json",
+        [{"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "alice", "src_ip": "10.0.0.5"}],
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "Report test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(
+        app,
+        ["finding", "create", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--title", "Test finding"],
+    )
+
+    for fmt, ext in (("markdown", "md"), ("json", "json"), ("html", "html")):
+        result = runner.invoke(
+            app, ["report", "generate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--format", fmt]
+        )
+        assert result.exit_code == 0, result.output
+        report_path = cases_dir / "INC-0001" / "reports" / f"report.{ext}"
+        assert report_path.exists()
+        content = report_path.read_text(encoding="utf-8")
+        assert "INC-0001" in content
+        assert "Test finding" in content
+
+
+def test_report_generate_custom_output_path(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Custom output test", "--cases-dir", str(cases_dir)])
+
+    custom_path = tmp_path / "custom_report.md"
+    result = runner.invoke(
+        app,
+        [
+            "report", "generate",
+            "--case", "INC-0001",
+            "--cases-dir", str(cases_dir),
+            "--output", str(custom_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert custom_path.exists()
+
+
+def test_report_generate_rejects_unknown_format(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Bad format test", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(
+        app, ["report", "generate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--format", "pdf"]
+    )
+
+    assert result.exit_code == 1
+
+
+def test_report_generate_missing_case_reports_error(tmp_path):
+    result = runner.invoke(
+        app, ["report", "generate", "--case", "INC-9999", "--cases-dir", str(tmp_path / "cases")]
+    )
+
+    assert result.exit_code == 1
