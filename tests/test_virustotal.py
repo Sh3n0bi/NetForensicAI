@@ -62,11 +62,26 @@ def test_check_ip_clean():
 
 def test_check_hash_malicious():
     stats = {"malicious": 40, "harmless": 20}
+    sha256_hash = "deadbeef" * 8  # 64 hex chars - a valid SHA-256-shaped hash
     with patch("requests.get", return_value=_mock_response(stats=stats)):
-        result = virustotal.check_hash("deadbeef", "fake-key")
+        result = virustotal.check_hash(sha256_hash, "fake-key")
 
     assert result["malicious"] is True
     assert result["malicious_count"] == 40
+
+
+def test_check_hash_rejects_malformed_input():
+    result = virustotal.check_hash("not-a-hash", "fake-key")
+
+    assert result["error"] == "'not-a-hash' is not a valid MD5/SHA-1/SHA-256 hash"
+    assert result["malicious"] is False
+
+
+def test_check_ip_rejects_malformed_input():
+    result = virustotal.check_ip("not-an-ip; rm -rf /", "fake-key")
+
+    assert "not a valid IP address" in result["error"]
+    assert result["malicious"] is False
 
 
 def test_check_non_200_status_returns_error():

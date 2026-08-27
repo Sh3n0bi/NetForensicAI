@@ -197,7 +197,9 @@ Fork the repo, make changes, and submit a pull request — see [CONTRIBUTING.md]
 - Extracted files from evidence (embedded files pulled from a pcap, for example) are never executed automatically — they're written to disk as inert bytes
 - Uploaded/ingested filenames are sanitized before touching the filesystem; evidence copies are made read-only after hashing
 - No API key is ever hardcoded — VirusTotal and Anthropic credentials are read from CLI flags, environment variables, or (for Anthropic) `ant auth login`, never stored in a config file by this tool
-- The web UI has no authentication and binds to `127.0.0.1` by default; the CLI warns if you point `--host` anywhere else
+- Case IDs are validated against the `INC-####` pattern everywhere a case is loaded (CLI or web), so a crafted case ID can't be used to walk outside the cases directory
+- VirusTotal lookups validate that a value actually looks like an IP address or an MD5/SHA-1/SHA-256 hash before it's sent to the API
+- The web UI has no authentication and binds to `127.0.0.1` by default; the CLI warns if you point `--host` anywhere else. Every state-changing API request (evidence upload, analyze, live capture, threat intel, AI hypothesis) also requires a custom header the browser frontend sets automatically — this blocks the kind of cross-site request forgery where another open tab silently submits requests to your local instance, which for a chain-of-custody tool matters more than most (forged "evidence" or a silently-started packet capture)
 - Found a security issue? Open an issue at [github.com/Sh3n0bi/NetForensicAI/issues](https://github.com/Sh3n0bi/NetForensicAI/issues) — this is a community project without a dedicated security contact, so please avoid including real sensitive evidence data in a public report
 
 ## License

@@ -58,7 +58,34 @@ def prepared_case(tmp_path):
 
     app = create_app(cases_dir)
     client = app.test_client()
+    # Every state-changing request needs this header - see the CSRF
+    # paragraph in web/app.py's module docstring. Setting it as a default
+    # on the client (rather than per-call) matches what the real frontend
+    # does: send it unconditionally on every request.
+    client.environ_base["HTTP_X_REQUESTED_WITH"] = "NetForensicAI"
     return client, case, cases_dir
+
+
+def test_post_without_csrf_header_is_rejected(prepared_case):
+    # A plain client (no default X-Requested-With) approximates a
+    # cross-origin form/fetch a malicious page could submit blindly - it
+    # must be refused before it ever reaches case/evidence logic.
+    _client, case, cases_dir = prepared_case
+    bare_client = create_app(cases_dir).test_client()
+
+    response = bare_client.post(f"/api/cases/{case.case_id}/analyze")
+
+    assert response.status_code == 403
+    assert "X-Requested-With" in response.get_json()["error"]
+
+
+def test_get_does_not_require_csrf_header(prepared_case):
+    _client, case, cases_dir = prepared_case
+    bare_client = create_app(cases_dir).test_client()
+
+    response = bare_client.get(f"/api/cases/{case.case_id}")
+
+    assert response.status_code == 200
 
 
 def test_index_serves_html(prepared_case):

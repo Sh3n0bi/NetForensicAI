@@ -12,14 +12,18 @@ callers can import this module just to resolve an API key (get_api_key)
 without requests being installed.
 """
 
+import ipaddress
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
 IP_URL = "https://www.virustotal.com/api/v3/ip_addresses/{value}"
 HASH_URL = "https://www.virustotal.com/api/v3/files/{value}"
 REQUEST_TIMEOUT_SECONDS = 10
+
+_HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
 
 
 def get_api_key(cli_value=None):
@@ -75,9 +79,20 @@ def _check(url_template, value, api_key):
 
 def check_ip(ip, api_key):
     """Look up an IP address. Returns a result dict - see _check()."""
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return _empty_result(f"'{ip}' is not a valid IP address")
     return _check(IP_URL, ip, api_key)
 
 
 def check_hash(file_hash, api_key):
     """Look up a file hash (MD5/SHA-1/SHA-256). Returns a result dict - see _check()."""
+    # Validated (rather than passed straight into the URL) both to reject
+    # garbage before spending a rate-limited API call on it, and because
+    # `value` may originate from evidence content or a web API payload -
+    # an unvalidated value formatted directly into a URL path is worth
+    # constraining to a known-safe shape on principle.
+    if not _HASH_RE.match(file_hash or ""):
+        return _empty_result(f"'{file_hash}' is not a valid MD5/SHA-1/SHA-256 hash")
     return _check(HASH_URL, file_hash, api_key)

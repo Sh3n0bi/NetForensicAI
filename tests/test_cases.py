@@ -54,6 +54,21 @@ def test_load_missing_case_raises(tmp_path):
         pass
 
 
+def test_load_rejects_path_traversal_case_id(tmp_path):
+    # case_id reaches CaseManager directly from web API URL segments with
+    # no upstream validation - _case_path() must refuse anything that
+    # isn't a well-formed INC-#### id rather than resolving it as a path.
+    manager = CaseManager(tmp_path / "cases")
+    (tmp_path / "secret.json").write_text('{"leaked": true}')
+
+    for malicious_id in ("../secret", "..\\secret", "../../etc/passwd", "INC-0001/../../secret"):
+        try:
+            manager.load(malicious_id)
+            assert False, f"expected CaseError for {malicious_id!r}"
+        except CaseError:
+            pass
+
+
 def test_list_returns_all_cases_sorted(tmp_path):
     manager = CaseManager(tmp_path / "cases")
     manager.create(name="First")

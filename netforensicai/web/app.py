@@ -9,6 +9,19 @@ code execution - a serious risk if this process were ever reachable from
 a network). Only pass a different --host if you understand and accept
 exposing this to other machines.
 
+Every state-changing route requires the X-Requested-With header (see
+CSRF_HEADER below) - not because this app has sessions or cookies to
+steal, but because a browser tab open on an unrelated malicious page can
+still reach 127.0.0.1 with a "simple" cross-origin POST (multipart form
+upload, or JSON sent as text/plain) that needs no CORS preflight. Without
+this check, that page could silently submit forged "evidence" into a real
+case - undermining the chain-of-custody model this whole tool is built
+around - or start a live capture without the analyst's knowledge. A
+custom header forces the browser into a CORS preflight; since this app
+never sends Access-Control-Allow-Origin, the preflight fails and the
+browser never sends the real request. The frontend (app.js) sets this
+header on every POST it makes.
+
 Write surface is deliberately narrow. Evidence upload and analyze mirror
 `netforensic evidence add` / `analyze` exactly (same EvidenceManager /
 pipeline calls) - not a second ingestion path. Threat-intel check and AI
@@ -52,6 +65,10 @@ REPORT_MIMETYPES = {"markdown": "text/markdown", "json": "application/json", "ht
 # with no auth in front of it.
 MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 
+# See the CSRF paragraph in the module docstring.
+CSRF_HEADER = "X-Requested-With"
+CSRF_HEADER_VALUE = "NetForensicAI"
+
 
 class ApiError(Exception):
     def __init__(self, message, status_code=400):
@@ -77,6 +94,15 @@ def create_app(cases_dir="cases"):
     @app.errorhandler(ApiError)
     def handle_api_error(err):
         return jsonify({"error": err.message}), err.status_code
+
+    @app.before_request
+    def _require_csrf_header_on_writes():
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            if request.headers.get(CSRF_HEADER) != CSRF_HEADER_VALUE:
+                raise ApiError(
+                    f"Missing or invalid {CSRF_HEADER} header - refused to prevent cross-site request forgery.",
+                    403,
+                )
 
     @app.errorhandler(413)
     def handle_too_large(_err):

@@ -64,6 +64,12 @@ class CaseManager:
         self.cases_dir = Path(cases_dir)
 
     def _case_path(self, case_id):
+        # case_id reaches here directly from URL path segments in the web
+        # API (and CLI --case flags) with no upstream validation - without
+        # this check, a case_id like "../../../../etc" would let load()
+        # walk outside cases_dir looking for a case.json (CWE-22).
+        if not CASE_ID_PATTERN.match(case_id or ""):
+            raise CaseError(f"Invalid case ID: {case_id!r}")
         return self.cases_dir / case_id
 
     def _next_case_id(self):

@@ -16,10 +16,15 @@ async function apiGet(path) {
   return data;
 }
 
+// Sent on every state-changing request - see the CSRF paragraph in
+// web/app.py's module docstring. The server rejects POST/PUT/PATCH/DELETE
+// without it.
+const CSRF_HEADERS = { "X-Requested-With": "NetForensicAI" };
+
 async function apiPost(path, body) {
   const res = await fetch(API + path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...CSRF_HEADERS },
     body: JSON.stringify(body || {}),
   });
   const data = await res.json().catch(() => ({}));
@@ -30,7 +35,7 @@ async function apiPost(path, body) {
 async function apiUpload(path, formData) {
   // No Content-Type header: the browser sets multipart/form-data with the
   // correct boundary itself when the body is a FormData instance.
-  const res = await fetch(API + path, { method: "POST", body: formData });
+  const res = await fetch(API + path, { method: "POST", body: formData, headers: CSRF_HEADERS });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
