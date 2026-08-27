@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_PARSER_MODULES = (
     "netforensicai.parsers.pcap",
     "netforensicai.parsers.generic",
+    "netforensicai.parsers.evtx",
 )
 
 _loaded = False

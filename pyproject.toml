@@ -24,6 +24,9 @@ intel = [
 ai = [
     "anthropic>=1.0,<2.0",
 ]
+evtx = [
+    "python-evtx>=0.8,<0.9",
+]
 dashboard = [
     "dash>=2.17,<3.0",
     "plotly>=5.15,<6.0",
