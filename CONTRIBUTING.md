@@ -22,10 +22,9 @@ Before adding a feature, it's worth understanding the shape the rest of the code
 ## Ideas for Contributions
 
 - Additional Sysmon EVTX event types (`parsers/evtx.py`'s `SYSMON_EVENT_TYPES`/`SYSMON_FIELD_MAP` - registry-shell, remote thread, image load, etc.)
-- MITRE ATT&CK technique mapping (currently a documented placeholder - see the Limitations section in `README.md`)
+- More ATT&CK technique rules (`core/attack.py`'s `_rules_for_event` - currently a small starting set of four techniques; each new rule should be tied to a specific, unambiguous event pattern rather than a speculative guess)
 - Additional threat intelligence providers alongside VirusTotal (`core/threat_intel.py`'s provider dispatch is built to add more)
 - Web UI write parity for findings (currently CLI-only - `netforensic finding create/update`)
-- A GitHub Actions workflow that runs `pytest` on PRs
 
 ## Code Style
 - Follow PEP 8 for Python code.

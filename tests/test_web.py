@@ -204,6 +204,35 @@ def test_list_findings(prepared_case):
     assert data[0]["title"] == "Suspicious outbound connection"
 
 
+def test_list_attack_techniques_empty(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.get(f"/api/cases/{case.case_id}/attack")
+
+    assert response.status_code == 200
+    assert response.get_json() == []
+
+
+def test_list_attack_techniques_after_scan(prepared_case):
+    from datetime import datetime, timezone
+
+    client, case, cases_dir = prepared_case
+    with CaseStore(cases_dir / case.case_id) as store:
+        store.upsert_technique(
+            "T1059.001", "Command and Scripting Interpreter: PowerShell", "medium", datetime.now(timezone.utc)
+        )
+        store.link_technique_event("T1059.001", "EVT-FAKE", "EV-0001", "test basis")
+
+    response = client.get(f"/api/cases/{case.case_id}/attack")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data) == 1
+    assert data[0]["technique_id"] == "T1059.001"
+    assert data[0]["status"] == "potential"
+    assert data[0]["event_count"] == 1
+
+
 def test_report_markdown(prepared_case):
     client, case, _cases_dir = prepared_case
 

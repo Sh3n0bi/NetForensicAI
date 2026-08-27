@@ -31,6 +31,7 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 - **Unified timeline**, filterable by time range, user, IP, hostname, process, file, event type, or evidence source
 - **`investigate <entity>`** — everything the case knows about one IP/user/hash/host/domain/process/file/device: related evidence, a scoped timeline, ranked related entities, and deterministic investigation leads
 - **Investigator-owned findings** — Open/Investigating/Confirmed/Rejected/False Positive/Resolved, each citing specific evidence+event pairs
+- **MITRE ATT&CK technique mapping** — deterministic, rule-based, evidence-cited suggestions (never an automated "this happened" claim), each with an investigator-settable status: potential/confirmed/rejected
 - **Threat intelligence** — optional, explicit, cached VirusTotal lookups for IPs and file hashes (never automatic, never sent evidence content)
 - **AI investigation assistant** *(optional)* — a hedged hypothesis from Claude, constrained to an evidence contract that makes fabricated citations structurally impossible (see below)
 - **Reports** in Markdown, JSON, and HTML, every section traceable to evidence
@@ -177,7 +178,7 @@ The AI assistant (`netforensic investigate --ai`, optional, requires your own An
 ## Limitations
 
 - Correlation (`related` / `possible_relationship`) means shared entity and/or time proximity — it is never evidence of causality
-- ATT&CK technique mapping is not yet implemented; report sections referencing it say so explicitly rather than guessing
+- ATT&CK technique mapping (`netforensic attack scan`) covers a deliberately small starting set of four techniques (PowerShell execution, generic script/interpreter execution, obfuscated PowerShell command lines, executables transferred over the network) — not an exhaustive ATT&CK matrix; each mapping is a rule match over normalized events, always "potential" until an investigator confirms it
 - Threat intelligence results are only ever gathered when you explicitly ask (`--vt-api`, `--ai`) — reports never trigger a new lookup themselves
 - The entity relationship view is a 1-hop neighborhood via SQL join, not a full graph traversal
 - EVTX support covers the five most common Sysmon event types plus generic System-field fallback for everything else; deeper per-provider mapping (Windows Security auditing event IDs, for example) is a natural future extension of the same pattern, not yet built
@@ -185,7 +186,7 @@ The AI assistant (`netforensic investigate --ai`, optional, requires your own An
 
 ## Roadmap
 
-Roughly in priority order, not committed dates: deeper EVTX/Sysmon event coverage, MITRE ATT&CK mapping, write parity for findings in the web UI, and whatever real usage surfaces as actually missing rather than speculatively planned.
+Roughly in priority order, not committed dates: more ATT&CK rules, deeper EVTX/Sysmon event coverage, write parity for findings in the web UI, and whatever real usage surfaces as actually missing rather than speculatively planned.
 
 ## Contributing
 

@@ -105,8 +105,9 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 }
 .badge-open, .badge-Open { background: rgba(224,160,48,0.15); color: var(--warn); }
 .badge-investigating, .badge-Investigating { background: rgba(91,157,255,0.15); color: var(--accent); }
-.badge-closed, .badge-Confirmed, .badge-Resolved { background: rgba(76,175,80,0.15); color: var(--ok); }
-.badge-Rejected, .badge-False-Positive { background: rgba(224,90,78,0.15); color: var(--bad); }
+.badge-closed, .badge-Confirmed, .badge-confirmed, .badge-Resolved { background: rgba(76,175,80,0.15); color: var(--ok); }
+.badge-Rejected, .badge-rejected, .badge-False-Positive { background: rgba(224,90,78,0.15); color: var(--bad); }
+.badge-potential { background: rgba(224,160,48,0.15); color: var(--warn); }
 .badge-medium, .badge-Medium { background: rgba(224,160,48,0.15); color: var(--warn); }
 .badge-high, .badge-High, .badge-Critical { background: rgba(224,90,78,0.15); color: var(--bad); }
 .badge-low, .badge-Low { background: rgba(154,160,180,0.15); color: var(--text-dim); }

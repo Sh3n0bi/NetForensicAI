@@ -1,16 +1,17 @@
 """Case report generation.
 
 Assembles case data (case info, evidence + integrity, entities, timeline,
-artifacts, network indicators, findings, notes) into one report structure,
-then renders it as Markdown, JSON, or HTML.
+artifacts, network indicators, findings, ATT&CK mappings, notes) into one
+report structure, then renders it as Markdown, JSON, or HTML.
 
-Sections with no real data behind them yet (ATT&CK mapping, automated
-threat intelligence) say so plainly rather than being silently omitted or
-filled in with something fabricated - the report should never imply more
-analysis happened than actually did. Threat intelligence in particular is
-never looked up live during report generation: VT lookups are explicit,
-opt-in actions (`netforensic investigate --vt-api`), and building a report
-is not the place to trigger a new external call as a side effect.
+A section with nothing behind it yet (no threat intel checked, no ATT&CK
+techniques detected) says so plainly rather than being silently omitted -
+the report should never imply more analysis happened than actually did.
+Nothing here triggers new analysis as a side effect of generating a
+report: threat intelligence lookups are explicit, opt-in actions
+(`netforensic investigate --vt-api`) and ATT&CK mapping is its own
+explicit action (`netforensic attack scan`) - this module only ever reads
+what's already been recorded in the case.
 """
 
 import html
@@ -35,12 +36,14 @@ LIMITATIONS = [
     "Correlation (\"related\" / \"possible_relationship\") reflects shared entities and/or time "
     "proximity only. It is not evidence of causality - two events being linked here does not mean "
     "one caused, followed from, or is otherwise definitively connected to the other.",
-    "Potential MITRE ATT&CK mapping is not yet implemented in this version of the platform.",
+    "ATT&CK technique mappings are deterministic rule matches over already-normalized events "
+    "(see `netforensic attack scan`), not an AI or automated claim that a technique definitely "
+    "occurred - each one is a 'potential' suggestion until an investigator explicitly confirms it.",
     "Threat intelligence lookups (e.g. VirusTotal) are explicit, opt-in actions performed via "
     "`netforensic investigate --vt-api` and are not automatically run or persisted during report "
     "generation; this report reflects only what has already been recorded in the case.",
-    "Entity extraction and correlation cover the event types and fields the current parsers "
-    "populate; evidence formats not yet supported (e.g. EVTX/Sysmon) are not reflected here.",
+    "Entity extraction, correlation, and ATT&CK mapping only cover the event types and fields the "
+    "current parsers populate and the current rule set checks for - they are not exhaustive.",
 ]
 
 NETWORK_INDICATOR_TYPES = ("ip_address", "domain", "url", "port")
@@ -78,6 +81,7 @@ def build_report(case, case_dir):
         correlation_links = store.list_correlation_links()
         timeline_entries = [entry.to_dict() for entry in build_timeline(store)]
         threat_intel_results = store.list_threat_intel()
+        attack_techniques = store.list_techniques()
 
         entity_event_counts = Counter()
         for links in store.entity_ids_by_event().values():
@@ -134,6 +138,26 @@ def build_report(case, case_dir):
         )
     )
 
+    attack_techniques = [
+        {
+            **t,
+            "created_at": t["created_at"].isoformat() if t["created_at"] else None,
+            "updated_at": t["updated_at"].isoformat() if t["updated_at"] else None,
+        }
+        for t in attack_techniques
+    ]
+    attack_mapping_note = (
+        "Deterministic rule-based suggestions only (see `netforensic attack scan`), never an automated "
+        "claim that a technique occurred - each one cites the specific events it's based on and carries "
+        "a status the investigator sets explicitly (potential/confirmed/rejected)."
+        if attack_techniques
+        else (
+            "No potential ATT&CK techniques detected. Techniques are only ever suggested by deterministic "
+            "rules over already-normalized events (see `netforensic attack scan`) - never inferred "
+            "automatically for this report."
+        )
+    )
+
     return {
         "case": {
             "case_id": case.case_id,
@@ -153,7 +177,8 @@ def build_report(case, case_dir):
         "threat_intelligence_note": threat_intelligence_note,
         "threat_intelligence_results": threat_intel_results,
         "investigation_findings": investigation_findings,
-        "attack_mapping_note": "Not yet implemented in this version of the platform.",
+        "attack_mapping_note": attack_mapping_note,
+        "attack_techniques": attack_techniques,
         "investigator_notes": list(case.notes),
         "limitations": LIMITATIONS,
         "recommendations": _generate_recommendations(findings, findings_by_status),
@@ -295,7 +320,14 @@ def render_markdown(report):
     else:
         lines += ["No findings recorded.", ""]
 
-    lines += ["## Potential ATT&CK Mapping", report["attack_mapping_note"], ""]
+    lines += ["## Potential ATT&CK Mapping", report["attack_mapping_note"]]
+    if report["attack_techniques"]:
+        lines += ["", "| Technique | Name | Confidence | Status | Events |", "|---|---|---|---|---|"]
+        lines += [
+            f"| {t['technique_id']} | {t['technique_name']} | {t['confidence']} | {t['status']} | {t['event_count']} |"
+            for t in report["attack_techniques"]
+        ]
+    lines.append("")
 
     lines += ["## Investigator Notes"]
     if report["investigator_notes"]:
@@ -443,6 +475,14 @@ def render_html(report):
         parts.append("<p>No findings recorded.</p>")
 
     parts.append(f"<h2>Potential ATT&amp;CK Mapping</h2><p>{_e(report['attack_mapping_note'])}</p>")
+    if report["attack_techniques"]:
+        parts.append("<table><tr><th>Technique</th><th>Name</th><th>Confidence</th><th>Status</th><th>Events</th></tr>")
+        for t in report["attack_techniques"]:
+            parts.append(
+                f"<tr><td>{_e(t['technique_id'])}</td><td>{_e(t['technique_name'])}</td>"
+                f"<td>{_e(t['confidence'])}</td><td>{_e(t['status'])}</td><td>{t['event_count']}</td></tr>"
+            )
+        parts.append("</table>")
 
     parts.append("<h2>Investigator Notes</h2>")
     if report["investigator_notes"]:

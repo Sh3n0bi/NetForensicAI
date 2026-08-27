@@ -70,7 +70,8 @@ def test_build_report_sections_populated(prepared_case):
     assert len(report["investigation_findings"]) == 1
     assert report["investigation_findings"][0]["title"] == "Suspicious outbound connection"
     assert report["investigation_findings"][0]["investigator_notes"][0]["text"] == "Reviewed and escalated."
-    assert "not yet implemented" in report["attack_mapping_note"].lower()
+    assert "no potential att&ck techniques detected" in report["attack_mapping_note"].lower()
+    assert report["attack_techniques"] == []
     assert len(report["limitations"]) > 0
     assert len(report["recommendations"]) > 0
 
@@ -202,3 +203,44 @@ def test_report_without_threat_intel_shows_generic_note(prepared_case):
 
     assert report["threat_intelligence_results"] == []
     assert "no results have been recorded" in report["threat_intelligence_note"]
+
+
+def test_report_reflects_detected_attack_techniques(prepared_case):
+    from netforensicai.core.attack import scan_case
+
+    case, case_dir = prepared_case
+    with CaseStore(case_dir) as store:
+        scan_case(store)  # events fixture includes a PowerShell process_start? verify below
+
+    report = build_report(case, case_dir)
+
+    # The prepared_case fixture's events are authentication + network_connection,
+    # neither of which trigger any current rule - confirm the "none detected" path
+    # still works correctly even after a real scan_case() run finds nothing.
+    assert report["attack_techniques"] == []
+    assert "no potential att&ck techniques detected" in report["attack_mapping_note"].lower()
+
+
+def test_report_shows_technique_table_when_present(prepared_case):
+    from datetime import datetime, timezone
+
+    case, case_dir = prepared_case
+    with CaseStore(case_dir) as store:
+        store.upsert_technique("T1059.001", "Command and Scripting Interpreter: PowerShell", "medium", datetime.now(timezone.utc))
+        store.link_technique_event("T1059.001", "EVT-FAKE-0001", "EV-0001", "test basis")
+
+    report = build_report(case, case_dir)
+
+    assert len(report["attack_techniques"]) == 1
+    technique = report["attack_techniques"][0]
+    assert technique["technique_id"] == "T1059.001"
+    assert technique["status"] == "potential"
+    assert technique["event_count"] == 1
+    assert "deterministic rule-based suggestions" in report["attack_mapping_note"].lower()
+
+    markdown = render_markdown(report)
+    assert "T1059.001" in markdown
+    assert "Command and Scripting Interpreter: PowerShell" in markdown
+
+    html_text = render_html(report)
+    assert "T1059.001" in html_text

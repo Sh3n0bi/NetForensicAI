@@ -308,6 +308,18 @@ def create_app(cases_dir="cases"):
         findings = FindingManager(_case_dir(case)).list()
         return jsonify([f.to_dict() for f in findings])
 
+    # --- ATT&CK technique mappings (read-only; run/validate via the CLI) ---
+
+    @app.route("/api/cases/<case_id>/attack")
+    def list_attack_techniques(case_id):
+        case = _load_case(case_id)
+        with locked_store(_case_dir(case)) as store:
+            techniques = store.list_techniques()
+        for t in techniques:
+            t["created_at"] = t["created_at"].isoformat() if t["created_at"] else None
+            t["updated_at"] = t["updated_at"].isoformat() if t["updated_at"] else None
+        return jsonify(techniques)
+
     # --- reports ---
 
     @app.route("/api/cases/<case_id>/report/<fmt>")

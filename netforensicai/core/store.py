@@ -201,6 +201,28 @@ class CaseStore:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attack_techniques (
+                technique_id TEXT PRIMARY KEY,
+                technique_name TEXT NOT NULL,
+                confidence TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attack_technique_events (
+                technique_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                evidence_id TEXT NOT NULL,
+                basis TEXT NOT NULL
+            )
+            """
+        )
 
     def close(self):
         self.conn.close()
@@ -434,6 +456,77 @@ class CaseStore:
         columns_sql = ", ".join(THREAT_INTEL_FIELDS)
         rows = self.conn.execute(f"SELECT {columns_sql} FROM threat_intel ORDER BY checked_at DESC").fetchall()
         return [dict(zip(THREAT_INTEL_FIELDS, row)) for row in rows]
+
+    # --- ATT&CK technique mappings ---
+
+    def upsert_technique(self, technique_id, technique_name, confidence, now):
+        """Insert a newly-detected technique with status "potential", or -
+        if it already exists - leave its investigator-set status untouched
+        and only refresh confidence/updated_at. Mirrors upsert_entity()'s
+        idempotency."""
+        self.conn.execute(
+            """
+            INSERT INTO attack_techniques (technique_id, technique_name, confidence, status, created_at, updated_at)
+            VALUES (?, ?, ?, 'potential', ?, ?)
+            ON CONFLICT (technique_id) DO UPDATE SET
+                confidence = excluded.confidence,
+                updated_at = excluded.updated_at
+            """,
+            [technique_id, technique_name, confidence, now, now],
+        )
+
+    def link_technique_event(self, technique_id, event_id, evidence_id, basis):
+        exists = self.conn.execute(
+            "SELECT 1 FROM attack_technique_events WHERE technique_id = ? AND event_id = ?",
+            [technique_id, event_id],
+        ).fetchone()
+        if not exists:
+            self.conn.execute(
+                "INSERT INTO attack_technique_events (technique_id, event_id, evidence_id, basis) VALUES (?, ?, ?, ?)",
+                [technique_id, event_id, evidence_id, basis],
+            )
+
+    def list_techniques(self):
+        rows = self.conn.execute(
+            "SELECT technique_id, technique_name, confidence, status, created_at, updated_at "
+            "FROM attack_techniques ORDER BY technique_id"
+        ).fetchall()
+        cols = ["technique_id", "technique_name", "confidence", "status", "created_at", "updated_at"]
+        result = []
+        for row in rows:
+            d = dict(zip(cols, row))
+            d["event_count"] = self.conn.execute(
+                "SELECT count(*) FROM attack_technique_events WHERE technique_id = ?", [d["technique_id"]]
+            ).fetchone()[0]
+            result.append(d)
+        return result
+
+    def get_technique(self, technique_id):
+        row = self.conn.execute(
+            "SELECT technique_id, technique_name, confidence, status, created_at, updated_at "
+            "FROM attack_techniques WHERE technique_id = ?",
+            [technique_id],
+        ).fetchone()
+        if row is None:
+            return None
+        cols = ["technique_id", "technique_name", "confidence", "status", "created_at", "updated_at"]
+        return dict(zip(cols, row))
+
+    def technique_events(self, technique_id):
+        rows = self.conn.execute(
+            "SELECT event_id, evidence_id, basis FROM attack_technique_events WHERE technique_id = ?",
+            [technique_id],
+        ).fetchall()
+        return [{"event_id": r[0], "evidence_id": r[1], "basis": r[2]} for r in rows]
+
+    def update_technique_status(self, technique_id, status, now):
+        self.conn.execute(
+            "UPDATE attack_techniques SET status = ?, updated_at = ? WHERE technique_id = ?",
+            [status, now, technique_id],
+        )
+
+    def count_techniques(self):
+        return self.conn.execute("SELECT count(*) FROM attack_techniques").fetchone()[0]
 
 
 @contextlib.contextmanager

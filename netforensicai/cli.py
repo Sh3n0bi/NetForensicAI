@@ -699,6 +699,132 @@ def finding_update(
     typer.echo(f"Updated {finding.finding_id}: status={finding.status}, notes={len(finding.investigator_notes)}")
 
 
+attack_app = typer.Typer(
+    help="MITRE ATT&CK technique mapping (deterministic, evidence-cited suggestions).", no_args_is_help=True
+)
+app.add_typer(attack_app, name="attack")
+
+
+@attack_app.command("scan")
+def attack_scan(
+    case_id: str = typer.Option(..., "--case", help="Case ID to scan"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Scan the case's events for potential ATT&CK technique matches.
+
+    Always a full rescan of every event, not scoped to what was just
+    parsed - a technique can be supported by events across multiple
+    evidence items. Any investigator-set status from a previous scan is
+    preserved.
+    """
+    from netforensicai.core.attack import scan_case
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.store import CaseStore
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    with CaseStore(case_dir) as store:
+        touched = scan_case(store)
+
+    if not touched:
+        typer.echo("No potential ATT&CK techniques detected.")
+        return
+
+    typer.echo(f"Detected {len(touched)} potential technique(s):")
+    for technique_id, technique_name in touched:
+        typer.echo(f"  {technique_id}: {technique_name}")
+
+
+@attack_app.command("list")
+def attack_list(
+    case_id: str = typer.Option(..., "--case", help="Case ID to list techniques for"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """List detected ATT&CK technique mappings for a case."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.store import CaseStore
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    with CaseStore(case_dir) as store:
+        techniques = store.list_techniques()
+
+    if not techniques:
+        typer.echo(f"No ATT&CK techniques detected for {case.case_id}. Run `netforensic attack scan` first.")
+        return
+
+    header = f"{'TECHNIQUE':<14} {'STATUS':<12} {'CONFIDENCE':<10} {'EVENTS':<8} NAME"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for t in techniques:
+        typer.echo(
+            f"{t['technique_id']:<14} {t['status']:<12} {t['confidence']:<10} {t['event_count']:<8} {t['technique_name']}"
+        )
+
+
+@attack_app.command("update")
+def attack_update(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    technique_id: str = typer.Option(..., "--technique", help="Technique ID, e.g. T1059.001"),
+    status: str = typer.Option(..., "--status", help="potential, confirmed, or rejected"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Investigator validation: confirm or reject a detected technique mapping."""
+    from datetime import datetime, timezone
+
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.store import CaseStore
+
+    valid_statuses = ("potential", "confirmed", "rejected")
+    if status not in valid_statuses:
+        typer.echo(f"Error: --status must be one of: {', '.join(valid_statuses)}", err=True)
+        raise typer.Exit(code=1)
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    with CaseStore(case_dir) as store:
+        existing = store.get_technique(technique_id)
+        if existing is None:
+            typer.echo(f"Error: technique '{technique_id}' has not been detected for this case.", err=True)
+            raise typer.Exit(code=1)
+        store.update_technique_status(technique_id, status, datetime.now(timezone.utc))
+
+    typer.echo(f"Updated {technique_id}: status={status}")
+
+
 report_app = typer.Typer(help="Generate case reports.", no_args_is_help=True)
 app.add_typer(report_app, name="report")
 

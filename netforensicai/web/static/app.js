@@ -115,6 +115,7 @@ async function renderCaseTab(app, c, tab, rest) {
   if (tab === "timeline") return renderTimeline(app, c);
   if (tab === "entities") return renderEntities(app, c, rest[0]);
   if (tab === "findings") return renderFindings(app, c);
+  if (tab === "attack") return renderAttack(app, c);
   if (tab === "reports") return renderReports(app, c);
   if (tab === "capture") return renderCapture(app, c);
   return renderOverview(app, c);
@@ -711,6 +712,54 @@ async function renderFindings(app, c) {
         ${notesHtml}`;
       panel.appendChild(card);
     }
+  } catch (e) {
+    panel.innerHTML = "";
+    panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+  }
+}
+
+// --- ATT&CK (read-only here - run/validate via `netforensic attack scan|update`) ---
+
+async function renderAttack(app, c) {
+  app.appendChild(el("h1", { text: "ATT&CK Mapping" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Deterministic, evidence-cited technique suggestions - never an automated claim that a technique " +
+        "occurred. Run `netforensic attack scan --case " +
+        c.case_id +
+        "` to (re)scan, and `netforensic attack update` to confirm or reject a mapping.",
+    })
+  );
+
+  const panel = el("div", { class: "panel" });
+  app.appendChild(panel);
+  panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+  try {
+    const techniques = await apiGet(`/cases/${c.case_id}/attack`);
+    panel.innerHTML = "";
+    if (!techniques.length) {
+      panel.appendChild(
+        el("div", { class: "empty", text: "No potential ATT&CK techniques detected. Run `netforensic attack scan`." })
+      );
+      return;
+    }
+    const table = el("table");
+    table.innerHTML =
+      "<tr><th>Technique</th><th>Name</th><th>Confidence</th><th>Status</th><th>Events</th></tr>" +
+      techniques
+        .map(
+          (t) => `<tr>
+        <td class="mono">${escapeHtml(t.technique_id)}</td>
+        <td>${escapeHtml(t.technique_name)}</td>
+        <td><span class="badge badge-${cssClass(t.confidence)}">${escapeHtml(t.confidence)}</span></td>
+        <td><span class="badge badge-${cssClass(t.status)}">${escapeHtml(t.status)}</span></td>
+        <td>${t.event_count}</td>
+      </tr>`
+        )
+        .join("");
+    panel.appendChild(table);
   } catch (e) {
     panel.innerHTML = "";
     panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
