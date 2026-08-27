@@ -149,3 +149,14 @@ class CaseManager:
             case.updated_at = datetime.now(timezone.utc).isoformat()
             self._save(case)
         return case
+
+    def register_artifact(self, case_id, artifact_path):
+        """Record a path (relative to the case directory) against the case's
+        artifact index, e.g. a file extracted from evidence during parsing.
+        Idempotent."""
+        case = self.load(case_id)
+        if artifact_path not in case.artifacts:
+            case.artifacts.append(artifact_path)
+            case.updated_at = datetime.now(timezone.utc).isoformat()
+            self._save(case)
+        return case

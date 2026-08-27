@@ -168,6 +168,126 @@ def evidence_list_cmd(
         )
 
 
+def _parse_one_evidence(evidence, case_dir, case_manager, case_id, store):
+    """Parse one evidence item, persist its events + extracted entities into
+    `store`, and register any newly saved artifact files against the case.
+
+    Returns (event_count, entity_count, error). error is None on success.
+    """
+    import os
+
+    from netforensicai.core.entities import extract_and_store
+    from netforensicai.parsers import base, load_parsers
+
+    load_parsers()
+    parser = base.get_parser(evidence.evidence_type)
+    if parser is None:
+        return None, None, f"No parser registered for evidence type '{evidence.evidence_type}'"
+
+    from netforensicai.core.evidence import EvidenceManager
+
+    stored_path = EvidenceManager(case_dir).stored_file_path(evidence.evidence_id)
+    output_dir = case_dir / "artifacts" / evidence.evidence_id
+
+    try:
+        events = parser.parse(stored_path, evidence_id=evidence.evidence_id, output_dir=str(output_dir))
+    except Exception as e:
+        return None, None, str(e)
+
+    store.replace_events_for_evidence(evidence.evidence_id, events)
+    entity_count = extract_and_store(store, events)
+
+    for event in events:
+        if event.event_type == "file_transfer" and event.file_path:
+            relative_path = os.path.relpath(event.file_path, case_dir).replace(os.sep, "/")
+            case_manager.register_artifact(case_id, relative_path)
+
+    return len(events), entity_count, None
+
+
+@app.command("parse")
+def parse_evidence(
+    case_id: str = typer.Option(..., "--case", help="Case ID the evidence belongs to"),
+    evidence_id: str = typer.Option(..., "--evidence", help="Evidence ID to parse (e.g. EV-0001)"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Parse one evidence item into normalized events and extract entities."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceError, EvidenceManager
+    from netforensicai.core.store import CaseStore
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    try:
+        evidence = EvidenceManager(case_dir).load(evidence_id)
+    except EvidenceError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    with CaseStore(case_dir) as store:
+        event_count, entity_count, error = _parse_one_evidence(evidence, case_dir, case_manager, case.case_id, store)
+
+    if error:
+        typer.echo(f"Error parsing {evidence_id}: {error}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Parsed {evidence_id}: {event_count} events, {entity_count} entities")
+
+
+@app.command("analyze")
+def analyze_case(
+    case_id: str = typer.Option(..., "--case", help="Case ID to analyze"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Parse every evidence item in a case that has a registered parser, and extract entities."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceManager
+    from netforensicai.core.store import CaseStore
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    items = EvidenceManager(case_dir).list()
+    if not items:
+        typer.echo(f"No evidence recorded for {case.case_id}. Add some with `netforensic evidence add`.")
+        return
+
+    total_events = 0
+    total_entities = 0
+    with CaseStore(case_dir) as store:
+        for evidence in items:
+            event_count, entity_count, error = _parse_one_evidence(evidence, case_dir, case_manager, case.case_id, store)
+            if error:
+                typer.echo(f"  {evidence.evidence_id} ({evidence.evidence_type}): skipped - {error}")
+                continue
+            typer.echo(f"  {evidence.evidence_id} ({evidence.evidence_type}): {event_count} events, {entity_count} entities")
+            total_events += event_count
+            total_entities += entity_count
+
+    typer.echo(f"Analysis complete for {case.case_id}: {total_events} events, {total_entities} distinct entities")
+
+
 @app.command()
 def scan(
     pcap_file: str = typer.Argument(..., help="Path to the .pcap file"),

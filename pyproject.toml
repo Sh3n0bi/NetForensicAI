@@ -9,6 +9,7 @@ authors = [{ name = "Sh3n0bi" }]
 dependencies = [
     "typer>=0.12,<1.0",
     "pydantic>=2.6,<3.0",
+    "duckdb>=1.0,<2.0",
 ]
 
 [project.optional-dependencies]
