@@ -267,6 +267,113 @@ def test_repeated_requests_to_same_path_do_not_trigger_enumeration(tmp_path):
     assert [d for d in detections if d["rule_id"] == "HTTP-PATH-ENUMERATION"] == []
 
 
+def _http_response(event_id, url, status, src_ip="203.0.113.7", dst_ip="10.0.0.5"):
+    return _event(
+        event_id,
+        event_type="http_response",
+        src_ip=src_ip,
+        dst_ip=dst_ip,
+        url=url,
+        raw_event_reference={"status_code": status, "request_url": url},
+    )
+
+
+def test_successful_paths_during_a_scan_are_surfaced(tmp_path):
+    # The forensically important question after a brute-force scan is not
+    # "was there a scan" but "what did it find" - the handful of 200s buried
+    # among thousands of 404s.
+    events = [_http_response(f"EVT-4{i:04d}", f"http://t.example/miss-{i}", 404) for i in range(150)]
+    events.append(_http_response("EVT-9001", "http://t.example/admin/panel.php", 200))
+    events.append(_http_response("EVT-9002", "http://t.example/backup.zip", 200))
+
+    with _seeded_store(tmp_path, events) as store:
+        detections = scan_case(store)
+
+    hits = [d for d in detections if d["rule_id"] == "SCAN-SUCCESSFUL-PATHS"]
+    assert len(hits) == 1
+    assert "2 distinct path(s)" in hits[0]["description"]
+    assert "admin/panel.php" in hits[0]["description"]
+    assert "backup.zip" in hits[0]["description"]
+
+
+def test_successful_paths_rule_stays_quiet_without_a_failed_heavy_scan(tmp_path):
+    # Ordinary browsing: a few 404s and plenty of 200s must not be reported.
+    events = [_http_response(f"EVT-{i:04d}", f"http://t.example/page-{i}", 200) for i in range(20)]
+    events += [_http_response(f"EVT-9{i:03d}", f"http://t.example/gone-{i}", 404) for i in range(3)]
+
+    with _seeded_store(tmp_path, events) as store:
+        detections = scan_case(store)
+
+    assert [d for d in detections if d["rule_id"] == "SCAN-SUCCESSFUL-PATHS"] == []
+
+
+def test_scan_with_no_successes_reports_no_successful_paths(tmp_path):
+    events = [_http_response(f"EVT-{i:04d}", f"http://t.example/miss-{i}", 404) for i in range(200)]
+
+    with _seeded_store(tmp_path, events) as store:
+        detections = scan_case(store)
+
+    assert [d for d in detections if d["rule_id"] == "SCAN-SUCCESSFUL-PATHS"] == []
+
+
+SQLI_URL = "http://t.example/search.php?q=book%27%20UNION%20ALL%20SELECT%20NULL%2CNULL--"
+
+
+def test_sql_injection_payload_is_detected_even_when_url_encoded(tmp_path):
+    # Injection payloads are percent-encoded on the wire; matching the raw
+    # URL would miss essentially all of them.
+    events = [_http_event("EVT-0001", SQLI_URL, "sqlmap/1.8.3")]
+    with _seeded_store(tmp_path, events) as store:
+        detections = scan_case(store)
+
+    hits = [d for d in detections if d["rule_id"] == "SQL-INJECTION-ATTEMPT"]
+    assert len(hits) == 1
+    assert hits[0]["severity"] == "medium"  # attempted, no success observed
+    assert "None returned a success response" in hits[0]["description"]
+
+
+def test_successful_sql_injection_is_high_severity(tmp_path):
+    events = [
+        _http_event("EVT-0001", SQLI_URL, "sqlmap/1.8.3"),
+        _http_response("EVT-0002", SQLI_URL, 200),
+    ]
+    with _seeded_store(tmp_path, events) as store:
+        detections = scan_case(store)
+
+    hits = [d for d in detections if d["rule_id"] == "SQL-INJECTION-ATTEMPT"]
+    assert len(hits) == 1
+    assert hits[0]["severity"] == "high"
+    assert "processed the injected query" in hits[0]["description"]
+
+
+def test_ordinary_query_string_is_not_flagged_as_sql_injection(tmp_path):
+    # Bare keywords like "select" appear in normal URLs; only phrases that
+    # do not occur in ordinary traffic should match.
+    events = [
+        _http_event("EVT-0001", "http://t.example/shop?category=select&sort=union", "Mozilla/5.0"),
+        _http_event("EVT-0002", "http://t.example/products.php?id=42", "Mozilla/5.0"),
+    ]
+    with _seeded_store(tmp_path, events) as store:
+        detections = scan_case(store)
+
+    assert [d for d in detections if d["rule_id"] == "SQL-INJECTION-ATTEMPT"] == []
+
+
+def test_successful_paths_sample_clips_long_injection_urls(tmp_path):
+    # One unclipped injection payload made the whole finding unreadable.
+    long_url = "http://t.example/x?q=" + "A" * 3000
+    events = [_http_response(f"EVT-4{i:04d}", f"http://t.example/miss-{i}", 404) for i in range(150)]
+    events.append(_http_response("EVT-9001", long_url, 200))
+
+    with _seeded_store(tmp_path, events) as store:
+        detections = scan_case(store)
+
+    hits = [d for d in detections if d["rule_id"] == "SCAN-SUCCESSFUL-PATHS"]
+    assert len(hits) == 1
+    assert len(hits[0]["description"]) < 600
+    assert "..." in hits[0]["description"]
+
+
 def test_list_detections_filters_by_severity(tmp_path):
     events = [
         _event("EVT-0001", process_name="mimikatz.exe"),  # high

@@ -31,7 +31,7 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 - **Entity extraction** — users, hostnames, devices, IPs, domains, URLs, files, hashes, processes, ports, and network connections, each linked to the events they appear in
 - **Correlation engine** — links events by shared entity + time window, explicit about the difference between `related` (shared entity, time-proximate) and `possible_relationship` (time-proximate only) — never implies causality from either
 - **Unified timeline**, filterable by time range, user, IP, hostname, process, file, event type, or evidence source
-- **Bundled detection rules** — local, deterministic, zero-cost pattern matches (known offensive tool names, historically suspicious ports, disguised double-extension files, credential-store artifacts) that run automatically on every `analyze`, no AI or network call involved. Unlike ATT&CK mapping, always a fresh recompute — no investigator status to track
+- **Bundled detection rules** — local, deterministic, zero-cost pattern matches that run automatically on every `analyze`, no AI or network call involved. Per-event rules cover offensive tool names, historically suspicious ports, disguised double-extension files and credential-store artifacts; *aggregate* rules summarize behavior across many events — scanner User-Agents, high-volume path enumeration, SQL-injection payloads (URL-decoded, and flagged higher when the server actually returned success), and **which paths a failed-heavy scan actually found**. Unlike ATT&CK mapping, always a fresh recompute — no investigator status to track
 - **`investigate <entity>`** — everything the case knows about one IP/user/hash/host/domain/process/file/device: related evidence, a scoped timeline, ranked related entities, and deterministic investigation leads
 - **Investigator-owned findings** — Open/Investigating/Confirmed/Rejected/False Positive/Resolved, each citing specific evidence+event pairs; create/update from the CLI or the web UI, both calling the same `FindingManager`
 - **MITRE ATT&CK technique mapping** — deterministic, rule-based, evidence-cited suggestions (never an automated "this happened" claim), each with an investigator-settable status: potential/confirmed/rejected
@@ -258,7 +258,7 @@ All four parsers map into the same **Common Event Model**: `event_id`, `evidence
 
 | Format | Parser | Notes |
 |---|---|---|
-| `.pcap` / `.pcapng` | `parsers/pcap.py` | scapy-based (pure Python, no tshark needed). Produces six event types: `network_connection` (one per TCP/UDP flow, with packet/byte counts), `dns_query` (queried name → `domain`), `http_request` (Host → `domain`, full URL → `url`, matched on any port), `tls_handshake` (SNI → `domain`), `file_transfer` (embedded files carved by magic bytes), and `anomaly` (IsolationForest outliers) |
+| `.pcap` / `.pcapng` | `parsers/pcap.py` | scapy-based (pure Python, no tshark needed), **single streaming pass** so peak memory tracks live flows rather than capture size. Produces seven event types: `network_connection` (one per TCP/UDP flow, with packet/byte counts), `dns_query` (queried name → `domain`), `http_request` (Host → `domain`, full URL → `url`, User-Agent retained, matched on any port), `http_response` (status code, paired back to the URL it answered), `tls_handshake` (SNI → `domain`), `file_transfer` (embedded files carved by magic bytes), and `anomaly` (IsolationForest outliers, small captures only) |
 | `.json` | `parsers/generic.py` | Array, `{"events": [...]}`-wrapped, or single-object; case/separator-insensitive field aliasing (`src_ip`/`SourceIP`/`source_ip` all match) |
 | `.csv` | `parsers/generic.py` | Same field-aliasing as JSON, one Event per row |
 | `.evtx` | `parsers/evtx.py` | Sysmon (ProcessCreate/NetworkConnection/ProcessTerminate/FileCreate/DNSQuery) gets rich field mapping; every other provider/channel gets the universal System fields plus full raw EventData preserved |
@@ -290,6 +290,9 @@ Each provider needs its own credentials and (except Ollama) its own optional pac
 - The entity relationship view is a 1-hop neighborhood via SQL join, not a full graph traversal
 - EVTX support covers the five most common Sysmon event types plus generic System-field fallback for everything else; deeper per-provider mapping (Windows Security auditing event IDs, for example) is a natural future extension of the same pattern, not yet built
 - Live capture needs a real packet-capture driver (Npcap/libpcap) and elevated privileges on the machine running it — this tool does not install or grant either
+- Statistical anomaly detection is disabled above ~20,000 packets. IsolationForest's `contamination` is a *proportion*, so on a large capture it flags a fixed percentage of everything by construction — noise, not signal. It stays enabled on smaller captures where a genuine outlier means something against a stable baseline
+- Correlation caps at 50,000 pairs and warns when it hits that ceiling. On a capture dominated by one high-volume activity (a scan, say) those links are mostly time-proximity noise; the detections and timeline are the better entry points there
+- HTTP request/response pairing is FIFO per TCP flow. That is correct for ordinary keep-alive traffic, but genuinely pipelined requests could mis-pair, so a response's `url` is recorded as a reference rather than treated as certain
 
 ## Roadmap
 

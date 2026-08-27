@@ -308,6 +308,113 @@ def test_events_all_reference_given_evidence_id_with_unique_ids(tmp_path):
     assert len(events) == len({e.event_id for e in events})
 
 
+def test_http_response_is_paired_back_to_its_request_url(tmp_path):
+    request = b"GET /admin/secret.php HTTP/1.1\r\nHost: target.example\r\n\r\n"
+    response = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>"
+    packets = [
+        _packet("10.0.0.5", "203.0.113.7", 51000, 80, request, 1_700_002_100.0),
+        _packet("203.0.113.7", "10.0.0.5", 80, 51000, response, 1_700_002_100.2),
+    ]
+    pcap_path = _write_pcap(tmp_path, "reqresp.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0020")
+
+    responses = [e for e in events if e.event_type == "http_response"]
+    assert len(responses) == 1
+    assert responses[0].raw_event_reference["status_code"] == 200
+    # The whole point: the status is tied to the URL it answered.
+    assert responses[0].url == "http://target.example/admin/secret.php"
+    assert responses[0].raw_event_reference["request_method"] == "GET"
+
+
+def test_http_responses_pair_in_order_on_a_keepalive_flow(tmp_path):
+    packets = [
+        _packet("10.0.0.5", "203.0.113.7", 51000, 80, b"GET /first HTTP/1.1\r\nHost: t.example\r\n\r\n", 1_700_002_200.0),
+        _packet("203.0.113.7", "10.0.0.5", 80, 51000, b"HTTP/1.1 404 Not Found\r\n\r\n", 1_700_002_200.1),
+        _packet("10.0.0.5", "203.0.113.7", 51000, 80, b"GET /second HTTP/1.1\r\nHost: t.example\r\n\r\n", 1_700_002_200.2),
+        _packet("203.0.113.7", "10.0.0.5", 80, 51000, b"HTTP/1.1 200 OK\r\n\r\n", 1_700_002_200.3),
+    ]
+    pcap_path = _write_pcap(tmp_path, "keepalive.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0021")
+
+    responses = [e for e in events if e.event_type == "http_response"]
+    paired = {r.raw_event_reference["status_code"]: r.url for r in responses}
+    assert paired[404] == "http://t.example/first"
+    assert paired[200] == "http://t.example/second"
+
+
+def test_response_without_a_matching_request_still_records_the_status(tmp_path):
+    # A capture that starts mid-conversation has responses whose requests
+    # were never captured - the status is still worth recording.
+    packets = [_packet("203.0.113.7", "10.0.0.5", 80, 51000, b"HTTP/1.1 500 Internal Server Error\r\n\r\n", 1_700_002_300.0)]
+    pcap_path = _write_pcap(tmp_path, "orphan.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0022")
+
+    responses = [e for e in events if e.event_type == "http_response"]
+    assert len(responses) == 1
+    assert responses[0].raw_event_reference["status_code"] == 500
+    assert responses[0].url is None
+
+
+def test_anomaly_detection_is_skipped_on_large_captures(tmp_path, monkeypatch):
+    # A fixed contamination fraction reports a quantile, not an anomaly, so
+    # above the threshold the detector is disabled rather than emitting a
+    # guaranteed percentage of the capture as "anomalies".
+    monkeypatch.setattr("netforensicai.parsers.pcap.MAX_PACKETS_FOR_ANOMALY_DETECTION", 10)
+    packets = [
+        _packet("10.0.0.5", "10.0.0.6", 5000, 6000, b"x" * 40, 1_700_003_000.0 + i * 0.1) for i in range(30)
+    ]
+    pcap_path = _write_pcap(tmp_path, "big.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0023")
+
+    assert [e for e in events if e.event_type == "anomaly"] == []
+    # Everything else must still be parsed normally.
+    assert [e for e in events if e.event_type == "network_connection"]
+
+
+def test_streaming_parse_does_not_hold_packets_in_memory(tmp_path):
+    # Guards the property that makes multi-GB captures viable: peak memory
+    # must track live flows, not capture size. Loading every scapy packet
+    # was measured at ~18x the file size, so a naive parser would blow far
+    # past this bound on even this small synthetic capture.
+    import tracemalloc
+
+    payload = b"A" * 1400
+    packets = [
+        _packet("10.0.0.5", "10.0.0.6", 5000 + (i % 50), 80, payload, 1_700_004_000.0 + i * 0.01)
+        for i in range(4000)
+    ]
+    pcap_path = _write_pcap(tmp_path, "bulk.pcap", packets)
+    file_size = pcap_path.stat().st_size
+
+    tracemalloc.start()
+    PcapParser().parse(pcap_path, evidence_id="EV-0024")
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert peak < file_size * 4, f"peak {peak} vs file {file_size} - parser is retaining packets"
+
+
+def test_truncated_capture_keeps_the_packets_read_so_far(tmp_path):
+    # A killed tcpdump or partial download is common in real DFIR work;
+    # losing everything already parsed would be much worse than a warning.
+    packets = [
+        _packet("10.0.0.5", "8.8.8.8", 51000, 80, b"GET /a HTTP/1.1\r\nHost: t.example\r\n\r\n", 1_700_005_000.0),
+        _packet("10.0.0.5", "8.8.8.8", 51000, 80, b"GET /b HTTP/1.1\r\nHost: t.example\r\n\r\n", 1_700_005_000.5),
+    ]
+    pcap_path = _write_pcap(tmp_path, "whole.pcap", packets)
+    data = pcap_path.read_bytes()
+    truncated = tmp_path / "truncated.pcap"
+    truncated.write_bytes(data[: len(data) - 20])  # chop the final record
+
+    events = PcapParser().parse(truncated, evidence_id="EV-0025")
+
+    assert [e for e in events if e.event_type == "http_request"]
+
+
 def test_parse_missing_file_raises():
     with pytest.raises(PcapParseError):
         PcapParser().parse("does/not/exist.pcap", evidence_id="EV-0001")

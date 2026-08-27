@@ -31,6 +31,7 @@ pattern - see CONTRIBUTING.md.
 """
 
 import logging
+from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,25 @@ _ATTACK_TOOL_USER_AGENTS = {
 # traffic doesn't trip it.
 _SCAN_DISTINCT_PATH_THRESHOLD = 100
 
+# Fragments that indicate SQL-injection probing in a URL. Matched against
+# the URL-decoded query string, since injection payloads are almost always
+# percent-encoded on the wire. These are phrases that do not occur in
+# ordinary URLs - deliberately not bare keywords like "select" or "union",
+# which appear in perfectly normal query parameters.
+_SQLI_URL_PATTERNS = (
+    "union all select",
+    "union select",
+    "' or '1'='1",
+    "or 1=1--",
+    "sleep(",
+    "benchmark(",
+    "information_schema",
+    "waitfor delay",
+    "'; drop table",
+    "extractvalue(",
+    "updatexml(",
+)
+
 _CREDENTIAL_ARTIFACT_PATTERNS = (
     "system32\\config\\sam",
     "system32/config/sam",
@@ -105,6 +125,26 @@ _CREDENTIAL_ARTIFACT_PATTERNS = (
     "lsass.dmp",
     "lsass.exe.dmp",
 )
+
+
+def _looks_like_sqli(url):
+    """Whether a URL contains a recognizable SQL-injection payload.
+
+    Decodes percent-encoding first: injection payloads are almost always
+    encoded on the wire, so matching the raw URL would miss nearly all of
+    them.
+    """
+    try:
+        decoded = unquote_plus(str(url)).lower()
+    except Exception:
+        decoded = str(url).lower()
+    return any(pattern in decoded for pattern in _SQLI_URL_PATTERNS)
+
+
+def _clip(text, limit=90):
+    """Shorten a value for display inside a detection description."""
+    text = str(text)
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _looks_like_extension(part):
@@ -191,13 +231,45 @@ def _aggregate_rules(events):
     host") under 40,000 identical rows. These summarize instead, citing one
     representative event plus the totals.
     """
-    tool_hits = {}  # (src_ip, tool) -> [count, first_event, sample_ua]
+    tool_hits = {}  # (src_ip, tool) -> [count, first_event, sample_ua, purpose]
     path_probes = {}  # (src_ip, dst_ip) -> [set_of_paths, first_event, count]
+    scan_results = {}  # (server_ip, client_ip) -> {"ok": set, "missing": int, "event": Event}
+    sqli = {}  # (src_ip, dst_ip) -> {"attempts": int, "succeeded": set, "event": Event}
 
     for event in events:
+        if event.event_type == "http_response":
+            raw = event.raw_event_reference or {}
+            status = raw.get("status_code")
+            if status is None:
+                continue
+            # A response is the only place that shows whether an injection
+            # attempt was actually served - the request alone proves intent,
+            # not impact.
+            if event.url and _looks_like_sqli(event.url):
+                entry = sqli.setdefault(
+                    (event.dst_ip, event.src_ip), {"attempts": 0, "succeeded": set(), "event": event}
+                )
+                if 200 <= status < 300:
+                    entry["succeeded"].add(_clip(event.url, 120))
+            # src of a response is the server; dst is the client that asked.
+            entry = scan_results.setdefault(
+                (event.src_ip, event.dst_ip), {"ok": set(), "missing": 0, "event": event}
+            )
+            if 200 <= status < 300 and event.url:
+                entry["ok"].add(event.url)
+            elif status == 404:
+                entry["missing"] += 1
+            continue
+
         if event.event_type != "http_request":
             continue
         raw = event.raw_event_reference or {}
+
+        if event.url and _looks_like_sqli(event.url):
+            entry = sqli.setdefault(
+                (event.src_ip, event.dst_ip), {"attempts": 0, "succeeded": set(), "event": event}
+            )
+            entry["attempts"] += 1
         user_agent = raw.get("user_agent") or ""
         lowered_ua = user_agent.lower()
         for tool, purpose in _ATTACK_TOOL_USER_AGENTS.items():
@@ -237,6 +309,56 @@ def _aggregate_rules(events):
             f"request(s) - a volume consistent with automated content discovery or directory "
             f"brute-forcing rather than ordinary browsing.",
             first_event,
+        )
+
+    for (src_ip, dst_ip), info in sorted(sqli.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        if not info["attempts"]:
+            continue
+        if info["succeeded"]:
+            sample = ", ".join(sorted(info["succeeded"])[:3])
+            description = (
+                f"{info['attempts']} request(s) from {src_ip} to {dst_ip} contain SQL-injection "
+                f"payloads, and {len(info['succeeded'])} received a success response rather than an "
+                f"error - the server processed the injected query, so treat the underlying data as "
+                f"potentially exposed. Example: {sample}"
+            )
+            severity = "high"
+        else:
+            description = (
+                f"{info['attempts']} request(s) from {src_ip} to {dst_ip} contain SQL-injection "
+                f"payloads. None returned a success response in this capture, which suggests the "
+                f"attempts failed - but absence of a success here is not proof they all did."
+            )
+            severity = "medium"
+        yield (
+            "SQL-INJECTION-ATTEMPT",
+            "SQL injection payloads in HTTP requests",
+            severity,
+            description,
+            info["event"],
+        )
+
+    for (server_ip, client_ip), info in sorted(
+        scan_results.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))
+    ):
+        # Only meaningful alongside a failed-heavy scan: a handful of 404s is
+        # ordinary browsing, and reporting successes without that context
+        # would flag every normal web session.
+        if info["missing"] < _SCAN_DISTINCT_PATH_THRESHOLD or not info["ok"]:
+            continue
+        # Shortest first, and each one clipped: injection payloads show up
+        # here as URLs thousands of characters long, and one of them
+        # unclipped makes the whole finding unreadable in a table.
+        found = sorted(info["ok"], key=lambda u: (len(u), u))
+        sample = ", ".join(_clip(u) for u in found[:5]) + (" ..." if len(found) > 5 else "")
+        yield (
+            "SCAN-SUCCESSFUL-PATHS",
+            "Paths that responded successfully during a failed-heavy scan",
+            "high",
+            f"Amid {info['missing']} '404 Not Found' responses to {client_ip}, {server_ip} returned "
+            f"success for {len(found)} distinct path(s) - these are what the scan actually found, "
+            f"and the first place to look: {sample}",
+            info["event"],
         )
 
 
