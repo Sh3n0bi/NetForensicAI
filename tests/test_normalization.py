@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from netforensicai.core.event import COMMON_EVENT_TYPES, Event, generate_event_id
+from netforensicai.core.event import COMMON_EVENT_TYPES, Event, generate_event_id, parse_timestamp
 
 
 def _minimal_event(**overrides):
@@ -102,3 +102,28 @@ def test_common_event_types_are_plain_strings():
     assert all(isinstance(t, str) for t in COMMON_EVENT_TYPES)
     # Not enforced - an arbitrary event_type must still be accepted.
     _minimal_event(event_type="some_new_parser_specific_type")
+
+
+def test_parse_timestamp_iso_with_z_suffix():
+    assert parse_timestamp("2026-08-27T09:00:00Z") == datetime(2026, 8, 27, 9, 0, 0, tzinfo=timezone.utc)
+
+
+def test_parse_timestamp_naive_iso_assumed_utc():
+    assert parse_timestamp("2026-08-27T09:00:00") == datetime(2026, 8, 27, 9, 0, 0, tzinfo=timezone.utc)
+
+
+def test_parse_timestamp_epoch_seconds_and_milliseconds():
+    from_seconds = parse_timestamp(1700000000)
+    from_millis = parse_timestamp(1700000000000)
+    assert from_seconds == from_millis
+    assert from_seconds.tzinfo == timezone.utc
+
+
+def test_parse_timestamp_numeric_string():
+    assert parse_timestamp("1700000000") == parse_timestamp(1700000000)
+
+
+def test_parse_timestamp_unparseable_returns_none():
+    assert parse_timestamp("not a timestamp") is None
+    assert parse_timestamp(None) is None
+    assert parse_timestamp("") is None

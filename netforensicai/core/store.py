@@ -257,16 +257,23 @@ class CaseStore:
         return self.conn.execute("SELECT count(*) FROM entities").fetchone()[0]
 
     def entity_ids_by_event(self):
-        """Return {event_id: {entity_id: (entity_type, value)}} for every
-        entity_event link - used by the correlation engine's shared-entity
-        lookups without a query per pair."""
+        """Return {event_id: [(entity_id, entity_type, value, field), ...]}
+        for every entity_event link - used by the correlation engine's
+        shared-entity lookups and the timeline engine's entity references,
+        both without a query per event/pair.
+
+        A list, not a dict keyed by entity_id: the same entity can
+        legitimately be linked to one event under two different fields
+        (e.g. a reflected connection where src_ip == dst_ip), and
+        collapsing those would silently drop one field association.
+        """
         rows = self.conn.execute(
-            "SELECT ee.event_id, ee.entity_id, e.entity_type, e.value "
+            "SELECT ee.event_id, ee.entity_id, e.entity_type, e.value, ee.field "
             "FROM entity_events ee JOIN entities e ON e.entity_id = ee.entity_id"
         ).fetchall()
         result = {}
-        for event_id, entity_id, entity_type, value in rows:
-            result.setdefault(event_id, {})[entity_id] = (entity_type, value)
+        for event_id, entity_id, entity_type, value, link_field in rows:
+            result.setdefault(event_id, []).append((entity_id, entity_type, value, link_field))
         return result
 
     # --- correlation links ---

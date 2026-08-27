@@ -20,10 +20,9 @@ record when needed.
 import csv
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
-from netforensicai.core.event import Event, EventSequence, generate_event_id
+from netforensicai.core.event import Event, EventSequence, generate_event_id, parse_timestamp
 from netforensicai.parsers import base
 
 logger = logging.getLogger(__name__)
@@ -90,33 +89,6 @@ def _coerce_int(value):
         return None
 
 
-def _parse_timestamp(value):
-    """Best-effort timestamp parsing: ISO 8601 strings, or epoch seconds/ms
-    as a number or numeric string. Returns None (never raises) on anything
-    unrecognized, since a bad timestamp shouldn't fail the whole record."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)):
-        seconds = value / 1000 if value > 1e12 else value
-        try:
-            return datetime.fromtimestamp(seconds, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    if isinstance(value, str):
-        text = value.strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            return datetime.fromisoformat(text)
-        except ValueError:
-            pass
-        try:
-            return _parse_timestamp(float(text))
-        except ValueError:
-            return None
-    return None
-
-
 def normalize_record(record, evidence_id, sequence, source, raw_event_reference):
     """Map one arbitrary record dict onto an Event via case-insensitive field aliasing."""
     lookup = _normalized_lookup(record)
@@ -126,7 +98,7 @@ def normalize_record(record, evidence_id, sequence, source, raw_event_reference)
         if value is None:
             continue
         if canonical_field == "timestamp":
-            fields["timestamp"] = _parse_timestamp(value)
+            fields["timestamp"] = parse_timestamp(value)
         elif canonical_field in INT_FIELDS:
             fields[canonical_field] = _coerce_int(value)
         else:

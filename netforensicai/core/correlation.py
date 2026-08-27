@@ -87,12 +87,12 @@ def _find_time_window_pairs(sorted_events, window_seconds, max_pairs):
 
 
 def _shared_entity(event_id_a, event_id_b, entities_by_event):
-    entities_a = entities_by_event.get(event_id_a, {})
-    entities_b = entities_by_event.get(event_id_b, {})
-    for entity_id in entities_a:
-        if entity_id in entities_b:
-            entity_type, entity_value = entities_a[entity_id]
-            return entity_id, entity_type, entity_value
+    entities_a = entities_by_event.get(event_id_a, [])
+    entities_b = entities_by_event.get(event_id_b, [])
+    ids_b = {entity_id for entity_id, _entity_type, _value, _field in entities_b}
+    for entity_id, entity_type, value, _field in entities_a:
+        if entity_id in ids_b:
+            return entity_id, entity_type, value
     return None
 
 

@@ -298,6 +298,131 @@ def analyze_case(
     typer.echo(f"Correlation: {related_count} related, {possible_count} possible_relationship (time-proximity only)")
 
 
+timeline_app = typer.Typer(help="Build and view the case timeline.", no_args_is_help=True)
+app.add_typer(timeline_app, name="timeline")
+
+
+@timeline_app.command("build")
+def timeline_build(
+    case_id: str = typer.Option(..., "--case", help="Case ID to build the timeline for"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Write a point-in-time timeline snapshot to cases/<ID>/timeline/timeline.json."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.store import CaseStore
+    from netforensicai.core.timeline import build_timeline, save_timeline
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    with CaseStore(case_dir) as store:
+        entries = build_timeline(store)
+
+    output_path = save_timeline(entries, case_dir)
+    typer.echo(f"Built timeline for {case.case_id}: {len(entries)} entries -> {output_path}")
+
+
+def _summarize_entry(entry):
+    if entry.message:
+        return entry.message[:80]
+    parts = []
+    for label, value in (
+        ("user", entry.user),
+        ("hostname", entry.hostname),
+        ("src_ip", entry.src_ip),
+        ("dst_ip", entry.dst_ip),
+        ("process", entry.process_name),
+        ("file", entry.file_name),
+    ):
+        if value:
+            parts.append(f"{label}={value}")
+    return " ".join(parts) if parts else "(no details)"
+
+
+@timeline_app.command("show")
+def timeline_show(
+    case_id: str = typer.Option(..., "--case", help="Case ID to show the timeline for"),
+    time_from: str = typer.Option(
+        None, "--from", help="Only show entries at or after this time (ISO 8601 or epoch)"
+    ),
+    time_to: str = typer.Option(
+        None, "--to", help="Only show entries at or before this time (ISO 8601 or epoch)"
+    ),
+    user: str = typer.Option(None, "--user", help="Filter by user"),
+    ip: str = typer.Option(None, "--ip", help="Filter by source or destination IP"),
+    hostname: str = typer.Option(None, "--hostname", help="Filter by hostname"),
+    process: str = typer.Option(None, "--process", help="Filter by process name"),
+    file: str = typer.Option(None, "--file", help="Filter by file name or path"),
+    event_type: str = typer.Option(None, "--type", help="Filter by event type"),
+    evidence_id: str = typer.Option(None, "--evidence", help="Filter by evidence ID"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Show the case timeline (always queried live from the store), optionally filtered."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.event import parse_timestamp
+    from netforensicai.core.store import CaseStore
+    from netforensicai.core.timeline import build_timeline, filter_timeline
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    parsed_from = parse_timestamp(time_from) if time_from else None
+    if time_from and parsed_from is None:
+        typer.echo(f"Error: could not parse --from value '{time_from}'", err=True)
+        raise typer.Exit(code=1)
+    parsed_to = parse_timestamp(time_to) if time_to else None
+    if time_to and parsed_to is None:
+        typer.echo(f"Error: could not parse --to value '{time_to}'", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    with CaseStore(case_dir) as store:
+        entries = build_timeline(store)
+
+    entries = filter_timeline(
+        entries,
+        time_from=parsed_from,
+        time_to=parsed_to,
+        user=user,
+        ip=ip,
+        hostname=hostname,
+        process=process,
+        file=file,
+        event_type=event_type,
+        evidence_id=evidence_id,
+    )
+
+    if not entries:
+        typer.echo("No timeline entries match the given filters.")
+        return
+
+    header = f"{'TIMESTAMP':<26} {'TYPE':<20} {'SOURCE':<8} {'EVIDENCE':<10} SUMMARY"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for entry in entries:
+        ts = entry.timestamp.isoformat() if entry.timestamp else "unknown"
+        typer.echo(f"{ts:<26} {entry.event_type:<20} {entry.source:<8} {entry.evidence_id:<10} {_summarize_entry(entry)}")
+
+
 @app.command()
 def scan(
     pcap_file: str = typer.Argument(..., help="Path to the .pcap file"),

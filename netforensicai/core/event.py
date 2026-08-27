@@ -45,6 +45,38 @@ class EventSequence:
         return value
 
 
+def parse_timestamp(value):
+    """Best-effort timestamp parsing: ISO 8601 strings, or epoch seconds/ms
+    as a number or numeric string. Always returns a UTC-aware datetime (or
+    None if the value can't be parsed) - never raises, since a bad
+    timestamp shouldn't fail whatever's calling this. Shared by the JSON/
+    CSV parser (parsing record timestamps) and the CLI (parsing --from/--to
+    filter values), so both get the same lenient, UTC-normalized behavior.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        seconds = value / 1000 if value > 1e12 else value
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+        try:
+            return parse_timestamp(float(text))
+        except ValueError:
+            return None
+    return None
+
+
 def generate_event_id(evidence_id, sequence):
     """Deterministic, human-traceable event id scoped to one evidence item's parse run.
 

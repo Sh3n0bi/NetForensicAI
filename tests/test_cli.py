@@ -89,3 +89,45 @@ def test_analyze_with_no_evidence_reports_and_exits_cleanly(tmp_path):
 
     assert result.exit_code == 0
     assert "No evidence" in result.output
+
+
+def test_timeline_build_and_show(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "timeline_events.json",
+        [
+            {"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "alice"},
+            {"timestamp": "2026-08-27T09:05:00Z", "type": "dns_query", "domain": "example.com"},
+        ],
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "Timeline test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    build_result = runner.invoke(app, ["timeline", "build", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    assert build_result.exit_code == 0, build_result.output
+    assert "2 entries" in build_result.output
+    assert (cases_dir / "INC-0001" / "timeline" / "timeline.json").exists()
+
+    show_result = runner.invoke(app, ["timeline", "show", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    assert show_result.exit_code == 0, show_result.output
+    assert "authentication" in show_result.output
+    assert "dns_query" in show_result.output
+
+    filtered_result = runner.invoke(
+        app, ["timeline", "show", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--user", "alice"]
+    )
+    assert "authentication" in filtered_result.output
+    assert "dns_query" not in filtered_result.output
+
+
+def test_timeline_show_bad_time_filter_reports_error(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Bad filter test", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(
+        app, ["timeline", "show", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--from", "not-a-date"]
+    )
+
+    assert result.exit_code == 1
