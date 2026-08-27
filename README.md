@@ -25,6 +25,7 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 
 - **Case management** — `INC-####` cases with a predictable on-disk layout (`cases/<ID>/evidence,artifacts,timeline,findings,reports/`); export a case to one portable, SHA-256-manifested zip archive and import it elsewhere for backup or handoff — every file is verified against its manifest before anything is written, so a tampered or corrupted archive is rejected outright
 - **Evidence integrity** — every evidence item is SHA-256 hashed on ingest, copied read-only, and re-verifiable at any time (report generation re-checks every hash automatically)
+- **Chain of custody** — an append-only, hash-chained record of every action taken on a case (evidence admitted, analysis run, findings created and changed, external lookups, reports written, export/handover), with actor and UTC timestamp. `netforensic case audit --verify` reports whether the record has been altered since it was written, and the chain continues across an export/import handover rather than restarting
 - **Four evidence parsers**, all normalizing into one [Common Event Model](#supported-evidence): pcap, JSON, CSV, and Windows Event Log (EVTX) with dedicated Sysmon field mapping
 - **Network protocol analysis** — pcap parsing extracts TCP/UDP flows, DNS queries, HTTP requests (Host + URL), and TLS SNI hostnames, so domains and URLs become first-class entities you can pivot on even in encrypted traffic
 - **Settings in the web UI** — save VirusTotal and AI provider API keys once from a Settings page instead of passing them on every command, with a one-click connection test per provider. Keys are stored outside your cases directory, so they never end up inside an exported case archive
@@ -152,6 +153,8 @@ netforensic case create --name "Test Incident" [--description "..."] [--investig
 netforensic case list
 netforensic case export --case INC-0001 [--output INC-0001.zip]     # portable archive, SHA-256 manifest, for backup/handoff
 netforensic case import ./INC-0001.zip [--cases-dir other_cases]    # verifies every file before writing anything
+netforensic case audit --case INC-0001                              # chain of custody: every action, actor and timestamp
+netforensic case audit --case INC-0001 --verify                     # exit 0 if the record is intact, 1 if it was altered
 ```
 
 **Evidence**
@@ -311,6 +314,7 @@ Fork the repo, make changes, and submit a pull request — see [CONTRIBUTING.md]
 - Case IDs are validated against the `INC-####` pattern everywhere a case is loaded (CLI or web), so a crafted case ID can't be used to walk outside the cases directory
 - VirusTotal lookups validate that a value actually looks like an IP address or an MD5/SHA-1/SHA-256 hash before it's sent to the API
 - The web UI has no authentication and binds to `127.0.0.1` by default; the CLI warns if you point `--host` anywhere else. Every state-changing API request (evidence upload, analyze, live capture, threat intel, AI hypothesis) also requires a custom header the browser frontend sets automatically — this blocks the kind of cross-site request forgery where another open tab silently submits requests to your local instance, which for a chain-of-custody tool matters more than most (forged "evidence" or a silently-started packet capture)
+- The chain-of-custody hash chain detects accidental corruption and casual after-the-fact editing of a case's audit log. It is **not** a defence against an attacker who controls the machine, who could recompute the whole chain — an honest limit for a local single-investigator tool, and stated so in the code
 - Found a security issue? Open an issue at [github.com/Sh3n0bi/NetForensicAI/issues](https://github.com/Sh3n0bi/NetForensicAI/issues) — this is a community project without a dedicated security contact, so please avoid including real sensitive evidence data in a public report
 
 ## License

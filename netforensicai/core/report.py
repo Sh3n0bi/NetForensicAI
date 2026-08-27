@@ -178,7 +178,18 @@ def build_report(case, case_dir):
         )
     )
 
+    from netforensicai.core import audit
+
+    chain_ok, chain_problems = audit.verify(case_dir)
+    audit_entries = audit.read_entries(case_dir)
+
     return {
+        "chain_of_custody": {
+            "entry_count": len(audit_entries),
+            "intact": chain_ok,
+            "problems": chain_problems,
+            "entries": audit_entries,
+        },
         "case": {
             "case_id": case.case_id,
             "name": case.name,
@@ -342,6 +353,25 @@ def render_markdown(report):
     else:
         lines += ["No findings recorded.", ""]
 
+    chain = report["chain_of_custody"]
+    lines += ["## Chain of Custody"]
+    if chain["intact"]:
+        lines.append(
+            f"{chain['entry_count']} recorded action(s); the hash chain verifies intact, so the "
+            "record below has not been altered since it was written."
+        )
+    else:
+        lines.append("**WARNING - the chain of custody does not verify:**")
+        lines += [f"- {problem}" for problem in chain["problems"]]
+    if chain["entries"]:
+        lines += ["", "| # | Timestamp (UTC) | Actor | Action |", "|---|---|---|---|"]
+        lines += [
+            f"| {e.get('sequence', '?')} | {str(e.get('timestamp', ''))[:19].replace('T', ' ')} "
+            f"| {e.get('actor', '')} | {e.get('action', '')} |"
+            for e in chain["entries"]
+        ]
+    lines.append("")
+
     lines += ["## Bundled Detections", report["detections_note"]]
     if report["detections"]:
         lines += ["", "| Severity | Rule | Event | Description |", "|---|---|---|---|"]
@@ -504,6 +534,26 @@ def render_html(report):
                 parts.append("</ul>")
     else:
         parts.append("<p>No findings recorded.</p>")
+
+    chain = report["chain_of_custody"]
+    parts.append("<h2>Chain of Custody</h2>")
+    if chain["intact"]:
+        parts.append(
+            f"<p>{chain['entry_count']} recorded action(s); the hash chain verifies intact.</p>"
+        )
+    else:
+        parts.append("<p><b>WARNING - the chain of custody does not verify:</b></p><ul>")
+        parts.append("".join(f"<li>{_e(p)}</li>" for p in chain["problems"]))
+        parts.append("</ul>")
+    if chain["entries"]:
+        parts.append("<table><tr><th>#</th><th>Timestamp (UTC)</th><th>Actor</th><th>Action</th></tr>")
+        for e in chain["entries"]:
+            parts.append(
+                f"<tr><td>{e.get('sequence', '?')}</td>"
+                f"<td>{_e(str(e.get('timestamp', ''))[:19].replace('T', ' '))}</td>"
+                f"<td>{_e(e.get('actor', ''))}</td><td>{_e(e.get('action', ''))}</td></tr>"
+            )
+        parts.append("</table>")
 
     parts.append(f"<h2>Bundled Detections</h2><p>{_e(report['detections_note'])}</p>")
     if report["detections"]:

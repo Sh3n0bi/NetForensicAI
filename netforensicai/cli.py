@@ -152,6 +152,77 @@ def case_import_cmd(
     typer.echo(f"Imported {case_id} into {Path(cases_dir) / case_id}")
 
 
+@case_app.command("audit")
+def case_audit_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID to show the chain of custody for"),
+    verify: bool = typer.Option(
+        False, "--verify", help="Only check the hash chain and report whether it is intact"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Show the case's chain of custody: every action taken on it, by whom
+    and when, in order.
+
+    Entries are hash-chained, so `--verify` reports whether the record has
+    been altered since it was written. That detects accidental corruption
+    and casual after-the-fact editing - not an attacker who controls the
+    machine, who could recompute the whole chain.
+    """
+    from netforensicai.core import audit
+    from netforensicai.core.case import CaseError, CaseManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    ok, problems = audit.verify(case_dir)
+
+    if verify:
+        if ok:
+            entries = audit.read_entries(case_dir)
+            typer.echo(f"Chain of custody intact: {len(entries)} entr(ies) verified for {case.case_id}.")
+            return
+        typer.echo(f"CHAIN OF CUSTODY BROKEN for {case.case_id}:", err=True)
+        for problem in problems:
+            typer.echo(f"  - {problem}", err=True)
+        raise typer.Exit(code=1)
+
+    entries = audit.read_entries(case_dir)
+    if not entries:
+        typer.echo(f"No chain-of-custody entries recorded for {case.case_id}.")
+        return
+
+    header = f"{'#':<5} {'TIMESTAMP (UTC)':<21} {'ACTOR':<14} {'ACTION':<26} DETAILS"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for entry in entries:
+        details = ", ".join(f"{k}={v}" for k, v in (entry.get("details") or {}).items())
+        # Trim sub-second precision and the +00:00 suffix for the table: the
+        # full value stays in audit.log, and the header says these are UTC.
+        timestamp = entry.get("timestamp", "")[:19].replace("T", " ")
+        typer.echo(
+            f"{entry.get('sequence', '?'):<5} {timestamp:<21} "
+            f"{entry.get('actor', ''):<14} {entry.get('action', ''):<26} {details[:80]}"
+        )
+
+    typer.echo("")
+    if ok:
+        typer.echo(f"Chain of custody intact ({len(entries)} entries verified).")
+    else:
+        typer.echo("WARNING - chain of custody is BROKEN:", err=True)
+        for problem in problems:
+            typer.echo(f"  - {problem}", err=True)
+
+
 evidence_app = typer.Typer(help="Manage evidence within a case.", no_args_is_help=True)
 app.add_typer(evidence_app, name="evidence")
 
@@ -831,6 +902,14 @@ def attack_scan(
     with CaseStore(case_dir) as store:
         touched = scan_case(store)
 
+    from netforensicai.core import audit
+
+    audit.record(
+        case_dir,
+        audit.ATTACK_SCANNED,
+        {"techniques_detected": [technique_id for technique_id, _name in touched]},
+    )
+
     if not touched:
         typer.echo("No potential ATT&CK techniques detected.")
         return
@@ -914,7 +993,16 @@ def attack_update(
         if existing is None:
             typer.echo(f"Error: technique '{technique_id}' has not been detected for this case.", err=True)
             raise typer.Exit(code=1)
+        previous_status = existing["status"]
         store.update_technique_status(technique_id, status, datetime.now(timezone.utc))
+
+    from netforensicai.core import audit
+
+    audit.record(
+        case_dir,
+        audit.ATTACK_UPDATED,
+        {"technique_id": technique_id, "from": previous_status, "to": status},
+    )
 
     typer.echo(f"Updated {technique_id}: status={status}")
 
@@ -1011,6 +1099,17 @@ def report_generate(
     output_path = Path(output) if output else case_dir / "reports" / f"report.{EXTENSION_BY_FORMAT[format_key]}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content, encoding="utf-8")
+
+    from netforensicai.core import audit
+
+    # Recorded here rather than in build_report(): that stays a pure read,
+    # and the web UI calls it on every tab view - only writing an actual
+    # report artifact is an action worth a custody entry.
+    audit.record(
+        case_dir,
+        audit.REPORT_GENERATED,
+        {"format": format_key, "output": str(output_path)},
+    )
 
     typer.echo(f"Generated {format_key} report for {case.case_id}: {output_path}")
 

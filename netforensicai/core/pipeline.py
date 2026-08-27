@@ -80,4 +80,18 @@ def parse_evidence_item(evidence, case_dir, case_manager, case_id, store):
     for relative_path in artifact_paths:
         case_manager.register_artifact(case_id, relative_path)
 
+    from netforensicai.core import audit
+
+    audit.record(
+        case_dir,
+        audit.EVIDENCE_PARSED,
+        {
+            "evidence_id": evidence.evidence_id,
+            "evidence_type": evidence.evidence_type,
+            "event_count": event_count,
+            "entity_count": len(entity_ids),
+            "artifacts_extracted": len(artifact_paths),
+        },
+    )
+
     return event_count, len(entity_ids), None

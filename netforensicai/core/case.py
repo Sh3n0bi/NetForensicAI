@@ -108,6 +108,15 @@ class CaseManager:
             (case_path / sub).mkdir()
         self._save(case)
 
+        from netforensicai.core import audit
+
+        audit.record(
+            case_path,
+            audit.CASE_CREATED,
+            {"case_id": case_id, "name": name, "description": description},
+            actor=case.investigator,
+        )
+
         logger.info(f"Created case {case_id} at {case_path}")
         return case
 

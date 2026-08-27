@@ -305,6 +305,7 @@ async function renderCaseTab(app, c, tab, rest) {
   if (tab === "timeline") return renderTimeline(app, c);
   if (tab === "entities") return renderEntities(app, c, rest[0]);
   if (tab === "findings") return renderFindings(app, c);
+  if (tab === "audit") return renderAudit(app, c);
   if (tab === "detections") return renderDetections(app, c);
   if (tab === "attack") return renderAttack(app, c);
   if (tab === "reports") return renderReports(app, c);
@@ -900,6 +901,71 @@ function colorForType(t) {
     url: "#c084fc",
   };
   return colors[t] || "#9aa0b4";
+}
+
+// --- Chain of custody (append-only; this view is strictly read-only) ---
+
+async function renderAudit(app, c) {
+  app.appendChild(el("h1", { text: "Chain of Custody" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Every action taken on this case, in order, with who did it and when. Entries are hash-chained, " +
+        "so editing or removing one is detectable. This detects accidental corruption and casual " +
+        "after-the-fact editing - not someone who controls the machine, who could recompute the chain.",
+    })
+  );
+
+  const panel = el("div", { class: "panel" });
+  app.appendChild(panel);
+  panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+
+  try {
+    const data = await apiGet(`/cases/${c.case_id}/audit`);
+    panel.innerHTML = "";
+
+    if (data.intact) {
+      panel.appendChild(
+        el("div", {
+          class: "lead",
+          text: `Chain intact - ${data.entries.length} recorded action(s) verified.`,
+        })
+      );
+    } else {
+      const box = el("div", { class: "error-box" });
+      box.appendChild(el("div", { text: "WARNING - the chain of custody does not verify:" }));
+      for (const problem of data.problems) box.appendChild(el("div", { text: "• " + problem }));
+      panel.appendChild(box);
+    }
+
+    if (!data.entries.length) {
+      panel.appendChild(el("div", { class: "empty", text: "No actions recorded yet." }));
+      return;
+    }
+
+    const table = el("table");
+    table.innerHTML =
+      "<tr><th>#</th><th>Timestamp (UTC)</th><th>Actor</th><th>Action</th><th>Details</th></tr>" +
+      data.entries
+        .map((e) => {
+          const details = Object.entries(e.details || {})
+            .map(([k, v]) => `${k}=${v}`)
+            .join(", ");
+          return `<tr>
+            <td>${e.sequence}</td>
+            <td class="mono">${escapeHtml(String(e.timestamp || "").slice(0, 19).replace("T", " "))}</td>
+            <td>${escapeHtml(e.actor || "")}</td>
+            <td class="mono">${escapeHtml(e.action || "")}</td>
+            <td>${escapeHtml(details)}</td>
+          </tr>`;
+        })
+        .join("");
+    panel.appendChild(table);
+  } catch (e) {
+    panel.innerHTML = "";
+    panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+  }
 }
 
 // --- Detections (bundled offline rules - read-only, recomputed by Analyze) ---

@@ -61,6 +61,23 @@ def check_entity(store, entity_id, entity_type, value, api_key, ttl=DEFAULT_CACH
     result = getattr(virustotal, checker_name)(value, api_key)
     checked_at = datetime.now(timezone.utc)
     store.record_threat_intel(entity_id, entity_type, value, PROVIDER_VIRUSTOTAL, result, checked_at)
+
+    # An external lookup sends a case value to a third party, so it belongs
+    # in the custody record: it is an action with consequences outside the
+    # investigator's machine, unlike the purely local analyses.
+    from netforensicai.core import audit
+
+    audit.record(
+        store.case_dir,
+        audit.THREAT_INTEL_CHECKED,
+        {
+            "provider": PROVIDER_VIRUSTOTAL,
+            "entity_type": entity_type,
+            "value": value,
+            "malicious": result.get("malicious"),
+            "error": result.get("error"),
+        },
+    )
     return _finalize({**result, "checked_at": checked_at}, cached=False)
 
 

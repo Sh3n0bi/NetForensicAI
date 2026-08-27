@@ -143,6 +143,24 @@ class EvidenceManager:
         manifest_file = evidence_path / "manifest.json"
         manifest_file.write_text(json.dumps(evidence.to_dict(), indent=2), encoding="utf-8")
 
+        from netforensicai.core import audit
+
+        # The full hash and the original source path, not an abbreviation:
+        # this line is the record of what was admitted into the case and
+        # where it came from.
+        audit.record(
+            self.case_dir,
+            audit.EVIDENCE_ADDED,
+            {
+                "evidence_id": evidence_id,
+                "filename": filename,
+                "evidence_type": evidence.evidence_type,
+                "sha256": sha256,
+                "size_bytes": evidence.size_bytes,
+                "source_path": evidence.source_path,
+            },
+        )
+
         logger.info(f"Ingested evidence {evidence_id} ({filename}, sha256={sha256[:12]}...)")
         return evidence
 

@@ -128,6 +128,22 @@ class FindingManager:
         )
         self.findings_dir.mkdir(parents=True, exist_ok=True)
         self._save(finding)
+
+        from netforensicai.core import audit
+
+        audit.record(
+            self.case_dir,
+            audit.FINDING_CREATED,
+            {
+                "finding_id": finding_id,
+                "title": title,
+                "severity": severity,
+                "status": status,
+                "cited_events": [ref.get("event_id") for ref in evidence_refs],
+            },
+            actor=created_by,
+        )
+
         logger.info(f"Created finding {finding_id}: {title}")
         return finding
 
@@ -163,9 +179,20 @@ class FindingManager:
         if status not in VALID_STATUSES:
             raise FindingError(f"Invalid status '{status}'. Must be one of: {', '.join(VALID_STATUSES)}")
         finding = self.load(finding_id)
+        previous_status = finding.status
         finding.status = status
         finding.updated_at = datetime.now(timezone.utc).isoformat()
         self._save(finding)
+
+        from netforensicai.core import audit
+
+        # Both values, not just the new one: a status history is only
+        # meaningful if each change records what it changed from.
+        audit.record(
+            self.case_dir,
+            audit.FINDING_UPDATED,
+            {"finding_id": finding_id, "field": "status", "from": previous_status, "to": status},
+        )
         return finding
 
     def add_note(self, finding_id, note_text, author):
@@ -175,4 +202,13 @@ class FindingManager:
         )
         finding.updated_at = datetime.now(timezone.utc).isoformat()
         self._save(finding)
+
+        from netforensicai.core import audit
+
+        audit.record(
+            self.case_dir,
+            audit.FINDING_UPDATED,
+            {"finding_id": finding_id, "field": "note", "note": note_text},
+            actor=author,
+        )
         return finding

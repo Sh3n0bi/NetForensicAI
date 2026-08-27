@@ -232,6 +232,39 @@ def test_list_findings(prepared_case):
     assert data[0]["title"] == "Suspicious outbound connection"
 
 
+def test_audit_endpoint_returns_the_chain(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.get(f"/api/cases/{case.case_id}/audit")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["intact"] is True
+    assert data["problems"] == []
+    actions = [e["action"] for e in data["entries"]]
+    assert "case.created" in actions
+    assert "evidence.added" in actions
+
+
+def test_audit_endpoint_reports_a_broken_chain(prepared_case):
+    import json as _json
+
+    from netforensicai.core import audit
+
+    client, case, cases_dir = prepared_case
+    path = audit.audit_path(cases_dir / case.case_id)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    tampered = _json.loads(lines[0])
+    tampered["actor"] = "someone-else"
+    lines[0] = _json.dumps(tampered, sort_keys=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    data = client.get(f"/api/cases/{case.case_id}/audit").get_json()
+
+    assert data["intact"] is False
+    assert data["problems"]
+
+
 def test_list_attack_techniques_empty(prepared_case):
     client, case, _cases_dir = prepared_case
 

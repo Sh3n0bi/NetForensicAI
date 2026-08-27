@@ -61,12 +61,20 @@ def export_case(case_dir, output_path):
     if not (case_dir / "case.json").exists():
         raise ExportError(f"{case_dir} does not look like a case directory (no case.json).")
 
-    files = sorted(p for p in case_dir.rglob("*") if p.is_file())
-    if not files:
+    if not any(case_dir.rglob("*")):
         raise ExportError(f"Case directory is empty: {case_dir}")
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Recorded BEFORE the file list is taken, so the exported copy contains
+    # the line saying it was exported - otherwise every archive would claim
+    # the case had never left the machine.
+    from netforensicai.core import audit
+
+    audit.record(case_dir, audit.CASE_EXPORTED, {"archive": str(output_path)})
+
+    files = sorted(p for p in case_dir.rglob("*") if p.is_file())
 
     manifest = {}
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -147,6 +155,13 @@ def import_case(archive_path, cases_dir):
         dest = target_dir / rel_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
+
+    # Appended after extraction, so the chain continues from the exporting
+    # machine's last entry rather than starting over - the custody record
+    # spans the handover instead of being reset by it.
+    from netforensicai.core import audit
+
+    audit.record(target_dir, audit.CASE_IMPORTED, {"archive": str(archive_path)})
 
     logger.info(f"Imported case {case_id} from {archive_path} into {target_dir}")
     return case_id

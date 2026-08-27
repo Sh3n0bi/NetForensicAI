@@ -518,6 +518,19 @@ def create_app(cases_dir="cases"):
             t["updated_at"] = t["updated_at"].isoformat() if t["updated_at"] else None
         return jsonify(techniques)
 
+    # --- chain of custody (read-only; append-only by construction) ---
+
+    @app.route("/api/cases/<case_id>/audit")
+    def get_audit_log(case_id):
+        from netforensicai.core import audit
+
+        case = _load_case(case_id)
+        case_dir = _case_dir(case)
+        intact, problems = audit.verify(case_dir)
+        return jsonify(
+            {"intact": intact, "problems": problems, "entries": audit.read_entries(case_dir)}
+        )
+
     # --- reports ---
 
     @app.route("/api/cases/<case_id>/report/<fmt>")
