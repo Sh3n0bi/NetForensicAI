@@ -78,6 +78,14 @@ No message queue, no microservices, no graph database — a case's data is one D
 
 ## Installation
 
+From PyPI, once a release is published (see [CONTRIBUTING.md](CONTRIBUTING.md)'s Releasing section):
+
+```bash
+pip install "netforensicai[pcap,intel,web]"   # add ,ai and/or ,evtx as you need them
+```
+
+Or from source:
+
 ```bash
 git clone https://github.com/Sh3n0bi/NetForensicAI.git
 cd NetForensicAI
@@ -97,6 +105,7 @@ Extras, all optional beyond the CLI/case-management core:
 | `web` | flask | The local web dashboard |
 | `dashboard` | dash, plotly | The legacy `netforensic scan` visualization |
 | `dev` | pytest | Running the test suite |
+| `build` | build, twine | Building/checking a release package (maintainers) |
 
 Nothing outside `pcap`/`evtx`/`intel`/`ai` reaches the network, and none of those do so unless you explicitly invoke the feature that needs them (pcap/EVTX parsing itself is fully offline; only VT lookups and the AI assistant make real network calls, and only when asked).
 

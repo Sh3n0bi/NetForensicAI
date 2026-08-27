@@ -31,6 +31,21 @@ Before adding a feature, it's worth understanding the shape the rest of the code
 - Prefer clear naming over comments; only comment where the *why* isn't obvious from the code itself.
 - Add tests under `tests/` for new behavior - see the existing test files for the patterns used (mocking external calls like VirusTotal/Anthropic/live capture, building synthetic evidence with scapy for pcap tests, `tmp_path`-scoped case fixtures for everything else).
 
+## Releasing (maintainers)
+
+Publishing to PyPI is triggered by a GitHub Release, via `.github/workflows/publish.yml` - it never happens on a normal push.
+
+One-time setup (only needed once, before the first release):
+1. Create the `netforensicai` project on PyPI - reserve the name with an empty first upload (`build` + `twine upload dist/*`), or use PyPI's "pending publisher" flow to reserve it without uploading anything.
+2. On the PyPI project's *Publishing* settings, add a Trusted Publisher: owner `Sh3n0bi`, repository `NetForensicAI`, workflow `publish.yml`, environment `pypi`. This lets the GitHub Actions workflow authenticate via OIDC with no long-lived API token stored anywhere.
+
+To cut a release:
+1. Bump `version` in `pyproject.toml`.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. On GitHub, draft a Release from that tag and publish it - this triggers `publish.yml`, which builds the sdist/wheel and uploads them to PyPI.
+
+Before tagging, build and sanity-check locally: `pip install ".[build]"`, then `python -m build && twine check dist/*`, and (optional but recommended) install the built wheel into a throwaway venv and confirm `netforensic web` still serves its static assets - `package-data` regressions here are easy to miss since the dev install (`pip install -e .`) never exercises them.
+
 ## Issues
 Found a bug? Have a feature request? Open an issue at https://github.com/Sh3n0bi/NetForensicAI/issues.
 

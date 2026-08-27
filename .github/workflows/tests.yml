@@ -41,3 +41,33 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+  build-check:
+    # Separate from the test matrix: this only needs to run once and
+    # exists to catch packaging regressions (e.g. a new static/data file
+    # added without updating [tool.setuptools.package-data]) that the
+    # editable install the test job uses would never surface.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install build tooling
+        run: pip install build twine
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check package metadata
+        run: twine check dist/*
+      - name: Confirm the web UI's static assets are bundled
+        run: |
+          python -m venv /tmp/install-check
+          /tmp/install-check/bin/pip install --quiet dist/*.whl
+          /tmp/install-check/bin/python -c "
+          import netforensicai.web as w, pathlib, sys
+          index = pathlib.Path(w.__file__).parent / 'static' / 'index.html'
+          if not index.exists():
+              sys.exit(f'missing bundled static asset: {index}')
+          print(f'found {index}')
+          "

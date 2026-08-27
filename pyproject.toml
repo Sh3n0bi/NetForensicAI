@@ -6,11 +6,30 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
 authors = [{ name = "Sh3n0bi" }]
+keywords = ["dfir", "forensics", "incident-response", "pcap", "security", "evtx", "sysmon", "mitre-attack"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
 dependencies = [
     "typer>=0.12,<1.0",
     "pydantic>=2.6,<3.0",
     "duckdb>=1.0,<2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Sh3n0bi/NetForensicAI"
+Repository = "https://github.com/Sh3n0bi/NetForensicAI"
+Issues = "https://github.com/Sh3n0bi/NetForensicAI/issues"
 
 [project.optional-dependencies]
 pcap = [
@@ -37,6 +56,10 @@ dashboard = [
 dev = [
     "pytest>=8.0,<9.0",
 ]
+build = [
+    "build>=1.0",
+    "twine>=5.0",
+]
 
 [project.scripts]
 netforensic = "netforensicai.cli:main"
@@ -47,3 +70,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["netforensicai*"]
+
+[tool.setuptools.package-data]
+# Without this, a PyPI install has no web UI: send_from_directory() in
+# web/app.py serves these at runtime, but setuptools only bundles .py
+# files by default - static assets need to be listed explicitly.
+"netforensicai.web" = ["static/*"]

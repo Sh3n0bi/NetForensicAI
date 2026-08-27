@@ -1,0 +1,48 @@
+name: Publish to PyPI
+
+# Runs when a GitHub Release is published (Releases -> Draft a new release
+# -> pick/create a tag like v0.1.0 -> Publish). Does NOT run on every push,
+# and never touches PyPI on its own - only a maintainer creating a release
+# triggers a publish.
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: pip install build
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted Publishing (OIDC) - PyPI verifies this run came from this
+      # exact repo/workflow, so no long-lived API token needs to live in
+      # GitHub secrets at all. Must be configured once on the PyPI project
+      # page first (see CONTRIBUTING.md's Releasing section) - this
+      # workflow cannot set that up itself.
+      id-token: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
