@@ -37,7 +37,7 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 - **AI investigation assistant** *(optional)* — a hedged hypothesis from your choice of Anthropic, OpenAI, a local Ollama server, or Google Gemini, constrained to an evidence contract that makes fabricated citations structurally impossible regardless of provider (see below)
 - **Reports** in Markdown, JSON, and HTML, every section traceable to evidence
 - **Local web UI** *(optional)* — case overview, evidence (including upload), timeline, entity graph, investigate panel, findings, reports, and live capture, all read from the same case data the CLI uses
-- **Live capture** *(optional)* — rotating pcap capture that auto-ingests each finished window through the exact same evidence pipeline as a manually added file
+- **Live capture** *(optional)* — rotating pcap capture that auto-ingests each finished window through the exact same evidence pipeline as a manually added file, including bundled detection rules — a match surfaces as an alert in the web UI's Live Capture tab within one poll of that window finishing, making this a lightweight live-alerting mode with no separate "watch" step
 
 ## Architecture
 

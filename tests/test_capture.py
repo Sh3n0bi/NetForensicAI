@@ -119,9 +119,41 @@ def test_rotation_triggers_ingestion_and_produces_evidence(case_setup):
     assert len(session.recent_events) == 1
     assert "error" not in session.recent_events[0]
     assert session.recent_events[0]["event_count"] >= 1
+    assert session.recent_events[0]["new_detections"] == []  # dst_port=80 matches no bundled rule
 
     reloaded = case_manager.load(case.case_id)
     assert len(reloaded.evidence) == 1
+
+    session._writer.close()
+
+
+def test_rotation_surfaces_bundled_detections_in_recent_events(case_setup):
+    # A packet to a historically suspicious port (SUSPICIOUS-PORT rule)
+    # should show up in the SAME window's recent_events entry, not just
+    # in the case-wide detections table - that's what makes this a live
+    # alert rather than something you'd only notice by checking later.
+    case_manager, case, case_dir = case_setup
+    session = CaptureSession(case.case_id, case_dir, case_manager, interface="fake0", rotate_seconds=0)
+    session._open_new_window()
+    session._running = True
+
+    session._on_packet(_packet(TCP(sport=1234, dport=4444) / Raw(load=b"beacon")))
+
+    deadline = time.time() + 5
+    while time.time() < deadline and not session.recent_events:
+        time.sleep(0.05)
+
+    assert len(session.recent_events) == 1
+    entry = session.recent_events[0]
+    assert "error" not in entry
+    assert len(entry["new_detections"]) == 1
+    assert entry["new_detections"][0]["rule_id"] == "SUSPICIOUS-PORT"
+    assert entry["new_detections"][0]["detected_at"] is not None  # serialized to an ISO string, not a datetime
+
+    from netforensicai.core.store import CaseStore
+
+    with CaseStore(case_dir) as store:
+        assert store.count_detections() == 1
 
     session._writer.close()
 

@@ -1131,6 +1131,12 @@ async function renderCapture(app, c) {
     }
   }
 
+  // Evidence IDs already toasted, so a window's detections alert fires
+  // once - not on every ~1.5s poll for as long as that window stays in
+  // recent_events. Scoped to this renderCapture() call, so navigating
+  // away and back (or reloading) starts fresh, which is fine.
+  const alertedEvidenceIds = new Set();
+
   function renderFeed(events) {
     feedList.innerHTML = "";
     if (!events || !events.length) {
@@ -1138,10 +1144,33 @@ async function renderCapture(app, c) {
       return;
     }
     for (const evt of [...events].reverse()) {
-      const line = evt.error
-        ? `${evt.at}: error - ${evt.error}`
-        : `${evt.at}: ${evt.evidence_id} - ${evt.packet_count} packets -> ${evt.event_count} events, ${evt.entity_count} entities`;
-      feedList.appendChild(el("div", { class: evt.error ? "lead error-box" : "lead", text: line }));
+      if (evt.error) {
+        feedList.appendChild(el("div", { class: "lead error-box", text: `${evt.at}: error - ${evt.error}` }));
+        continue;
+      }
+      const line = `${evt.at}: ${evt.evidence_id} - ${evt.packet_count} packets -> ${evt.event_count} events, ${evt.entity_count} entities`;
+      feedList.appendChild(el("div", { class: "lead", text: line }));
+
+      if (evt.new_detections && evt.new_detections.length) {
+        const bySeverity = {};
+        for (const d of evt.new_detections) bySeverity[d.severity] = (bySeverity[d.severity] || 0) + 1;
+        const summary = Object.entries(bySeverity)
+          .map(([s, n]) => `${n} ${s}`)
+          .join(", ");
+        const ruleNames = evt.new_detections.map((d) => d.rule_name).join("; ");
+        feedList.appendChild(
+          el("div", {
+            class: "lead error-box",
+            style: "margin-left:16px;",
+            text: `${evt.new_detections.length} bundled detection(s) (${summary}): ${ruleNames}`,
+          })
+        );
+
+        if (!alertedEvidenceIds.has(evt.evidence_id)) {
+          alertedEvidenceIds.add(evt.evidence_id);
+          toast(`${evt.evidence_id}: ${evt.new_detections.length} detection(s) - ${summary}`, true);
+        }
+      }
     }
   }
 

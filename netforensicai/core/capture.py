@@ -12,10 +12,17 @@ privileges" posture as the AI assistant needing its own API key.
 Each rotation window's packets are written to a staging pcap file, then
 ingested through the exact same pipeline `netforensic evidence add` +
 `analyze` use (EvidenceManager.add -> parse_evidence_item ->
-correlate_case), so a live-captured window becomes a normal, hashed,
-traceable piece of case evidence - not a second, less rigorous path.
-Nothing captured here is transmitted anywhere; it stays local to the
-case, same as every other evidence type.
+correlate_case -> scan_detections), so a live-captured window becomes a
+normal, hashed, traceable piece of case evidence - not a second, less
+rigorous path. Nothing captured here is transmitted anywhere; it stays
+local to the case, same as every other evidence type.
+
+Because bundled detection rules (core/detections.py) run on every window
+the same way they run on every `analyze`, this doubles as a lightweight
+live alerting mode: a match against a just-captured window shows up in
+recent_events immediately, and the web UI's Live Capture tab surfaces it
+as soon as the next status poll picks it up - no separate "watch" command
+or extra opt-in needed, since detection scanning is already automatic.
 """
 
 import logging
@@ -155,6 +162,7 @@ class CaptureSession:
         correlate pass never blocks live capture of the next window."""
         from netforensicai.core.case import CaseError
         from netforensicai.core.correlation import correlate_case
+        from netforensicai.core.detections import scan_case as scan_detections
         from netforensicai.core.evidence import EvidenceError, EvidenceManager
         from netforensicai.core.pipeline import parse_evidence_item
         from netforensicai.core.store import locked_store
@@ -186,6 +194,13 @@ class CaptureSession:
                 self._record_event({"evidence_id": evidence.evidence_id, "error": error})
                 return
             correlate_case(store)
+            # Bundled detection rules (core/detections.py) run automatically
+            # here too, same as `analyze` - a full case rescan each window,
+            # filtered down to just this window's evidence so the live feed
+            # surfaces "this window triggered N alerts" without re-showing
+            # every prior window's hits on every rotation.
+            all_detections = scan_detections(store)
+            new_detections = [d for d in all_detections if d["evidence_id"] == evidence.evidence_id]
 
         self._record_event(
             {
@@ -193,6 +208,10 @@ class CaptureSession:
                 "packet_count": packet_count,
                 "event_count": event_count,
                 "entity_count": entity_count,
+                "new_detections": [
+                    {**d, "detected_at": d["detected_at"].isoformat() if d["detected_at"] else None}
+                    for d in new_detections
+                ],
             }
         )
 
