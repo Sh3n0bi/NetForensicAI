@@ -77,6 +77,7 @@ def build_report(case, case_dir):
         entities = store.list_entities()
         correlation_links = store.list_correlation_links()
         timeline_entries = [entry.to_dict() for entry in build_timeline(store)]
+        threat_intel_results = store.list_threat_intel()
 
         entity_event_counts = Counter()
         for links in store.entity_ids_by_event().values():
@@ -118,6 +119,21 @@ def build_report(case, case_dir):
         f"recorded" + (f" ({status_breakdown})." if findings else ".")
     )
 
+    threat_intel_results = [
+        {**row, "checked_at": row["checked_at"].isoformat() if row["checked_at"] else None}
+        for row in threat_intel_results
+    ]
+    threat_intelligence_note = (
+        "Threat intelligence lookups are explicit and opt-in (see `netforensic investigate --vt-api`) "
+        "and are only ever checked when an investigator runs that command; results below are cached "
+        "from those runs, not gathered automatically for this report."
+        if threat_intel_results
+        else (
+            "Threat intelligence lookups are explicit and opt-in (see `netforensic investigate "
+            "--vt-api`) and are not automatically run; no results have been recorded for this case."
+        )
+    )
+
     return {
         "case": {
             "case_id": case.case_id,
@@ -134,10 +150,8 @@ def build_report(case, case_dir):
         "timeline": timeline_entries,
         "artifacts": list(case.artifacts),
         "network_indicators": network_indicators,
-        "threat_intelligence_note": (
-            "Threat intelligence lookups are explicit and opt-in (see `netforensic investigate "
-            "--vt-api`) and are not persisted between runs; no results are tracked in this report."
-        ),
+        "threat_intelligence_note": threat_intelligence_note,
+        "threat_intelligence_results": threat_intel_results,
         "investigation_findings": investigation_findings,
         "attack_mapping_note": "Not yet implemented in this version of the platform.",
         "investigator_notes": list(case.notes),
@@ -168,6 +182,13 @@ def _generate_recommendations(findings, findings_by_status):
 
 def render_json(report):
     return json.dumps(report, indent=2)
+
+
+def _ti_result_text(result):
+    if result.get("error"):
+        return f"error: {result['error']}"
+    verdict = "YES" if result["malicious"] else "no"
+    return f"{verdict} ({result['malicious_count']}/{result['total_engines']})"
 
 
 def render_markdown(report):
@@ -249,6 +270,12 @@ def render_markdown(report):
         lines.append("No network indicators observed.")
 
     lines += ["", "## Threat Intelligence", report["threat_intelligence_note"]]
+    if report["threat_intelligence_results"]:
+        lines += ["", "| Entity Type | Value | Provider | Checked | Result |", "|---|---|---|---|---|"]
+        lines += [
+            f"| {r['entity_type']} | {r['value']} | {r['provider']} | {r['checked_at']} | {_ti_result_text(r)} |"
+            for r in report["threat_intelligence_results"]
+        ]
 
     lines += ["", "## Investigation Findings"]
     if report["investigation_findings"]:
@@ -388,6 +415,14 @@ def render_html(report):
         parts.append("<p>No network indicators observed.</p>")
 
     parts.append(f"<h2>Threat Intelligence</h2><p>{_e(report['threat_intelligence_note'])}</p>")
+    if report["threat_intelligence_results"]:
+        parts.append("<table><tr><th>Entity Type</th><th>Value</th><th>Provider</th><th>Checked</th><th>Result</th></tr>")
+        for r in report["threat_intelligence_results"]:
+            parts.append(
+                f"<tr><td>{_e(r['entity_type'])}</td><td>{_e(r['value'])}</td><td>{_e(r['provider'])}</td>"
+                f"<td>{_e(r['checked_at'])}</td><td>{_e(_ti_result_text(r))}</td></tr>"
+            )
+        parts.append("</table>")
 
     parts.append("<h2>Investigation Findings</h2>")
     if report["investigation_findings"]:

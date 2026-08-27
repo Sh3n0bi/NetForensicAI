@@ -161,3 +161,44 @@ def test_render_html_includes_findings(prepared_case):
     assert "Suspicious outbound connection" in text
     assert "Reviewed and escalated." in text
     assert "<html>" in text
+
+
+def test_report_reflects_cached_threat_intel_results(prepared_case):
+    from datetime import datetime, timezone
+
+    case, case_dir = prepared_case
+    with CaseStore(case_dir) as store:
+        store.record_threat_intel(
+            "ENT-ip_address-abc",
+            "ip_address",
+            "192.168.1.10",
+            "virustotal",
+            {"malicious": True, "malicious_count": 5, "total_engines": 70, "permalink": "https://x", "error": None},
+            datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+    report = build_report(case, case_dir)
+
+    assert len(report["threat_intelligence_results"]) == 1
+    result = report["threat_intelligence_results"][0]
+    assert result["value"] == "192.168.1.10"
+    assert result["malicious"] is True
+    assert result["checked_at"] == "2026-08-27T10:00:00+00:00"
+    assert "cached from those runs" in report["threat_intelligence_note"]
+
+    markdown = render_markdown(report)
+    assert "192.168.1.10" in markdown
+    assert "YES (5/70)" in markdown
+
+    html_text = render_html(report)
+    assert "192.168.1.10" in html_text
+    assert "YES (5/70)" in html_text
+
+
+def test_report_without_threat_intel_shows_generic_note(prepared_case):
+    case, case_dir = prepared_case
+
+    report = build_report(case, case_dir)
+
+    assert report["threat_intelligence_results"] == []
+    assert "no results have been recorded" in report["threat_intelligence_note"]

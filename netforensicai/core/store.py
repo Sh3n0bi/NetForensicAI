@@ -73,6 +73,19 @@ CORRELATION_FIELDS = [
     "confidence",
 ]
 
+THREAT_INTEL_FIELDS = [
+    "entity_id",
+    "entity_type",
+    "value",
+    "provider",
+    "checked_at",
+    "malicious",
+    "malicious_count",
+    "total_engines",
+    "permalink",
+    "error",
+]
+
 
 class CaseStore:
     def __init__(self, case_dir):
@@ -151,6 +164,23 @@ class CaseStore:
                 shared_entity_value TEXT,
                 time_delta_seconds DOUBLE,
                 confidence TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS threat_intel (
+                entity_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                checked_at TIMESTAMPTZ NOT NULL,
+                malicious BOOLEAN,
+                malicious_count INTEGER,
+                total_engines INTEGER,
+                permalink TEXT,
+                error TEXT,
+                PRIMARY KEY (entity_id, provider)
             )
             """
         )
@@ -342,3 +372,48 @@ class CaseStore:
 
     def count_correlation_links(self):
         return self.conn.execute("SELECT count(*) FROM correlation_links").fetchone()[0]
+
+    # --- threat intel cache ---
+
+    def record_threat_intel(self, entity_id, entity_type, value, provider, result, checked_at):
+        """Upsert one (entity_id, provider) threat-intel result. Only the
+        latest check per provider is kept - this is a cache, not a log."""
+        self.conn.execute(
+            """
+            INSERT INTO threat_intel
+                (entity_id, entity_type, value, provider, checked_at, malicious, malicious_count, total_engines, permalink, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (entity_id, provider) DO UPDATE SET
+                checked_at = excluded.checked_at,
+                malicious = excluded.malicious,
+                malicious_count = excluded.malicious_count,
+                total_engines = excluded.total_engines,
+                permalink = excluded.permalink,
+                error = excluded.error
+            """,
+            [
+                entity_id,
+                entity_type,
+                value,
+                provider,
+                checked_at,
+                result.get("malicious"),
+                result.get("malicious_count"),
+                result.get("total_engines"),
+                result.get("permalink"),
+                result.get("error"),
+            ],
+        )
+
+    def get_threat_intel(self, entity_id, provider):
+        columns_sql = ", ".join(THREAT_INTEL_FIELDS)
+        row = self.conn.execute(
+            f"SELECT {columns_sql} FROM threat_intel WHERE entity_id = ? AND provider = ?",
+            [entity_id, provider],
+        ).fetchone()
+        return dict(zip(THREAT_INTEL_FIELDS, row)) if row else None
+
+    def list_threat_intel(self):
+        columns_sql = ", ".join(THREAT_INTEL_FIELDS)
+        rows = self.conn.execute(f"SELECT {columns_sql} FROM threat_intel ORDER BY checked_at DESC").fetchall()
+        return [dict(zip(THREAT_INTEL_FIELDS, row)) for row in rows]

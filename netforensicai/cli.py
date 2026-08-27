@@ -514,15 +514,21 @@ def investigate(
             typer.echo(f"  - {lead}")
 
         typer.echo("\nThreat Intelligence:")
-        if entity_type == "ip_address":
-            from netforensicai.intel import virustotal
+        from netforensicai.core import threat_intel
+        from netforensicai.intel import virustotal
 
+        if entity_type in threat_intel.supported_entity_types():
             api_key = virustotal.get_api_key(vt_api)
-            if api_key:
-                malicious = virustotal.check_ip(value, api_key)
-                typer.echo(f"  VirusTotal: {'FLAGGED MALICIOUS' if malicious else 'not flagged malicious'}")
-            else:
+            ti_result = threat_intel.check_entity(store, result.entity["entity_id"], entity_type, value, api_key)
+            if ti_result["error"] == "no API key":
                 typer.echo("  VirusTotal: not checked (no API key - use --vt-api or set VT_API_KEY)")
+            elif ti_result["error"]:
+                typer.echo(f"  VirusTotal: error - {ti_result['error']}")
+            else:
+                status = "FLAGGED MALICIOUS" if ti_result["malicious"] else "not flagged malicious"
+                engines = f"{ti_result['malicious_count']}/{ti_result['total_engines']} engines"
+                cached_note = " (cached)" if ti_result["cached"] else ""
+                typer.echo(f"  VirusTotal: {status} ({engines}){cached_note}")
         else:
             typer.echo("  (no threat intelligence source available for this entity type yet)")
 
@@ -785,8 +791,13 @@ def scan(
     if api_key and connections:
         logger.info("Checking threat intelligence for top IPs...")
         for event in connections[:5]:
-            if event.src_ip and virustotal.check_ip(event.src_ip, api_key):
-                logger.warning(f"Malicious IP detected: {event.src_ip}")
+            if event.src_ip:
+                result = virustotal.check_ip(event.src_ip, api_key)
+                if result["malicious"]:
+                    logger.warning(
+                        f"Malicious IP detected: {event.src_ip} "
+                        f"({result['malicious_count']}/{result['total_engines']} engines)"
+                    )
 
     if not no_dashboard and anomalies:
         from netforensicai import dashboard
