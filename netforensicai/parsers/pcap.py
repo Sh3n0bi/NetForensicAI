@@ -200,9 +200,11 @@ class _StreamCollector:
     memory therefore tracks live flows and carved-file buffers rather than
     capture size, which is what makes multi-gigabyte captures viable.
 
-    Events are materialized in finish() rather than during the pass so the
-    returned list stays grouped by event type, and event_ids are assigned
-    in a stable order regardless of how packets interleave on the wire.
+    feed() returns the events a single packet produced, so the caller can
+    write them out and drop them; only genuinely cross-packet state (flow
+    counters, carve buffers) is retained until finish(). That is what keeps
+    total memory independent of how many events a capture yields, rather
+    than merely independent of how many packets it holds.
     """
 
     def __init__(
@@ -222,10 +224,7 @@ class _StreamCollector:
         self._flow_order = []
         self._pending = {}
         self._streams = {}
-        self._dns = []
-        self._http_requests = []
-        self._http_responses = []
-        self._tls = []
+        self._emitted = []  # events produced by the packet currently being fed
 
         self._features = []
         self._meta = []
@@ -235,18 +234,21 @@ class _StreamCollector:
     # --- streaming ---
 
     def feed(self, packet_number, packet):
+        """Process one packet and return the events it produced (usually
+        none, or one). The caller is expected to persist and discard them."""
         self.packet_count = packet_number
         if packet_number % PROGRESS_LOG_EVERY_PACKETS == 0:
             logger.info(f"Parsed {packet_number:,} packets...")
 
+        self._emitted = []
         self._collect_anomaly_features(packet_number, packet)
 
-        if not packet.haslayer(IP):
-            return
-        if packet.haslayer(TCP):
-            self._feed_tcp(packet_number, packet)
-        elif packet.haslayer(UDP):
-            self._feed_udp(packet_number, packet)
+        if packet.haslayer(IP):
+            if packet.haslayer(TCP):
+                self._feed_tcp(packet_number, packet)
+            elif packet.haslayer(UDP):
+                self._feed_udp(packet_number, packet)
+        return self._emitted
 
     def _collect_anomaly_features(self, packet_number, packet):
         if self._anomaly_disabled:
@@ -318,8 +320,8 @@ class _StreamCollector:
         qname = _dns_qname(dns)
         if not qname:
             return
-        self._dns.append(
-            {
+        self._emitted.append(
+            self._event({
                 "event_type": "dns_query",
                 "timestamp": _packet_timestamp(packet),
                 "src_ip": packet[IP].src,
@@ -330,7 +332,7 @@ class _StreamCollector:
                 "domain": qname,
                 "message": f"DNS query for {qname}",
                 "raw_event_reference": {"packet_number": packet_number},
-            }
+            })
         )
 
     def _feed_tcp(self, packet_number, packet):
@@ -354,8 +356,8 @@ class _StreamCollector:
             return
         sni = _tls_sni(payload)
         if sni:
-            self._tls.append(
-                {
+            self._emitted.append(
+                self._event({
                     "event_type": "tls_handshake",
                     "timestamp": _packet_timestamp(packet),
                     "src_ip": packet[IP].src,
@@ -366,7 +368,7 @@ class _StreamCollector:
                     "domain": sni,
                     "message": f"TLS ClientHello for {sni}",
                     "raw_event_reference": {"packet_number": packet_number, "sni": sni},
-                }
+                })
             )
 
     def _feed_http_request(self, packet_number, packet, src_port, dst_port, payload):
@@ -396,8 +398,8 @@ class _StreamCollector:
 
         url = f"http://{host}{target}" if host and target.startswith("/") else target
 
-        self._http_requests.append(
-            {
+        self._emitted.append(
+            self._event({
                 "event_type": "http_request",
                 "timestamp": _packet_timestamp(packet),
                 "src_ip": packet[IP].src,
@@ -414,7 +416,7 @@ class _StreamCollector:
                     "host": host,
                     "user_agent": user_agent,
                 },
-            }
+            })
         )
         # Queue for pairing with the response that comes back on this flow.
         self._pending.setdefault((packet[IP].src, src_port, packet[IP].dst, dst_port), deque()).append(
@@ -436,8 +438,8 @@ class _StreamCollector:
         queued = self._pending.get((packet[IP].dst, dst_port, packet[IP].src, src_port))
         method, url = queued.popleft() if queued else (None, None)
 
-        self._http_responses.append(
-            {
+        self._emitted.append(
+            self._event({
                 "event_type": "http_response",
                 "timestamp": _packet_timestamp(packet),
                 "src_ip": packet[IP].src,
@@ -454,7 +456,7 @@ class _StreamCollector:
                     "request_method": method,
                     "request_url": url,
                 },
-            }
+            })
         )
 
     def _carve(self, packet_number, packet, src_port, dst_port, payload):
@@ -622,14 +624,9 @@ class _StreamCollector:
         return events
 
     def finish(self):
-        events = self._connection_events()
-        events += [self._event(f) for f in self._dns]
-        events += [self._event(f) for f in self._http_requests]
-        events += [self._event(f) for f in self._http_responses]
-        events += [self._event(f) for f in self._tls]
-        events += self._file_transfer_events()
-        events += self._anomaly_events()
-        return events
+        """Events that can only be produced once the whole capture has been
+        seen: per-flow summaries, carved files, and anomaly scoring."""
+        return self._connection_events() + self._file_transfer_events() + self._anomaly_events()
 
 
 class PcapParser(base.BaseParser):
@@ -648,12 +645,37 @@ class PcapParser(base.BaseParser):
         output_dir: if given, extracted embedded files are saved there and
         file_transfer events get a populated file_path.
         """
+        return list(
+            self.iter_parse(
+                file_path,
+                evidence_id,
+                output_dir=output_dir,
+                anomaly_contamination=anomaly_contamination,
+            )
+        )
+
+    def iter_parse(
+        self,
+        file_path,
+        evidence_id,
+        output_dir=None,
+        anomaly_contamination=DEFAULT_ANOMALY_CONTAMINATION,
+        **_ignored,
+    ):
+        """Yield Events as the capture is read, so a caller that writes them
+        out incrementally never holds the whole set at once. This is the path
+        the ingestion pipeline takes; parse() just materializes it for
+        callers (and tests) that want a list."""
         collector = _StreamCollector(evidence_id, EventSequence(), output_dir, anomaly_contamination)
+        emitted = 0
         for packet_number, packet in enumerate(_iter_packets(file_path), start=1):
-            collector.feed(packet_number, packet)
-        events = collector.finish()
-        logger.info(f"Parsed {collector.packet_count:,} packets into {len(events):,} events")
-        return events
+            for event in collector.feed(packet_number, packet):
+                emitted += 1
+                yield event
+        for event in collector.finish():
+            emitted += 1
+            yield event
+        logger.info(f"Parsed {collector.packet_count:,} packets into {emitted:,} events")
 
 
 base.register(PcapParser())

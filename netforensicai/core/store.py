@@ -296,15 +296,24 @@ class CaseStore:
 
     # --- events ---
 
-    def replace_events_for_evidence(self, evidence_id, events):
-        """Delete any previously stored events (and their entity links) for
-        evidence_id, then insert `events`."""
+    def delete_events_for_evidence(self, evidence_id):
+        """Drop this evidence item's events and their entity links.
+
+        Separate from replace_events_for_evidence so a caller streaming
+        events in batches can clear once up front and then insert
+        incrementally, without ever holding the full set.
+        """
         self.conn.execute(
             "DELETE FROM entity_events WHERE event_id IN "
             "(SELECT event_id FROM events WHERE evidence_id = ?)",
             [evidence_id],
         )
         self.conn.execute("DELETE FROM events WHERE evidence_id = ?", [evidence_id])
+
+    def replace_events_for_evidence(self, evidence_id, events):
+        """Delete any previously stored events (and their entity links) for
+        evidence_id, then insert `events`."""
+        self.delete_events_for_evidence(evidence_id)
         self.insert_events(events)
 
     def _event_row(self, event):
@@ -344,6 +353,34 @@ class CaseStore:
         sql = f"SELECT {columns_sql} FROM events {where_sql} ORDER BY timestamp NULLS LAST"
         rows = self.conn.execute(sql, list(params)).fetchall()
         return [self._row_to_event(row) for row in rows]
+
+    def iter_events(self, where_sql="", params=(), chunk_size=2_000, timestamped_only=False):
+        """Yield events in timestamp order without materializing them all.
+
+        all_events() builds every row into a pydantic Event up front, which
+        on a real capture (84k events from one 30 MB pcap) is hundreds of
+        megabytes. Analyses that only need to walk events in order should
+        iterate instead, so their memory tracks their own working set rather
+        than the size of the case.
+
+        timestamped_only filters out events with no timestamp in SQL, which
+        is what any time-ordered analysis wants and avoids materializing
+        rows it would only discard.
+        """
+        columns_sql = ", ".join(_column(f) for f in EVENT_FIELDS)
+        clauses = [where_sql] if where_sql else []
+        if timestamped_only:
+            clauses.append("WHERE timestamp IS NOT NULL" if not where_sql else "AND timestamp IS NOT NULL")
+        sql = (
+            f"SELECT {columns_sql} FROM events {' '.join(clauses)} ORDER BY timestamp NULLS LAST"
+        )
+        cursor = self.conn.execute(sql, list(params))
+        while True:
+            rows = cursor.fetchmany(chunk_size)
+            if not rows:
+                return
+            for row in rows:
+                yield self._row_to_event(row)
 
     def all_events(self):
         return self._select_events()

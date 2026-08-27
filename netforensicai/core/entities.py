@@ -67,9 +67,15 @@ def extract_entities(event):
     return found
 
 
-def extract_and_store(store, events):
-    """Extract entities from `events` and persist entities + entity_events
-    links into `store`. Returns the number of distinct entities touched."""
+def extract_and_store_ids(store, events):
+    """Extract entities from `events`, persist entities + entity_events links
+    into `store`, and return the SET of distinct entity_ids touched.
+
+    Returning ids rather than a count is what lets a caller process events in
+    batches and still report a correct distinct total: counts from separate
+    batches cannot be added without double-counting every entity that appears
+    in more than one batch, which for a busy capture is most of them.
+    """
     entity_rows = {}
     link_rows = []
     for event in events:
@@ -83,4 +89,10 @@ def extract_and_store(store, events):
 
     store.upsert_entities(entity_rows.values())
     store.link_entity_events(link_rows)
-    return len(entity_rows)
+    return set(entity_rows)
+
+
+def extract_and_store(store, events):
+    """Extract entities from `events` and persist entities + entity_events
+    links into `store`. Returns the number of distinct entities touched."""
+    return len(extract_and_store_ids(store, events))

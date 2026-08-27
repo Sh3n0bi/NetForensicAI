@@ -34,6 +34,7 @@ as two mirrored rows.
 
 import hashlib
 import logging
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -59,23 +60,28 @@ def _find_time_window_pairs(sorted_events, window_seconds, max_pairs):
     chronologically-sorted, timestamped events within window_seconds of
     each other. a always precedes or is concurrent with b.
 
-    O(n + pairs_found) rather than O(n^2): the inner loop breaks as soon as
-    a candidate falls outside the window, since events are sorted. Capped
+    Takes an ITERABLE, not a list, and holds only the events currently
+    inside the window: on a real capture the full event set is hundreds of
+    megabytes of pydantic objects, and nothing here needs random access.
+    Memory is therefore a function of how many events fall inside one
+    window, not of the size of the case.
+
+    O(n + pairs_found) rather than O(n^2): events leaving the window are
+    discarded, so the inner loop only ever visits genuine candidates. Capped
     at max_pairs as a safety net for pathological cases (e.g. thousands of
     events sharing near-identical timestamps), which would otherwise still
     degrade toward O(n^2) since that many pairs genuinely are within the
     window.
     """
-    n = len(sorted_events)
+    window = deque()
     emitted = 0
-    for i in range(n):
-        a = sorted_events[i]
-        for j in range(i + 1, n):
-            b = sorted_events[j]
-            delta = (b.timestamp - a.timestamp).total_seconds()
-            if delta > window_seconds:
-                break
-            yield a, b, delta
+    for b in sorted_events:
+        # Events too old to pair with anything from here on are dropped;
+        # the input is sorted, so this can never discard a future match.
+        while window and (b.timestamp - window[0].timestamp).total_seconds() > window_seconds:
+            window.popleft()
+        for a in window:
+            yield a, b, (b.timestamp - a.timestamp).total_seconds()
             emitted += 1
             if emitted >= max_pairs:
                 logger.warning(
@@ -84,6 +90,7 @@ def _find_time_window_pairs(sorted_events, window_seconds, max_pairs):
                     "time window for this case."
                 )
                 return
+        window.append(b)
 
 
 def _shared_entity(event_id_a, event_id_b, entities_by_event):
@@ -106,8 +113,10 @@ def correlate_case(store, time_window_seconds=DEFAULT_TIME_WINDOW_SECONDS, max_p
 
     Returns the list of link dicts that were written.
     """
-    events = [e for e in store.all_events() if e.timestamp is not None]
-    events.sort(key=lambda e: e.timestamp)
+    # Streamed in timestamp order straight from SQL, with untimestamped rows
+    # filtered out there too - materializing and sorting every event in
+    # Python cost hundreds of megabytes on a real capture.
+    events = store.iter_events(timestamped_only=True)
 
     entities_by_event = store.entity_ids_by_event()
 

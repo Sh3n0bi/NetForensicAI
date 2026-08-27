@@ -31,6 +31,28 @@ def _seeded_store(tmp_path, events):
     return store
 
 
+def test_pair_finder_consumes_an_iterator_and_bounds_its_window():
+    """Correlation must not need the whole event set in memory: it takes an
+    iterator and retains only events still inside the time window. Feeding
+    it a generator proves it never indexes or re-reads the sequence."""
+    from netforensicai.core.correlation import _find_time_window_pairs
+
+    # 400 events one second apart, with a 5s window: any given event can only
+    # pair with a handful of neighbours, however long the sequence runs.
+    def stream():
+        for i in range(400):
+            yield _event(f"EVT-{i:04d}", i)
+
+    pairs = list(_find_time_window_pairs(stream(), window_seconds=5, max_pairs=10_000))
+
+    assert pairs, "a generator input produced no pairs at all"
+    # Every pair is genuinely within the window, and none spans the whole run.
+    assert all(0 < delta <= 5 for _a, _b, delta in pairs)
+    # 400 events x 5s window is ~5 partners each; an implementation that kept
+    # everything would produce the full O(n^2) ~80,000 instead.
+    assert len(pairs) < 2500
+
+
 def test_shared_entity_within_window_is_related(tmp_path):
     events = [
         _event("EVT-0001", 0, src_ip="10.0.0.5"),

@@ -6,19 +6,38 @@ capture module's per-rotation ingestion all call parse_evidence_item()
 rather than each having their own copy.
 """
 
+import itertools
 import logging
 import os
 
 logger = logging.getLogger(__name__)
+
+# Events held in memory at once while ingesting. Large enough that the bulk
+# INSERT path stays efficient, small enough that a capture yielding hundreds
+# of thousands of events never materializes them all - peak memory here is a
+# function of this constant, not of the size of the evidence file.
+INGEST_BATCH_SIZE = 5_000
+
+
+def _batched(iterable, size):
+    iterator = iter(iterable)
+    while True:
+        batch = list(itertools.islice(iterator, size))
+        if not batch:
+            return
+        yield batch
 
 
 def parse_evidence_item(evidence, case_dir, case_manager, case_id, store):
     """Parse one evidence item, persist its events + extracted entities into
     `store`, and register any newly saved artifact files against the case.
 
+    Events are streamed from the parser and written in batches rather than
+    collected into a single list first - see INGEST_BATCH_SIZE.
+
     Returns (event_count, entity_count, error). error is None on success.
     """
-    from netforensicai.core.entities import extract_and_store
+    from netforensicai.core.entities import extract_and_store_ids
     from netforensicai.core.evidence import EvidenceManager
     from netforensicai.parsers import base, load_parsers
 
@@ -30,17 +49,35 @@ def parse_evidence_item(evidence, case_dir, case_manager, case_id, store):
     stored_path = EvidenceManager(case_dir).stored_file_path(evidence.evidence_id)
     output_dir = case_dir / "artifacts" / evidence.evidence_id
 
+    event_count = 0
+    entity_ids = set()
+    artifact_paths = []
     try:
-        events = parser.parse(stored_path, evidence_id=evidence.evidence_id, output_dir=str(output_dir))
+        store.delete_events_for_evidence(evidence.evidence_id)
+        stream = parser.iter_parse(
+            stored_path, evidence_id=evidence.evidence_id, output_dir=str(output_dir)
+        )
+        for batch in _batched(stream, INGEST_BATCH_SIZE):
+            store.insert_events(batch)
+            # Union of ids, not a sum of per-batch counts: the same entity
+            # recurs across batches, and adding counts would inflate the
+            # total by exactly the overlap correlation exists to surface.
+            entity_ids |= extract_and_store_ids(store, batch)
+            event_count += len(batch)
+            for event in batch:
+                if event.event_type == "file_transfer" and event.file_path:
+                    artifact_paths.append(
+                        os.path.relpath(event.file_path, case_dir).replace(os.sep, "/")
+                    )
     except Exception as e:
+        # All-or-nothing from the case's point of view: a partially ingested
+        # evidence item is worse than none, because every later stage
+        # (correlation, detections, the timeline, the report) would silently
+        # reason over half a file with no indication anything was missing.
+        store.delete_events_for_evidence(evidence.evidence_id)
         return None, None, str(e)
 
-    store.replace_events_for_evidence(evidence.evidence_id, events)
-    entity_count = extract_and_store(store, events)
+    for relative_path in artifact_paths:
+        case_manager.register_artifact(case_id, relative_path)
 
-    for event in events:
-        if event.event_type == "file_transfer" and event.file_path:
-            relative_path = os.path.relpath(event.file_path, case_dir).replace(os.sep, "/")
-            case_manager.register_artifact(case_id, relative_path)
-
-    return len(events), entity_count, None
+    return event_count, len(entity_ids), None

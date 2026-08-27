@@ -27,6 +27,18 @@ class BaseParser(ABC):
         """
         raise NotImplementedError
 
+    def iter_parse(self, file_path, evidence_id, **options):
+        """Yield Events one at a time instead of materializing them all.
+
+        The ingestion pipeline consumes this and writes in batches, so a
+        capture producing hundreds of thousands of events never holds all of
+        them in memory at once. The default wraps parse(), which is the right
+        trade for formats whose evidence files are small enough that the list
+        is not the constraint (JSON, CSV, EVTX); the pcap parser overrides
+        it, since network captures are the format that reaches that scale.
+        """
+        return iter(self.parse(file_path, evidence_id, **options))
+
 
 def register(parser):
     """Register a BaseParser instance for each of its evidence_types. Returns the parser."""
