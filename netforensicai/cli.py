@@ -438,6 +438,12 @@ def investigate(
     vt_api: str = typer.Option(
         None, "--vt-api", help="VirusTotal API key (falls back to VT_API_KEY env var)"
     ),
+    ai: bool = typer.Option(
+        False, "--ai", help="Ask the optional AI assistant for one hedged hypothesis about this entity's events"
+    ),
+    api_key: str = typer.Option(
+        None, "--api-key", help="Anthropic API key for --ai (falls back to ANTHROPIC_API_KEY / `ant auth login`)"
+    ),
     cases_dir: str = typer.Option(
         DEFAULT_CASES_DIR,
         "--cases-dir",
@@ -518,8 +524,8 @@ def investigate(
         from netforensicai.intel import virustotal
 
         if entity_type in threat_intel.supported_entity_types():
-            api_key = virustotal.get_api_key(vt_api)
-            ti_result = threat_intel.check_entity(store, result.entity["entity_id"], entity_type, value, api_key)
+            vt_key = virustotal.get_api_key(vt_api)
+            ti_result = threat_intel.check_entity(store, result.entity["entity_id"], entity_type, value, vt_key)
             if ti_result["error"] == "no API key":
                 typer.echo("  VirusTotal: not checked (no API key - use --vt-api or set VT_API_KEY)")
             elif ti_result["error"]:
@@ -531,6 +537,35 @@ def investigate(
                 typer.echo(f"  VirusTotal: {status} ({engines}){cached_note}")
         else:
             typer.echo("  (no threat intelligence source available for this entity type yet)")
+
+        if ai:
+            typer.echo("\nAI Investigation Hypothesis (optional - requires investigator review):")
+            from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
+
+            try:
+                hypothesis = generate_hypothesis(result.events, api_key=api_key)
+            except AssistantError as e:
+                typer.echo(f"  Not available: {e}")
+            else:
+                if not hypothesis.evidence_sufficient:
+                    typer.echo(f"  {hypothesis.claim}")
+                    typer.echo(f"  Recommended validation: {hypothesis.recommended_validation}")
+                else:
+                    typer.echo(f"  Assessment:  {hypothesis.assessment}")
+                    typer.echo(f"  Claim:       {hypothesis.claim}")
+                    typer.echo(f"  Confidence:  {hypothesis.confidence}")
+                    typer.echo("  Observed evidence:")
+                    for line in hypothesis.observed_evidence:
+                        typer.echo(f"    - {line}")
+                    typer.echo(f"  Alternative explanation: {hypothesis.alternative_explanation}")
+                    typer.echo(f"  Recommended validation:  {hypothesis.recommended_validation}")
+                    typer.echo("  Cited evidence:")
+                    for citation in hypothesis.evidence:
+                        typer.echo(f"    - {citation.evidence_id} / {citation.event_id}")
+                    typer.echo(
+                        "  This is an AI-generated hypothesis, not a conclusion - review the cited "
+                        "events yourself. Use `netforensic finding create` if you decide to act on it."
+                    )
 
 
 finding_app = typer.Typer(help="Manage investigator-owned findings.", no_args_is_help=True)

@@ -67,6 +67,15 @@ VirusTotal Integration: Get a free API key from virustotal.com and run:
 netforensic scan your_capture.pcap --vt-api your_api_key
 # or export VT_API_KEY=your_api_key and omit --vt-api
 ```
+
+AI Investigation Assistant (optional, `[ai]` extra): `netforensic investigate --case <ID> --ip <ip> --ai`
+asks Claude for one hedged hypothesis about that entity's events (observed evidence / claim / confidence
+/ alternative explanation), never a bare conclusion. Requires `pip install -e ".[ai]"` and Anthropic
+credentials (`--api-key`, `ANTHROPIC_API_KEY`, or `ant auth login`). The assistant only ever sees the
+normalized events already in the case - never raw evidence files - and any response citing evidence not
+actually present in those events is rejected outright rather than shown. It never creates a Finding on
+its own; that's always an explicit `netforensic finding create` by the investigator.
+
 Development: Add tests in tests/ or extend file signatures in netforensicai/parsers/pcap.py
 
 ## Example Output

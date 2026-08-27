@@ -332,3 +332,88 @@ def test_report_generate_missing_case_reports_error(tmp_path):
     )
 
     assert result.exit_code == 1
+
+
+def test_investigate_ai_flag_shows_hypothesis(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    from netforensicai.core.ai_assistant import EvidenceCitation, Hypothesis
+
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "ai_events.json",
+        [{"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "jdoe", "src_ip": "192.168.1.10"}],
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "AI test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    hypothesis = Hypothesis(
+        evidence_sufficient=True,
+        claim="This may represent a routine logon.",
+        assessment="Likely benign authentication",
+        observed_evidence=["User jdoe authenticated from 192.168.1.10."],
+        confidence="low",
+        alternative_explanation="Normal daily login activity.",
+        recommended_validation="Confirm against expected work hours.",
+        evidence=[EvidenceCitation(evidence_id="EV-0001", event_id="EVT-EV-0001-000001")],
+    )
+    mock_response = MagicMock()
+    mock_response.parsed_output = hypothesis
+    mock_client = MagicMock()
+    mock_client.messages.parse.return_value = mock_response
+
+    with patch("anthropic.Anthropic", return_value=mock_client):
+        result = runner.invoke(
+            app,
+            ["investigate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--user", "jdoe", "--ai"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "AI Investigation Hypothesis" in result.output
+    assert "This may represent a routine logon." in result.output
+    assert "Confidence:  low" in result.output
+    assert "not a conclusion" in result.output
+
+
+def test_investigate_ai_flag_reports_unavailable_without_credentials(tmp_path):
+    from unittest.mock import patch
+
+    import anthropic
+
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "ai_no_creds.json", [{"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "jdoe"}]
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "AI no creds test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    auth_error = anthropic.AuthenticationError.__new__(anthropic.AuthenticationError)
+    with patch("anthropic.Anthropic") as mock_anthropic:
+        mock_anthropic.return_value.messages.parse.side_effect = auth_error
+        result = runner.invoke(
+            app,
+            ["investigate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--user", "jdoe", "--ai"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Not available" in result.output
+    assert "credentials" in result.output
+
+
+def test_investigate_without_ai_flag_has_no_hypothesis_section(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "no_ai.json", [{"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "jdoe"}]
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "No AI test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(app, ["investigate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--user", "jdoe"])
+
+    assert "AI Investigation Hypothesis" not in result.output
