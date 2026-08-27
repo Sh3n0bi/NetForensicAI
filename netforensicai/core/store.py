@@ -256,6 +256,35 @@ class CaseStore:
     def count_entities(self):
         return self.conn.execute("SELECT count(*) FROM entities").fetchone()[0]
 
+    def get_entity(self, entity_id):
+        row = self.conn.execute(
+            "SELECT entity_id, entity_type, value FROM entities WHERE entity_id = ?", [entity_id]
+        ).fetchone()
+        if row is None:
+            return None
+        return {"entity_id": row[0], "entity_type": row[1], "value": row[2]}
+
+    def related_entities(self, entity_id):
+        """Other entities that co-occur with entity_id on at least one
+        event, ranked by how many events they share with it. This is the
+        1-hop neighborhood a relational entity_events table can answer
+        directly - no graph database needed for that."""
+        rows = self.conn.execute(
+            """
+            SELECT e2.entity_id, e2.entity_type, e2.value, count(DISTINCT ee1.event_id) AS shared_event_count
+            FROM entity_events ee1
+            JOIN entity_events ee2 ON ee2.event_id = ee1.event_id AND ee2.entity_id != ee1.entity_id
+            JOIN entities e2 ON e2.entity_id = ee2.entity_id
+            WHERE ee1.entity_id = ?
+            GROUP BY e2.entity_id, e2.entity_type, e2.value
+            ORDER BY shared_event_count DESC, e2.entity_type, e2.value
+            """,
+            [entity_id],
+        ).fetchall()
+        return [
+            {"entity_id": r[0], "entity_type": r[1], "value": r[2], "shared_event_count": r[3]} for r in rows
+        ]
+
     def entity_ids_by_event(self):
         """Return {event_id: [(entity_id, entity_type, value, field), ...]}
         for every entity_event link - used by the correlation engine's

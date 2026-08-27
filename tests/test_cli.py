@@ -131,3 +131,56 @@ def test_timeline_show_bad_time_filter_reports_error(tmp_path):
     )
 
     assert result.exit_code == 1
+
+
+def test_investigate_known_ip_reports_full_result(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "investigate_events.json",
+        [
+            {"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "jdoe", "src_ip": "192.168.1.10"},
+            {"timestamp": "2026-08-27T09:00:30Z", "type": "network_connection", "src_ip": "192.168.1.10", "dst_ip": "203.0.113.7"},
+        ],
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "Investigate test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(app, ["investigate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--ip", "192.168.1.10"])
+
+    assert result.exit_code == 0, result.output
+    assert "Entity: ip_address '192.168.1.10'" in result.output
+    assert "Related Evidence:" in result.output
+    assert "EV-0001" in result.output
+    assert "Timeline:" in result.output
+    assert "authentication" in result.output
+    assert "network_connection" in result.output
+    assert "Related Entities:" in result.output
+    assert "Potential Investigation Leads:" in result.output
+    assert "Threat Intelligence:" in result.output
+    assert "not checked" in result.output  # no --vt-api given
+
+
+def test_investigate_unknown_entity_reports_not_found(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Not found test", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(app, ["investigate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--ip", "10.0.0.99"])
+
+    assert result.exit_code == 0
+    assert "No evidence" in result.output
+
+
+def test_investigate_requires_exactly_one_entity_flag(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Flag validation test", "--cases-dir", str(cases_dir)])
+
+    no_flags_result = runner.invoke(app, ["investigate", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    assert no_flags_result.exit_code == 1
+
+    two_flags_result = runner.invoke(
+        app,
+        ["investigate", "--case", "INC-0001", "--cases-dir", str(cases_dir), "--ip", "10.0.0.5", "--user", "alice"],
+    )
+    assert two_flags_result.exit_code == 1

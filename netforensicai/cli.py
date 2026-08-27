@@ -423,6 +423,109 @@ def timeline_show(
         typer.echo(f"{ts:<26} {entry.event_type:<20} {entry.source:<8} {entry.evidence_id:<10} {_summarize_entry(entry)}")
 
 
+@app.command("investigate")
+def investigate(
+    case_id: str = typer.Option(..., "--case", help="Case ID to investigate within"),
+    ip: str = typer.Option(None, "--ip", help="Investigate an IP address"),
+    user: str = typer.Option(None, "--user", help="Investigate a username"),
+    hash_value: str = typer.Option(None, "--hash", help="Investigate a file hash"),
+    host: str = typer.Option(None, "--host", help="Investigate a hostname"),
+    domain: str = typer.Option(None, "--domain", help="Investigate a domain"),
+    process: str = typer.Option(None, "--process", help="Investigate a process name"),
+    file: str = typer.Option(None, "--file", help="Investigate a file name"),
+    device: str = typer.Option(None, "--device", help="Investigate a device"),
+    vt_api: str = typer.Option(
+        None, "--vt-api", help="VirusTotal API key (falls back to VT_API_KEY env var)"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Investigate a single entity: everything this case knows about it, traced back to evidence."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.investigate import investigate_entity
+    from netforensicai.core.store import CaseStore
+
+    candidates = {
+        "ip_address": ip,
+        "user": user,
+        "hash": hash_value,
+        "hostname": host,
+        "domain": domain,
+        "process": process,
+        "file": file,
+        "device": device,
+    }
+    given = {entity_type: value for entity_type, value in candidates.items() if value}
+    if len(given) != 1:
+        typer.echo(
+            "Error: provide exactly one of --ip, --user, --hash, --host, --domain, --process, --file, --device",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    entity_type, value = next(iter(given.items()))
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    with CaseStore(case_dir) as store:
+        result = investigate_entity(store, entity_type, value)
+
+        if result is None:
+            typer.echo(f"No evidence of {entity_type} '{value}' found in {case.case_id}.")
+            return
+
+        typer.echo(f"Entity: {entity_type} '{value}' ({result.entity['entity_id']})")
+        timestamps = [e.timestamp for e in result.events if e.timestamp is not None]
+        if timestamps:
+            typer.echo(f"  First seen: {min(timestamps).isoformat()}")
+            typer.echo(f"  Last seen:  {max(timestamps).isoformat()}")
+        typer.echo(f"  Events:     {len(result.events)}")
+
+        typer.echo("\nRelated Evidence:")
+        for evidence_id in result.evidence_ids:
+            typer.echo(f"  {evidence_id}")
+
+        typer.echo("\nTimeline:")
+        for entry in result.timeline_entries:
+            ts = entry.timestamp.isoformat() if entry.timestamp else "unknown"
+            typer.echo(f"  {ts}  {entry.event_type:<20} {_summarize_entry(entry)}")
+
+        typer.echo("\nRelated Entities:")
+        if result.related_entities:
+            for rel in result.related_entities[:20]:
+                typer.echo(
+                    f"  {rel['entity_type']:<16} {rel['value']:<30} ({rel['shared_event_count']} shared events)"
+                )
+        else:
+            typer.echo("  (none)")
+
+        typer.echo("\nPotential Investigation Leads:")
+        for lead in result.leads:
+            typer.echo(f"  - {lead}")
+
+        typer.echo("\nThreat Intelligence:")
+        if entity_type == "ip_address":
+            from netforensicai.intel import virustotal
+
+            api_key = virustotal.get_api_key(vt_api)
+            if api_key:
+                malicious = virustotal.check_ip(value, api_key)
+                typer.echo(f"  VirusTotal: {'FLAGGED MALICIOUS' if malicious else 'not flagged malicious'}")
+            else:
+                typer.echo("  VirusTotal: not checked (no API key - use --vt-api or set VT_API_KEY)")
+        else:
+            typer.echo("  (no threat intelligence source available for this entity type yet)")
+
+
 @app.command()
 def scan(
     pcap_file: str = typer.Argument(..., help="Path to the .pcap file"),
