@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
-from scapy.all import IP, TCP, Raw, wrpcap
+from scapy.all import DNS, DNSQR, IP, TCP, UDP, Raw, wrpcap
 
 from netforensicai.parsers.pcap import PcapParseError, PcapParser
 
@@ -42,8 +42,185 @@ def test_network_connection_events_from_tcp_payload(tmp_path):
     assert first.dst_port == 80
     assert first.protocol == "tcp"
     assert first.message.startswith("GET / HTTP/1.1")
-    assert first.raw_event_reference == {"packet_number": 1}
+    assert first.raw_event_reference["first_packet_number"] == 1
+    assert first.raw_event_reference["packet_count"] == 1
+    assert first.raw_event_reference["byte_count"] > 0
     assert first.timestamp is not None
+
+
+def test_connection_event_produced_for_tcp_handshake_with_no_payload(tmp_path):
+    # Regression: a capture consisting entirely of TCP control packets
+    # (SYN/ACK/FIN, no application payload) previously produced ZERO
+    # network_connection events - "network_connection: one event per TCP
+    # packet carrying a payload" meant a completely normal, realistic
+    # capture (most TCP connections are mostly handshake/ack traffic)
+    # could parse into an empty case with nothing to investigate.
+    syn = IP(src="10.0.0.5", dst="8.8.8.8") / TCP(sport=51000, dport=443, flags="S")
+    syn.time = 1_700_000_500.0
+    synack = IP(src="8.8.8.8", dst="10.0.0.5") / TCP(sport=443, dport=51000, flags="SA")
+    synack.time = 1_700_000_500.1
+    pcap_path = _write_pcap(tmp_path, "handshake.pcap", [syn, synack])
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0008")
+
+    connections = [e for e in events if e.event_type == "network_connection"]
+    assert len(connections) == 2  # one per direction
+    assert all(e.src_port is not None and e.dst_port is not None for e in connections)
+    outbound = next(e for e in connections if e.src_ip == "10.0.0.5")
+    assert "no application payload observed" in outbound.message
+
+
+def test_multiple_packets_in_the_same_flow_aggregate_into_one_event(tmp_path):
+    packets = [
+        _packet("10.0.0.5", "203.0.113.9", 51000, 443, b"chunk-a", 1_700_000_600.0),
+        _packet("10.0.0.5", "203.0.113.9", 51000, 443, b"chunk-b", 1_700_000_600.2),
+        _packet("10.0.0.5", "203.0.113.9", 51000, 443, b"chunk-c", 1_700_000_600.4),
+    ]
+    pcap_path = _write_pcap(tmp_path, "same_flow.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0009")
+
+    connections = [e for e in events if e.event_type == "network_connection"]
+    assert len(connections) == 1  # not one event per packet
+    assert connections[0].raw_event_reference["packet_count"] == 3
+    assert connections[0].message.startswith("chunk-a")  # preview of the first packet with a payload
+
+
+def test_udp_packets_produce_network_connection_events(tmp_path):
+    pkt = IP(src="10.0.0.5", dst="10.0.0.9") / UDP(sport=6000, dport=7000) / Raw(load=b"udp payload")
+    pkt.time = 1_700_000_700.0
+    pcap_path = _write_pcap(tmp_path, "udp.pcap", [pkt])
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0010")
+
+    connections = [e for e in events if e.event_type == "network_connection"]
+    assert len(connections) == 1
+    assert connections[0].protocol == "udp"
+    assert connections[0].src_port == 6000
+    assert connections[0].dst_port == 7000
+
+
+def test_dns_query_produces_dns_query_event_with_domain(tmp_path):
+    pkt = IP(src="10.0.0.5", dst="8.8.8.8") / UDP(sport=5353, dport=53) / DNS(qd=DNSQR(qname="evil-c2.example.com"))
+    pkt.time = 1_700_000_800.0
+    pcap_path = _write_pcap(tmp_path, "dns.pcap", [pkt])
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0011")
+
+    dns_events = [e for e in events if e.event_type == "dns_query"]
+    assert len(dns_events) == 1
+    assert dns_events[0].domain == "evil-c2.example.com"
+    assert dns_events[0].src_ip == "10.0.0.5"
+    # DNS packets must not ALSO produce a generic network_connection event
+    # (that would double-count the same packet under two event types).
+    assert [e for e in events if e.event_type == "network_connection"] == []
+
+
+def test_http_request_populates_domain_and_url(tmp_path):
+    request = (
+        b"GET /admin/login.php HTTP/1.1\r\n"
+        b"Host: internal-portal.example.com\r\n"
+        b"User-Agent: curl/8.0\r\n\r\n"
+    )
+    packets = [_packet("10.0.0.5", "203.0.113.20", 51500, 80, request, 1_700_001_100.0)]
+    pcap_path = _write_pcap(tmp_path, "http_req.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0013")
+
+    http_events = [e for e in events if e.event_type == "http_request"]
+    assert len(http_events) == 1
+    event = http_events[0]
+    assert event.domain == "internal-portal.example.com"
+    assert event.url == "http://internal-portal.example.com/admin/login.php"
+    assert event.raw_event_reference["method"] == "GET"
+
+
+def test_http_request_on_nonstandard_port_is_still_detected(tmp_path):
+    # Matched on the request line itself, not the port - so a web service
+    # on 8443 or a C2 channel on 4444 is caught the same as port 80.
+    request = b"POST /upload HTTP/1.1\r\nHost: 203.0.113.99:4444\r\n\r\n"
+    packets = [_packet("10.0.0.5", "203.0.113.99", 51600, 4444, request, 1_700_001_200.0)]
+    pcap_path = _write_pcap(tmp_path, "http_odd_port.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0014")
+
+    http_events = [e for e in events if e.event_type == "http_request"]
+    assert len(http_events) == 1
+    assert http_events[0].domain == "203.0.113.99"  # port stripped off the Host header
+    assert http_events[0].raw_event_reference["method"] == "POST"
+
+
+def test_non_http_payload_produces_no_http_event(tmp_path):
+    packets = [_packet("10.0.0.5", "8.8.8.8", 51000, 80, b"\x00\x01binary junk", 1_700_001_300.0)]
+    pcap_path = _write_pcap(tmp_path, "not_http.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0015")
+
+    assert [e for e in events if e.event_type == "http_request"] == []
+
+
+def test_tls_client_hello_sni_is_extracted(tmp_path):
+    # Built with scapy's real TLS implementation rather than a hand-rolled
+    # byte blob, so this exercises the offset-walking parser against bytes
+    # a real TLS stack actually produces.
+    from scapy.layers.tls.extensions import ServerName, TLS_Ext_ServerName
+    from scapy.layers.tls.handshake import TLSClientHello
+    from scapy.layers.tls.record import TLS
+
+    client_hello = TLS(
+        msg=[TLSClientHello(ext=[TLS_Ext_ServerName(servernames=[ServerName(servername=b"malware-c2.example.net")])])]
+    )
+    payload = bytes(client_hello)
+    packets = [_packet("10.0.0.5", "203.0.113.30", 51700, 443, payload, 1_700_001_400.0)]
+    pcap_path = _write_pcap(tmp_path, "tls.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0016")
+
+    tls_events = [e for e in events if e.event_type == "tls_handshake"]
+    assert len(tls_events) == 1
+    assert tls_events[0].domain == "malware-c2.example.net"
+    assert tls_events[0].dst_port == 443
+
+
+def test_payload_on_port_443_is_not_skipped_by_scapy_auto_dissection(tmp_path):
+    # Regression: the parser used to read payloads via packet[Raw].load,
+    # but scapy binds dissectors to well-known ports - a payload on 443
+    # comes back as a TLS layer, so haslayer(Raw) was False and the whole
+    # packet got skipped. That silently dropped ALL HTTPS traffic from
+    # file-transfer extraction, and depended on which scapy submodules
+    # the process happened to import. Payloads now come from TCP.payload.
+    file_bytes = b"%PDF-1.7 a pdf exfiltrated over 443"
+    packets = [_packet("10.0.0.5", "203.0.113.9", 51900, 443, file_bytes, 1_700_001_600.0)]
+    pcap_path = _write_pcap(tmp_path, "https_pdf.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0018")
+
+    file_events = [e for e in events if e.event_type == "file_transfer"]
+    assert len(file_events) == 1
+    assert file_events[0].file_name.endswith(".pdf")
+    assert file_events[0].file_hash == hashlib.sha256(file_bytes).hexdigest()
+
+
+def test_malformed_tls_payload_does_not_raise(tmp_path):
+    # A truncated/garbage TLS record must be skipped silently, never crash
+    # the whole parse - a real capture routinely contains partial records.
+    packets = [_packet("10.0.0.5", "203.0.113.30", 51800, 443, b"\x16\x03\x01\x00\x05\x01\x00\x00", 1_700_001_500.0)]
+    pcap_path = _write_pcap(tmp_path, "bad_tls.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0017")
+
+    assert [e for e in events if e.event_type == "tls_handshake"] == []
+
+
+def test_dns_response_does_not_produce_a_dns_query_event(tmp_path):
+    query = DNSQR(qname="example.com")
+    response = IP(src="8.8.8.8", dst="10.0.0.5") / UDP(sport=53, dport=5353) / DNS(qr=1, qd=query, an=None)
+    response.time = 1_700_000_900.0
+    pcap_path = _write_pcap(tmp_path, "dns_response.pcap", [response])
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0012")
+
+    assert [e for e in events if e.event_type == "dns_query"] == []
 
 
 def test_file_transfer_event_detects_embedded_signature_and_hashes_content(tmp_path):
