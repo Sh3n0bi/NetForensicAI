@@ -23,7 +23,7 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 
 ## Features
 
-- **Case management** — `INC-####` cases with a predictable on-disk layout (`cases/<ID>/evidence,artifacts,timeline,findings,reports/`)
+- **Case management** — `INC-####` cases with a predictable on-disk layout (`cases/<ID>/evidence,artifacts,timeline,findings,reports/`); export a case to one portable, SHA-256-manifested zip archive and import it elsewhere for backup or handoff — every file is verified against its manifest before anything is written, so a tampered or corrupted archive is rejected outright
 - **Evidence integrity** — every evidence item is SHA-256 hashed on ingest, copied read-only, and re-verifiable at any time (report generation re-checks every hash automatically)
 - **Four evidence parsers**, all normalizing into one [Common Event Model](#supported-evidence): pcap, JSON, CSV, and Windows Event Log (EVTX) with dedicated Sysmon field mapping
 - **Entity extraction** — users, hostnames, devices, IPs, domains, URLs, files, hashes, processes, ports, and network connections, each linked to the events they appear in
@@ -128,6 +128,84 @@ netforensic report generate --case INC-0001 --format markdown
 ```
 
 Or the same thing from a browser: `netforensic web --cases-dir cases`, then create a case and upload files from the Evidence tab.
+
+Every command below has an `--help` (`netforensic <command> --help`, or `netforensic <group> <command> --help`) and a `--cases-dir` option (env var `NETFORENSIC_CASES_DIR`, default `cases`) that all of the examples below omit for brevity — pass it explicitly if you're not running from the directory that contains your `cases/` folder.
+
+## Command Reference
+
+Every command below was actually run against a real case while writing this section - not transcribed from memory. `netforensic --help` lists the full top-level command tree at any time; `netforensic <command> --help` (or `<group> <command> --help` for the grouped ones) shows every flag for that command.
+
+**Cases**
+```bash
+netforensic case create --name "Test Incident" [--description "..."] [--investigator "..."]
+netforensic case list
+netforensic case export --case INC-0001 [--output INC-0001.zip]     # portable archive, SHA-256 manifest, for backup/handoff
+netforensic case import ./INC-0001.zip [--cases-dir other_cases]    # verifies every file before writing anything
+```
+
+**Evidence**
+```bash
+netforensic evidence add ./events.json --case INC-0001    # .pcap/.pcapng, .json, .csv, or .evtx
+netforensic evidence list --case INC-0001
+netforensic parse --case INC-0001 --evidence EV-0001      # re-parse one evidence item without a full analyze
+```
+
+**Analysis** (parses every evidence item, correlates, and runs bundled detection rules — the automatic, deterministic part of the pipeline)
+```bash
+netforensic analyze --case INC-0001
+netforensic timeline build --case INC-0001
+netforensic timeline show --case INC-0001 [--user jdoe] [--ip 10.0.0.5] [--hostname ...] [--process ...] [--file ...] [--type ...] [--evidence EV-0001]
+```
+
+**Investigation** (everything the case knows about one entity, plus optional external enrichment)
+```bash
+netforensic investigate --case INC-0001 --ip 192.168.1.10          # or --user / --hash / --host / --domain / --process / --file / --device
+netforensic investigate --case INC-0001 --ip 192.168.1.10 --vt-api YOUR_VT_KEY
+netforensic investigate --case INC-0001 --ip 192.168.1.10 --ai --ai-provider anthropic --api-key YOUR_KEY
+netforensic investigate --case INC-0001 --ip 192.168.1.10 --ai --ai-provider ollama                    # local, no API key needed - just `ollama serve`
+netforensic investigate --case INC-0001 --ip 192.168.1.10 --ai --ai-provider openai --model gpt-4o-mini
+```
+
+**Findings** (investigator-owned — never auto-created by anything above)
+```bash
+netforensic finding create --case INC-0001 --title "..." --severity High --status Investigating --assessment "..." --event EVT-EV-0001-000002
+netforensic finding list --case INC-0001
+netforensic finding update --case INC-0001 --finding F-0001 --status Confirmed --note "Confirmed via manual review"
+```
+
+**Bundled detections** (automatic every `analyze` — nothing to scan separately)
+```bash
+netforensic detections list --case INC-0001 [--severity high]
+```
+
+**MITRE ATT&CK mapping** (opt-in; unlike detections, carries an investigator-settable status)
+```bash
+netforensic attack scan --case INC-0001
+netforensic attack list --case INC-0001
+netforensic attack update --case INC-0001 --technique T1059.001 --status confirmed   # potential / confirmed / rejected
+```
+
+**Reports**
+```bash
+netforensic report generate --case INC-0001 --format markdown   # or json / html
+netforensic report generate --case INC-0001 --format html --output ./out/report.html
+```
+
+**Live capture** (needs Npcap/libpcap + elevated privileges — this tool doesn't grant either)
+```bash
+netforensic capture --list-interfaces
+netforensic capture --case INC-0001 --interface "\Device\NPF_{...}" --filter "tcp port 443" --rotate-seconds 30
+```
+
+**Web UI**
+```bash
+netforensic web --cases-dir cases [--host 127.0.0.1] [--port 8000]
+```
+
+**Legacy standalone pcap tool** (pre-dates case management; still useful for a one-off pcap without creating a case)
+```bash
+netforensic scan ./capture.pcap [--vt-api YOUR_KEY] [--save-files] [--no-dashboard]
+```
 
 ## Example Investigation
 

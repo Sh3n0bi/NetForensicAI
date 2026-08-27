@@ -154,6 +154,55 @@ def test_detections_list_before_analyze_reports_cleanly(tmp_path):
     assert "No detections" in result.output
 
 
+def test_case_export_import_round_trip_via_cli(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "events.json", [{"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "alice"}]
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "Export CLI test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    archive_path = tmp_path / "INC-0001.zip"
+    export_result = runner.invoke(
+        app, ["case", "export", "--case", "INC-0001", "--output", str(archive_path), "--cases-dir", str(cases_dir)]
+    )
+    assert export_result.exit_code == 0, export_result.output
+    assert archive_path.exists()
+
+    restored_cases_dir = tmp_path / "restored"
+    import_result = runner.invoke(app, ["case", "import", str(archive_path), "--cases-dir", str(restored_cases_dir)])
+    assert import_result.exit_code == 0, import_result.output
+    assert "INC-0001" in import_result.output
+
+    with CaseStore(restored_cases_dir / "INC-0001") as store:
+        assert store.count_events() == 1
+
+    list_result = runner.invoke(app, ["case", "list", "--cases-dir", str(restored_cases_dir)])
+    assert "Export CLI test" in list_result.output
+
+
+def test_case_export_missing_case_reports_error(tmp_path):
+    result = runner.invoke(app, ["case", "export", "--case", "INC-9999", "--cases-dir", str(tmp_path / "cases")])
+
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower() or "error" in result.output.lower()
+
+
+def test_case_import_collision_reports_error(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Collision test", "--cases-dir", str(cases_dir)])
+
+    archive_path = tmp_path / "INC-0001.zip"
+    runner.invoke(app, ["case", "export", "--case", "INC-0001", "--output", str(archive_path), "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(app, ["case", "import", str(archive_path), "--cases-dir", str(cases_dir)])  # same cases_dir
+
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
 def test_parse_single_evidence_item(tmp_path):
     cases_dir = tmp_path / "cases"
     evidence_file = _write_json_evidence(tmp_path / "single.json", [{"type": "dns_query", "domain": "example.com"}])

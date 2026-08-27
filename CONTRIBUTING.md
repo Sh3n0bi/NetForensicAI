@@ -5,7 +5,7 @@ Thank you for your interest in improving NetForensicAI! Contributions are welcom
 ## How to Contribute
 1. Fork the repository: https://github.com/Sh3n0bi/NetForensicAI
 2. Create a new branch (`git checkout -b feature/your-feature`).
-3. Install with the extras you need and run the tests: `pip install -e ".[dev,pcap,intel,evtx,ai,web]"` then `pytest`.
+3. Install with the extras you need and run the tests: `pip install -e ".[dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web]"` then `pytest`.
 4. Make your changes and commit (`git commit -m "Add your feature"`).
 5. Push to your fork (`git push origin feature/your-feature`).
 6. Open a pull request on GitHub.
@@ -26,6 +26,7 @@ Before adding a feature, it's worth understanding the shape the rest of the code
 - More bundled detection rules (`core/detections.py`'s `_rules_for_event` - currently four rules; same standard as ATT&CK rules above, plus keep the wording hedged ("commonly associated with", not "is malicious") since these run automatically with no investigator confirmation step)
 - Additional threat intelligence providers alongside VirusTotal (`core/threat_intel.py`'s provider dispatch is built to add more)
 - Additional AI providers alongside Anthropic/OpenAI/Ollama/Gemini (`core/ai_assistant.py`'s `_call_*` functions - each just needs to return a dict matching the `Hypothesis` schema; citation validation is centralized and provider-agnostic)
+- Web UI parity for `case export`/`case import` (`core/export.py` - currently CLI-only; would need a file-download response for export and an upload endpoint for import, following the same "web calls the same core module the CLI does" pattern as everything else)
 
 ## Code Style
 - Follow PEP 8 for Python code.

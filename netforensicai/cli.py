@@ -88,6 +88,70 @@ def case_list_cmd(
         typer.echo(f"{case.case_id:<10} {case.status:<14} {case.investigator:<16} {created:<20} {case.name}")
 
 
+@case_app.command("export")
+def case_export_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID to export"),
+    output: str = typer.Option(
+        None, "--output", help="Output archive path (defaults to <CASE-ID>.zip in the current directory)"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Export a case (evidence, DuckDB store, findings, everything under
+    cases/<ID>/) to a single portable zip archive, for backup or handing
+    off to another investigator. A manifest of every file's SHA-256 is
+    recorded in the archive so `case import` can detect tampering or
+    corruption before writing anything."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.export import ExportError, export_case
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    output_path = Path(output) if output else Path(f"{case.case_id}.zip")
+    try:
+        export_case(Path(cases_dir) / case.case_id, output_path)
+    except ExportError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Exported {case.case_id} to {output_path}")
+
+
+@case_app.command("import")
+def case_import_cmd(
+    archive: str = typer.Argument(..., help="Path to a .zip archive produced by `case export`"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory to import the case into",
+    ),
+):
+    """Import a case archive produced by `case export`. Every file in
+    the archive is verified against its recorded manifest hash before
+    anything is written to disk - a tampered or corrupted archive is
+    rejected outright. Keeps the case's original ID; refuses to import
+    over an existing case with the same ID."""
+    from netforensicai.core.export import ExportError, import_case
+
+    try:
+        case_id = import_case(archive, cases_dir)
+    except ExportError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Imported {case_id} into {Path(cases_dir) / case_id}")
+
+
 evidence_app = typer.Typer(help="Manage evidence within a case.", no_args_is_help=True)
 app.add_typer(evidence_app, name="evidence")
 
@@ -1037,7 +1101,9 @@ def web(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address (127.0.0.1 = local machine only)"),
     port: int = typer.Option(8000, "--port", help="Port to listen on"),
 ):
-    """Launch the local, read-only web UI for browsing cases."""
+    """Launch the local web UI: browse cases, upload/analyze evidence,
+    investigate entities, manage findings, run live capture, and generate
+    reports - all calling the same core modules the CLI uses."""
     from netforensicai.web.app import create_app
 
     if host not in ("127.0.0.1", "localhost"):
