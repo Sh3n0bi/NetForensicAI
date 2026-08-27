@@ -482,6 +482,47 @@ def test_dns_response_records_what_the_name_resolved_to(tmp_path):
     assert "203.0.113.99" in responses[0].raw_event_reference["answers"]
 
 
+def test_dns_on_a_nonstandard_port_is_detected(tmp_path):
+    # Found against Wireshark's own dns_port.pcap: scapy binds its DNS
+    # dissector to port 53, so DNS on any other port had no DNS layer and
+    # was missed entirely - exactly the traffic DNS tunnelling and C2 use.
+    query = IP(src="10.0.0.5", dst="10.0.0.9") / UDP(sport=65282, dport=65333) / DNS(
+        rd=1, qd=DNSQR(qname="tunnel.evil.example")
+    )
+    query.time = 1_700_011_000.0
+    pcap_path = _write_pcap(tmp_path, "dns_odd_port.pcap", [query])
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0036")
+
+    dns_events = [e for e in events if e.event_type == "dns_query"]
+    assert len(dns_events) == 1
+    assert dns_events[0].domain == "tunnel.evil.example"
+
+
+def test_non_dns_udp_is_not_misparsed_as_dns(tmp_path):
+    # The payload-sniffing above runs against every unrecognized UDP
+    # payload, so a false positive would invent a domain nobody queried.
+    # Structured non-DNS UDP must stay a plain flow.
+    payloads = [
+        b"\x01\x01\x06\x00" + b"\x00" * 40,     # DHCP-shaped
+        b"REGISTER sip:example.com SIP/2.0\r\n",  # SIP
+        bytes(range(64)),                          # ascending bytes
+        b"\xff" * 64,                              # all ones
+        b"\x00" * 64,                              # all zeros
+    ]
+    packets = []
+    for i, payload in enumerate(payloads):
+        pkt = IP(src="10.0.0.5", dst="10.0.0.9") / UDP(sport=40000 + i, dport=50000 + i) / Raw(load=payload)
+        pkt.time = 1_700_012_000.0 + i
+        packets.append(pkt)
+    pcap_path = _write_pcap(tmp_path, "not_dns.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0037")
+
+    assert [e for e in events if e.event_type in ("dns_query", "dns_response")] == []
+    assert len([e for e in events if e.event_type == "network_connection"]) == len(payloads)
+
+
 def test_vlan_tagged_traffic_is_parsed(tmp_path):
     from scapy.all import Dot1Q, Ether
 

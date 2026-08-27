@@ -147,6 +147,38 @@ def _ip_layer(packet):
     return None
 
 
+def _try_parse_dns(payload):
+    """Parse a UDP payload as a DNS message, or return None.
+
+    scapy binds its DNS dissector to port 53, so `haslayer(DNS)` is False
+    for DNS on any other port - and DNS tunnelling and C2 channels
+    routinely use one. Same failure as trusting the port for HTTP, so the
+    same answer: look at the bytes.
+
+    Deliberately strict, because this runs against every unrecognized UDP
+    payload in a capture and a false positive would invent a domain that
+    was never queried. A record is only accepted when the header counts
+    are sane AND a plausible name comes out the other side.
+    """
+    if len(payload) < 12:
+        return None
+    try:
+        dns = DNS(payload)
+        counts = (int(dns.qdcount), int(dns.ancount), int(dns.nscount), int(dns.arcount))
+    except Exception:
+        return None
+    if counts[0] < 1 or any(count > 64 for count in counts):
+        return None
+    qname = _dns_qname(dns)
+    # A bare label with no dot is far more likely to be a misparse of
+    # arbitrary bytes than a real query.
+    if not qname or "." not in qname or len(qname) > 253:
+        return None
+    if not all(32 < ord(c) < 127 for c in qname):
+        return None
+    return dns
+
+
 def _dns_qname(dns):
     """Extract the queried name from a DNS layer, tolerating scapy's
     change from `qd` being a single record to a PacketListField (newer
@@ -325,12 +357,18 @@ class _StreamCollector:
             flow["payload_preview"] = payload[:DPI_PREVIEW_BYTES].decode("utf-8", errors="ignore")
 
     def _feed_udp(self, packet_number, packet, ip):
+        # DNS gets its own, more specific event type - recording it as a
+        # generic flow as well would double-count the same packet.
         if packet.haslayer(DNS):
-            # DNS gets its own, more specific event type - recording it as a
-            # generic flow as well would double-count the same packet.
-            self._feed_dns(packet_number, packet, ip)
+            self._feed_dns(packet_number, packet, ip, packet[DNS])
             return
         payload = bytes(packet[UDP].payload)
+        # scapy only dissects DNS on port 53, so anything else needs the
+        # payload inspected directly - see _try_parse_dns.
+        dns = _try_parse_dns(payload)
+        if dns is not None:
+            self._feed_dns(packet_number, packet, ip, dns)
+            return
         self._record_flow(packet, ip, "udp", int(packet[UDP].sport), int(packet[UDP].dport), payload)
 
     def _feed_icmp(self, packet_number, packet, ip):
@@ -344,8 +382,7 @@ class _StreamCollector:
             icmp = packet[ICMP]
             flow["payload_preview"] = f"ICMP type={icmp.type} code={icmp.code}"
 
-    def _feed_dns(self, packet_number, packet, ip):
-        dns = packet[DNS]
+    def _feed_dns(self, packet_number, packet, ip, dns):
         if not dns.qd:
             return
         if dns.qr != 0:
