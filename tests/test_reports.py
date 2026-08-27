@@ -205,6 +205,38 @@ def test_report_without_threat_intel_shows_generic_note(prepared_case):
     assert "no results have been recorded" in report["threat_intelligence_note"]
 
 
+def test_report_shows_no_detections_when_never_scanned(prepared_case):
+    case, case_dir = prepared_case
+
+    report = build_report(case, case_dir)
+
+    assert report["detections"] == []
+    assert "no bundled detection rules matched" in report["detections_note"].lower()
+
+
+def test_report_shows_detections_table_when_present(prepared_case):
+    from netforensicai.core.detections import scan_case
+
+    case, case_dir = prepared_case
+    with CaseStore(case_dir) as store:
+        scan_case(store)  # the fixture's network_connection targets dst_port=4444 (SUSPICIOUS-PORT)
+
+    report = build_report(case, case_dir)
+
+    assert len(report["detections"]) == 1
+    detection = report["detections"][0]
+    assert detection["rule_id"] == "SUSPICIOUS-PORT"
+    assert detection["severity"] == "medium"
+    assert "deterministic pattern matches" in report["detections_note"].lower()
+
+    markdown = render_markdown(report)
+    assert "SUSPICIOUS-PORT" not in markdown  # the table shows rule_name, not rule_id
+    assert "Connection to a historically suspicious port" in markdown
+
+    html_text = render_html(report)
+    assert "Connection to a historically suspicious port" in html_text
+
+
 def test_report_reflects_detected_attack_techniques(prepared_case):
     from netforensicai.core.attack import scan_case
 

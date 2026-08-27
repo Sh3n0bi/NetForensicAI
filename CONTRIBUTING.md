@@ -23,7 +23,9 @@ Before adding a feature, it's worth understanding the shape the rest of the code
 
 - Additional Sysmon EVTX event types (`parsers/evtx.py`'s `SYSMON_EVENT_TYPES`/`SYSMON_FIELD_MAP` - registry-shell, remote thread, image load, etc.)
 - More ATT&CK technique rules (`core/attack.py`'s `_rules_for_event` - currently a small starting set of four techniques; each new rule should be tied to a specific, unambiguous event pattern rather than a speculative guess)
+- More bundled detection rules (`core/detections.py`'s `_rules_for_event` - currently four rules; same standard as ATT&CK rules above, plus keep the wording hedged ("commonly associated with", not "is malicious") since these run automatically with no investigator confirmation step)
 - Additional threat intelligence providers alongside VirusTotal (`core/threat_intel.py`'s provider dispatch is built to add more)
+- Additional AI providers alongside Anthropic/OpenAI/Ollama/Gemini (`core/ai_assistant.py`'s `_call_*` functions - each just needs to return a dict matching the `Hypothesis` schema; citation validation is centralized and provider-agnostic)
 
 ## Code Style
 - Follow PEP 8 for Python code.

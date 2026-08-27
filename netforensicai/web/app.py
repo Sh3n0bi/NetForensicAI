@@ -134,6 +134,7 @@ def create_app(cases_dir="cases"):
         with locked_store(_case_dir(case)) as store:
             event_count = store.count_events()
             entity_count = store.count_entities()
+            detection_count = store.count_detections()
         finding_count = len(FindingManager(_case_dir(case)).list())
 
         data = case.to_dict()
@@ -142,6 +143,7 @@ def create_app(cases_dir="cases"):
             event_count=event_count,
             entity_count=entity_count,
             finding_count=finding_count,
+            detection_count=detection_count,
         )
         return jsonify(data)
 
@@ -185,6 +187,7 @@ def create_app(cases_dir="cases"):
     def analyze_case(case_id):
         case = _load_case(case_id)
         from netforensicai.core.correlation import correlate_case
+        from netforensicai.core.detections import scan_case as scan_detections
         from netforensicai.core.pipeline import parse_evidence_item
 
         items = EvidenceManager(_case_dir(case)).list()
@@ -204,10 +207,33 @@ def create_app(cases_dir="cases"):
                     }
                 )
             correlate_case(store)
+            # Bundled detection rules: local, deterministic, zero-cost -
+            # runs automatically here just like correlation does, unlike
+            # ATT&CK mapping which stays behind an explicit scan action.
+            detections = scan_detections(store)
             total_entities = store.count_entities()
             total_events = store.count_events()
 
-        return jsonify({"results": results, "total_events": total_events, "total_entities": total_entities})
+        return jsonify(
+            {
+                "results": results,
+                "total_events": total_events,
+                "total_entities": total_entities,
+                "detection_count": len(detections),
+            }
+        )
+
+    # --- detections (read-only; recomputed automatically by /analyze) ---
+
+    @app.route("/api/cases/<case_id>/detections")
+    def list_detections(case_id):
+        case = _load_case(case_id)
+        severity = request.args.get("severity") or None
+        with locked_store(_case_dir(case)) as store:
+            detections = store.list_detections(severity=severity)
+        for d in detections:
+            d["detected_at"] = d["detected_at"].isoformat() if d["detected_at"] else None
+        return jsonify(detections)
 
     # --- timeline ---
 

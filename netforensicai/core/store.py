@@ -90,6 +90,17 @@ CORRELATION_FIELDS = [
     "confidence",
 ]
 
+DETECTION_FIELDS = [
+    "detection_id",
+    "rule_id",
+    "rule_name",
+    "severity",
+    "event_id",
+    "evidence_id",
+    "description",
+    "detected_at",
+]
+
 THREAT_INTEL_FIELDS = [
     "entity_id",
     "entity_type",
@@ -220,6 +231,20 @@ class CaseStore:
                 event_id TEXT NOT NULL,
                 evidence_id TEXT NOT NULL,
                 basis TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS detections (
+                detection_id TEXT PRIMARY KEY,
+                rule_id TEXT NOT NULL,
+                rule_name TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                evidence_id TEXT NOT NULL,
+                description TEXT NOT NULL,
+                detected_at TIMESTAMPTZ NOT NULL
             )
             """
         )
@@ -527,6 +552,37 @@ class CaseStore:
 
     def count_techniques(self):
         return self.conn.execute("SELECT count(*) FROM attack_techniques").fetchone()[0]
+
+    # --- bundled detection rules (core/detections.py) ---
+
+    def replace_detections(self, detections):
+        """Full rebuild: delete every existing detections row, then insert
+        `detections`. Always recomputed for the whole case on every
+        analyze - a detection has no investigator-set status to preserve
+        across runs, unlike an ATT&CK mapping, so there's nothing an
+        upsert would need to protect."""
+        self.conn.execute("DELETE FROM detections")
+        for detection in detections:
+            columns_sql = ", ".join(DETECTION_FIELDS)
+            placeholders = ", ".join(["?"] * len(DETECTION_FIELDS))
+            values = [detection[field] for field in DETECTION_FIELDS]
+            self.conn.execute(f"INSERT INTO detections ({columns_sql}) VALUES ({placeholders})", values)
+
+    def list_detections(self, severity=None):
+        conditions = []
+        params = []
+        if severity:
+            conditions.append("severity = ?")
+            params.append(severity)
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        columns_sql = ", ".join(DETECTION_FIELDS)
+        rows = self.conn.execute(
+            f"SELECT {columns_sql} FROM detections {where_sql} ORDER BY detected_at DESC", params
+        ).fetchall()
+        return [dict(zip(DETECTION_FIELDS, row)) for row in rows]
+
+    def count_detections(self):
+        return self.conn.execute("SELECT count(*) FROM detections").fetchone()[0]
 
 
 @contextlib.contextmanager

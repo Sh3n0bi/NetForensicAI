@@ -118,6 +118,7 @@ def test_get_case_includes_counts(prepared_case):
     assert data["event_count"] == 2
     assert data["entity_count"] > 0
     assert data["finding_count"] == 1
+    assert data["detection_count"] == 0  # the fixture never runs analyze/scan_detections
 
 
 def test_get_case_missing_returns_404(prepared_case):
@@ -589,9 +590,49 @@ def test_analyze_endpoint_parses_new_evidence(prepared_case):
     assert len(data["results"]) == 2  # original EV-0001 + the newly uploaded EV-0002
     assert data["total_events"] >= 3
     assert all(r["error"] is None for r in data["results"])
+    # The fixture's network_connection event targets dst_port=4444 - the
+    # SUSPICIOUS-PORT bundled rule should have matched it automatically.
+    assert data["detection_count"] >= 1
 
     entities = client.get(f"/api/cases/{case.case_id}/entities?q=newuser").get_json()
     assert len(entities) == 1
+
+
+def test_list_detections_after_analyze(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    client.post(f"/api/cases/{case.case_id}/analyze")
+    response = client.get(f"/api/cases/{case.case_id}/detections")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert len(data) >= 1
+    assert any(d["rule_id"] == "SUSPICIOUS-PORT" for d in data)
+    assert data[0]["detected_at"] is not None
+
+
+def test_list_detections_filters_by_severity(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    client.post(f"/api/cases/{case.case_id}/analyze")
+    # The fixture's only match (SUSPICIOUS-PORT, dst_port=4444) is medium
+    # severity - filtering to "high" should exclude it, proving the
+    # filter actually filters rather than passing vacuously on an empty set.
+    high_response = client.get(f"/api/cases/{case.case_id}/detections?severity=high")
+    medium_response = client.get(f"/api/cases/{case.case_id}/detections?severity=medium")
+
+    assert high_response.get_json() == []
+    assert len(medium_response.get_json()) >= 1
+    assert all(d["severity"] == "medium" for d in medium_response.get_json())
+
+
+def test_list_detections_before_analyze_is_empty(prepared_case):
+    client, case, _cases_dir = prepared_case
+
+    response = client.get(f"/api/cases/{case.case_id}/detections")
+
+    assert response.status_code == 200
+    assert response.get_json() == []
 
 
 # --- live capture ---

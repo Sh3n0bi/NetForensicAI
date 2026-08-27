@@ -247,6 +247,7 @@ def analyze_case(
         return
 
     from netforensicai.core.correlation import POSSIBLE_RELATIONSHIP, RELATED, correlate_case
+    from netforensicai.core.detections import scan_case as scan_detections
 
     total_events = 0
     with CaseStore(case_dir) as store:
@@ -265,6 +266,11 @@ def analyze_case(
         related_count = sum(1 for link in links if link["relationship_type"] == RELATED)
         possible_count = sum(1 for link in links if link["relationship_type"] == POSSIBLE_RELATIONSHIP)
 
+        # Bundled detection rules: local, deterministic, zero-cost pattern
+        # matches - unlike ATT&CK mapping (opt-in, `attack scan`) these run
+        # automatically as part of the same pipeline correlation does.
+        detections = scan_detections(store)
+
         # store.count_entities() (the true distinct count) rather than a
         # sum of each evidence item's per-call entity_count: an entity
         # shared across evidence items (exactly what correlation is meant
@@ -274,6 +280,14 @@ def analyze_case(
 
     typer.echo(f"Analysis complete for {case.case_id}: {total_events} events, {total_entities} distinct entities")
     typer.echo(f"Correlation: {related_count} related, {possible_count} possible_relationship (time-proximity only)")
+    if detections:
+        by_severity = {}
+        for d in detections:
+            by_severity[d["severity"]] = by_severity.get(d["severity"], 0) + 1
+        severity_summary = ", ".join(f"{by_severity[s]} {s}" for s in ("high", "medium", "low") if s in by_severity)
+        typer.echo(f"Detections: {len(detections)} rule match(es) ({severity_summary}) - see `netforensic detections list --case {case.case_id}`")
+    else:
+        typer.echo("Detections: none.")
 
 
 timeline_app = typer.Typer(help="Build and view the case timeline.", no_args_is_help=True)
@@ -839,6 +853,57 @@ def attack_update(
         store.update_technique_status(technique_id, status, datetime.now(timezone.utc))
 
     typer.echo(f"Updated {technique_id}: status={status}")
+
+
+detections_app = typer.Typer(
+    help="Bundled offline detection rules (deterministic, run automatically by `analyze`).",
+    no_args_is_help=True,
+)
+app.add_typer(detections_app, name="detections")
+
+
+@detections_app.command("list")
+def detections_list(
+    case_id: str = typer.Option(..., "--case", help="Case ID to list detections for"),
+    severity: str = typer.Option(None, "--severity", help="Filter to one severity: low, medium, or high"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """List detections from the last `analyze` run for a case. Detections
+    are recomputed automatically every analyze - there's no separate scan
+    command; run `netforensic analyze --case ...` again after adding
+    evidence or upgrading to a version with new rules."""
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.store import CaseStore
+
+    if severity and severity not in ("low", "medium", "high"):
+        typer.echo("Error: --severity must be one of: low, medium, high", err=True)
+        raise typer.Exit(code=1)
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    with CaseStore(case_dir) as store:
+        detections = store.list_detections(severity=severity)
+
+    if not detections:
+        typer.echo(f"No detections for {case.case_id}. Run `netforensic analyze --case {case.case_id}` first.")
+        return
+
+    header = f"{'SEVERITY':<10} {'RULE':<24} {'EVENT':<20} DESCRIPTION"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for d in detections:
+        typer.echo(f"{d['severity']:<10} {d['rule_id']:<24} {d['event_id']:<20} {d['description']}")
 
 
 report_app = typer.Typer(help="Generate case reports.", no_args_is_help=True)

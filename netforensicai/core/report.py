@@ -39,11 +39,17 @@ LIMITATIONS = [
     "ATT&CK technique mappings are deterministic rule matches over already-normalized events "
     "(see `netforensic attack scan`), not an AI or automated claim that a technique definitely "
     "occurred - each one is a 'potential' suggestion until an investigator explicitly confirms it.",
+    "Bundled detections (core/detections.py) are local, deterministic pattern matches over "
+    "already-normalized events - not AI-driven, not an external lookup, and not a claim that "
+    "something malicious happened. They are recomputed on every `netforensic analyze` run and, "
+    "unlike ATT&CK mappings, carry no investigator-settable status - there is nothing to confirm "
+    "or reject, only evidence worth reviewing.",
     "Threat intelligence lookups (e.g. VirusTotal) are explicit, opt-in actions performed via "
     "`netforensic investigate --vt-api` and are not automatically run or persisted during report "
     "generation; this report reflects only what has already been recorded in the case.",
-    "Entity extraction, correlation, and ATT&CK mapping only cover the event types and fields the "
-    "current parsers populate and the current rule set checks for - they are not exhaustive.",
+    "Entity extraction, correlation, bundled detections, and ATT&CK mapping only cover the event "
+    "types and fields the current parsers populate and the current rule sets check for - they are "
+    "not exhaustive.",
 ]
 
 NETWORK_INDICATOR_TYPES = ("ip_address", "domain", "url", "port")
@@ -82,6 +88,7 @@ def build_report(case, case_dir):
         timeline_entries = [entry.to_dict() for entry in build_timeline(store)]
         threat_intel_results = store.list_threat_intel()
         attack_techniques = store.list_techniques()
+        detections = store.list_detections()
 
         entity_event_counts = Counter()
         for links in store.entity_ids_by_event().values():
@@ -119,8 +126,9 @@ def build_report(case, case_dir):
         f"This case includes {len(evidence_sources)} evidence item(s), {len(all_events)} normalized "
         f"event(s), and {len(entities)} distinct entit{'y' if len(entities) == 1 else 'ies'}. "
         f"Correlation identified {related_count} related event pair(s) and {possible_count} "
-        f"possible_relationship (time-proximity-only) pair(s). {len(findings)} finding(s) have been "
-        f"recorded" + (f" ({status_breakdown})." if findings else ".")
+        f"possible_relationship (time-proximity-only) pair(s). {len(detections)} bundled detection "
+        f"rule match(es) were found. {len(findings)} finding(s) have been recorded"
+        + (f" ({status_breakdown})." if findings else ".")
     )
 
     threat_intel_results = [
@@ -158,6 +166,18 @@ def build_report(case, case_dir):
         )
     )
 
+    detections = [{**d, "detected_at": d["detected_at"].isoformat() if d["detected_at"] else None} for d in detections]
+    detections_note = (
+        "Local, deterministic pattern matches (see core/detections.py) - no AI, no external network "
+        "call, recomputed automatically every `netforensic analyze` run. A flag pointing at evidence "
+        "worth a look, never a claim that something malicious happened."
+        if detections
+        else (
+            "No bundled detection rules matched. These are local, deterministic pattern matches - no "
+            "AI, no external network call - recomputed automatically every `netforensic analyze` run."
+        )
+    )
+
     return {
         "case": {
             "case_id": case.case_id,
@@ -177,6 +197,8 @@ def build_report(case, case_dir):
         "threat_intelligence_note": threat_intelligence_note,
         "threat_intelligence_results": threat_intel_results,
         "investigation_findings": investigation_findings,
+        "detections_note": detections_note,
+        "detections": detections,
         "attack_mapping_note": attack_mapping_note,
         "attack_techniques": attack_techniques,
         "investigator_notes": list(case.notes),
@@ -319,6 +341,15 @@ def render_markdown(report):
             lines.append("")
     else:
         lines += ["No findings recorded.", ""]
+
+    lines += ["## Bundled Detections", report["detections_note"]]
+    if report["detections"]:
+        lines += ["", "| Severity | Rule | Event | Description |", "|---|---|---|---|"]
+        lines += [
+            f"| {d['severity']} | {d['rule_name']} | {d['evidence_id']}/{d['event_id']} | {d['description']} |"
+            for d in report["detections"]
+        ]
+    lines.append("")
 
     lines += ["## Potential ATT&CK Mapping", report["attack_mapping_note"]]
     if report["attack_techniques"]:
@@ -473,6 +504,16 @@ def render_html(report):
                 parts.append("</ul>")
     else:
         parts.append("<p>No findings recorded.</p>")
+
+    parts.append(f"<h2>Bundled Detections</h2><p>{_e(report['detections_note'])}</p>")
+    if report["detections"]:
+        parts.append("<table><tr><th>Severity</th><th>Rule</th><th>Event</th><th>Description</th></tr>")
+        for d in report["detections"]:
+            parts.append(
+                f"<tr><td>{_e(d['severity'])}</td><td>{_e(d['rule_name'])}</td>"
+                f"<td>{_e(d['evidence_id'])}/{_e(d['event_id'])}</td><td>{_e(d['description'])}</td></tr>"
+            )
+        parts.append("</table>")
 
     parts.append(f"<h2>Potential ATT&amp;CK Mapping</h2><p>{_e(report['attack_mapping_note'])}</p>")
     if report["attack_techniques"]:

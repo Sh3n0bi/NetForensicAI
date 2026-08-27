@@ -15,7 +15,7 @@ Real investigations touch multiple evidence formats that don't share a schema, d
 ## Core Idea
 
 ```
-Evidence -> Parsing -> Normalization -> Correlation -> Timeline
+Evidence -> Parsing -> Normalization -> Correlation -> Timeline -> Detections
     -> Investigation Graph -> Evidence-backed Leads -> Human Validation -> Report
 ```
 
@@ -29,6 +29,7 @@ The differentiator is not "AI." It's that every step above is deterministic and 
 - **Entity extraction** — users, hostnames, devices, IPs, domains, URLs, files, hashes, processes, ports, and network connections, each linked to the events they appear in
 - **Correlation engine** — links events by shared entity + time window, explicit about the difference between `related` (shared entity, time-proximate) and `possible_relationship` (time-proximate only) — never implies causality from either
 - **Unified timeline**, filterable by time range, user, IP, hostname, process, file, event type, or evidence source
+- **Bundled detection rules** — local, deterministic, zero-cost pattern matches (known offensive tool names, historically suspicious ports, disguised double-extension files, credential-store artifacts) that run automatically on every `analyze`, no AI or network call involved. Unlike ATT&CK mapping, always a fresh recompute — no investigator status to track
 - **`investigate <entity>`** — everything the case knows about one IP/user/hash/host/domain/process/file/device: related evidence, a scoped timeline, ranked related entities, and deterministic investigation leads
 - **Investigator-owned findings** — Open/Investigating/Confirmed/Rejected/False Positive/Resolved, each citing specific evidence+event pairs; create/update from the CLI or the web UI, both calling the same `FindingManager`
 - **MITRE ATT&CK technique mapping** — deterministic, rule-based, evidence-cited suggestions (never an automated "this happened" claim), each with an investigator-settable status: potential/confirmed/rejected
@@ -62,6 +63,8 @@ The differentiator is not "AI." It's that every step above is deterministic and 
         Artifacts     Correlation    Timeline
              |            |             |
              +------------+-------------+
+                          |
+                Bundled Detections  (local, deterministic pattern rules)
                           |
                   Investigation Graph  (entity 1-hop neighborhoods)
                           |

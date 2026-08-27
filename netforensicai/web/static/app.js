@@ -120,6 +120,7 @@ async function renderCaseTab(app, c, tab, rest) {
   if (tab === "timeline") return renderTimeline(app, c);
   if (tab === "entities") return renderEntities(app, c, rest[0]);
   if (tab === "findings") return renderFindings(app, c);
+  if (tab === "detections") return renderDetections(app, c);
   if (tab === "attack") return renderAttack(app, c);
   if (tab === "reports") return renderReports(app, c);
   if (tab === "capture") return renderCapture(app, c);
@@ -175,6 +176,7 @@ function renderOverview(app, c) {
     ["Events", c.event_count],
     ["Entities", c.entity_count],
     ["Findings", c.finding_count],
+    ["Detections", c.detection_count],
   ];
   for (const [l, n] of statDefs) {
     stats.appendChild(el("div", { class: "stat" }, [el("div", { class: "n", text: n }), el("div", { class: "l", text: l })]));
@@ -713,6 +715,65 @@ function colorForType(t) {
     url: "#c084fc",
   };
   return colors[t] || "#9aa0b4";
+}
+
+// --- Detections (bundled offline rules - read-only, recomputed by Analyze) ---
+
+async function renderDetections(app, c) {
+  app.appendChild(el("h1", { text: "Detections" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Local, deterministic pattern matches - no AI, no external network call. Recomputed automatically every " +
+        "time you run Analyze; a flag pointing at evidence worth a look, never a claim that something malicious happened.",
+    })
+  );
+
+  const filterBar = el("div", { class: "filter-bar" });
+  const severitySelect = selectEl(["", "high", "medium", "low"], "");
+  severitySelect.querySelector('option[value=""]').textContent = "All severities";
+  filterBar.appendChild(severitySelect);
+  app.appendChild(filterBar);
+
+  const panel = el("div", { class: "panel" });
+  app.appendChild(panel);
+
+  async function loadList() {
+    panel.innerHTML = "";
+    panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+    try {
+      const query = severitySelect.value ? `?severity=${encodeURIComponent(severitySelect.value)}` : "";
+      const detections = await apiGet(`/cases/${c.case_id}/detections${query}`);
+      panel.innerHTML = "";
+      if (!detections.length) {
+        panel.appendChild(
+          el("div", { class: "empty", text: "No detections. Run `netforensic analyze` to (re)scan." })
+        );
+        return;
+      }
+      const table = el("table");
+      table.innerHTML =
+        "<tr><th>Severity</th><th>Rule</th><th>Event</th><th>Description</th></tr>" +
+        detections
+          .map(
+            (d) => `<tr>
+          <td><span class="badge badge-${cssClass(d.severity)}">${escapeHtml(d.severity)}</span></td>
+          <td class="mono">${escapeHtml(d.rule_name)}</td>
+          <td class="mono">${escapeHtml(d.evidence_id)}/${escapeHtml(d.event_id)}</td>
+          <td>${escapeHtml(d.description)}</td>
+        </tr>`
+          )
+          .join("");
+      panel.appendChild(table);
+    } catch (e) {
+      panel.innerHTML = "";
+      panel.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    }
+  }
+
+  severitySelect.addEventListener("change", loadList);
+  await loadList();
 }
 
 // --- Findings ---

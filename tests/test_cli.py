@@ -82,6 +82,78 @@ def test_analyze_reports_true_distinct_entity_count_across_evidence(tmp_path):
         assert store.count_entities() == 3
 
 
+def test_analyze_reports_and_lists_detections(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "events.json",
+        [
+            {"timestamp": "2026-08-27T09:00:00Z", "type": "process_start", "process_name": "mimikatz.exe"},
+            {"timestamp": "2026-08-27T09:05:00Z", "type": "network_connection", "src_ip": "10.0.0.5", "dst_ip": "8.8.8.8", "dst_port": 4444},
+        ],
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "Detections test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    analyze_result = runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    assert analyze_result.exit_code == 0, analyze_result.output
+    assert "Detections: 2 rule match(es)" in analyze_result.output
+    assert "netforensic detections list" in analyze_result.output
+
+    list_result = runner.invoke(app, ["detections", "list", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    assert list_result.exit_code == 0, list_result.output
+    assert "OFFENSIVE-TOOL-NAME" in list_result.output
+    assert "SUSPICIOUS-PORT" in list_result.output
+
+
+def test_analyze_reports_no_detections_cleanly(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "events.json", [{"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "user": "alice"}]
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "No detections test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    analyze_result = runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    assert analyze_result.exit_code == 0
+    assert "Detections: none." in analyze_result.output
+
+
+def test_detections_list_filters_by_severity(tmp_path):
+    cases_dir = tmp_path / "cases"
+    evidence_file = _write_json_evidence(
+        tmp_path / "events.json",
+        [
+            {"timestamp": "2026-08-27T09:00:00Z", "type": "process_start", "process_name": "mimikatz.exe"},  # high
+            {"timestamp": "2026-08-27T09:05:00Z", "type": "network_connection", "dst_port": 4444},  # medium
+        ],
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "Severity filter test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_file), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(
+        app, ["detections", "list", "--case", "INC-0001", "--severity", "high", "--cases-dir", str(cases_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "OFFENSIVE-TOOL-NAME" in result.output
+    assert "SUSPICIOUS-PORT" not in result.output
+
+
+def test_detections_list_before_analyze_reports_cleanly(tmp_path):
+    cases_dir = tmp_path / "cases"
+    runner.invoke(app, ["case", "create", "--name", "Empty detections test", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(app, ["detections", "list", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "No detections" in result.output
+
+
 def test_parse_single_evidence_item(tmp_path):
     cases_dir = tmp_path / "cases"
     evidence_file = _write_json_evidence(tmp_path / "single.json", [{"type": "dns_query", "domain": "example.com"}])
