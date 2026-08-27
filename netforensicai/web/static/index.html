@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetForensicAI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><a href="#/">NetForensicAI</a></div>
+    <nav id="case-nav" class="case-nav" hidden>
+      <span id="case-nav-name" class="case-nav-name"></span>
+      <a href="#" data-tab="overview">Overview</a>
+      <a href="#" data-tab="evidence">Evidence</a>
+      <a href="#" data-tab="timeline">Timeline</a>
+      <a href="#" data-tab="entities">Entities</a>
+      <a href="#" data-tab="findings">Findings</a>
+      <a href="#" data-tab="reports">Reports</a>
+    </nav>
+  </header>
+
+  <main id="app"></main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

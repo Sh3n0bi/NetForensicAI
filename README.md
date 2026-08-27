@@ -76,6 +76,13 @@ normalized events already in the case - never raw evidence files - and any respo
 actually present in those events is rejected outright rather than shown. It never creates a Finding on
 its own; that's always an explicit `netforensic finding create` by the investigator.
 
+Web UI (optional, `[web]` extra): `pip install -e ".[web]"` then `netforensic web --cases-dir cases` opens
+a local, read-only dashboard at http://127.0.0.1:8000 - case overview, evidence, timeline, an entity graph
+with the same investigate/threat-intel/AI-hypothesis actions as the CLI, findings, and reports. It's a thin
+visualization layer over the same case data the CLI reads and writes, not a second implementation of any
+of it; there's no authentication, so only pass `--host` to something other than `127.0.0.1` on a network
+you trust. Creating or updating a finding remains CLI-only for now.
+
 Development: Add tests in tests/ or extend file signatures in netforensicai/parsers/pcap.py
 
 ## Example Output

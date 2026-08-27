@@ -47,6 +47,40 @@ def test_end_to_end_case_evidence_analyze_flow(tmp_path):
         assert any(e["entity_type"] == "ip_address" and e["value"] == "10.0.0.5" for e in entities)
 
 
+def test_analyze_reports_true_distinct_entity_count_across_evidence(tmp_path):
+    # Regression: analyze's printed "distinct entities" count previously
+    # summed each evidence item's own entity_count, which double-counts
+    # any entity shared across evidence items (e.g. the same IP appearing
+    # in two different sources) - exactly the case correlation exists to
+    # find. The true count must match store.count_entities().
+    cases_dir = tmp_path / "cases"
+    evidence_a = _write_json_evidence(
+        tmp_path / "a.json", [{"timestamp": "2026-08-27T09:00:00Z", "type": "authentication", "src_ip": "10.0.0.5"}]
+    )
+    evidence_b = _write_json_evidence(
+        tmp_path / "b.json",
+        [{"timestamp": "2026-08-27T09:05:00Z", "type": "network_connection", "src_ip": "10.0.0.5", "dst_ip": "8.8.8.8"}],
+    )
+
+    runner.invoke(app, ["case", "create", "--name", "Shared entity test", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_a), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+    runner.invoke(app, ["evidence", "add", str(evidence_b), "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    result = runner.invoke(app, ["analyze", "--case", "INC-0001", "--cases-dir", str(cases_dir)])
+
+    assert result.exit_code == 0, result.output
+    # Entities: ip_address(10.0.0.5), ip_address(8.8.8.8), and the
+    # network_connection synthesized from evidence_b's src_ip+dst_ip pair
+    # = 3 distinct total. 10.0.0.5 is touched by both evidence items, so
+    # the old buggy sum (1 entity from EV-0001 + 3 from EV-0002 = 4) would
+    # have over-reported by exactly the one entity they share.
+    assert "3 distinct entities" in result.output
+    assert "4 distinct entities" not in result.output
+
+    with CaseStore(cases_dir / "INC-0001") as store:
+        assert store.count_entities() == 3
+
+
 def test_parse_single_evidence_item(tmp_path):
     cases_dir = tmp_path / "cases"
     evidence_file = _write_json_evidence(tmp_path / "single.json", [{"type": "dns_query", "domain": "example.com"}])

@@ -27,6 +27,9 @@ ai = [
 evtx = [
     "python-evtx>=0.8,<0.9",
 ]
+web = [
+    "flask>=3.0,<4.0",
+]
 dashboard = [
     "dash>=2.17,<3.0",
     "plotly>=5.15,<6.0",

@@ -277,7 +277,6 @@ def analyze_case(
     from netforensicai.core.correlation import POSSIBLE_RELATIONSHIP, RELATED, correlate_case
 
     total_events = 0
-    total_entities = 0
     with CaseStore(case_dir) as store:
         for evidence in items:
             event_count, entity_count, error = _parse_one_evidence(evidence, case_dir, case_manager, case.case_id, store)
@@ -286,7 +285,6 @@ def analyze_case(
                 continue
             typer.echo(f"  {evidence.evidence_id} ({evidence.evidence_type}): {event_count} events, {entity_count} entities")
             total_events += event_count
-            total_entities += entity_count
 
         # Correlation is case-wide (crosses evidence boundaries), so it
         # always runs as a full rebuild over everything now in the store,
@@ -294,6 +292,13 @@ def analyze_case(
         links = correlate_case(store)
         related_count = sum(1 for link in links if link["relationship_type"] == RELATED)
         possible_count = sum(1 for link in links if link["relationship_type"] == POSSIBLE_RELATIONSHIP)
+
+        # store.count_entities() (the true distinct count) rather than a
+        # sum of each evidence item's per-call entity_count: an entity
+        # shared across evidence items (exactly what correlation is meant
+        # to surface) would otherwise get counted once per evidence item
+        # it appears in, inflating the case-wide total.
+        total_entities = store.count_entities()
 
     typer.echo(f"Analysis complete for {case.case_id}: {total_events} events, {total_entities} distinct entities")
     typer.echo(f"Correlation: {related_count} related, {possible_count} possible_relationship (time-proximity only)")
@@ -840,6 +845,34 @@ def scan(
         dashboard.launch(anomalies)
     else:
         logger.info("Dashboard skipped. Use --no-dashboard to disable or ensure anomalies are detected.")
+
+
+@app.command("web")
+def web(
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (127.0.0.1 = local machine only)"),
+    port: int = typer.Option(8000, "--port", help="Port to listen on"),
+):
+    """Launch the local, read-only web UI for browsing cases."""
+    from netforensicai.web.app import create_app
+
+    if host not in ("127.0.0.1", "localhost"):
+        typer.echo(
+            f"WARNING: binding to {host} may expose this UI to other machines on the network. "
+            "There is no authentication - only do this on a trusted network."
+        )
+
+    flask_app = create_app(cases_dir)
+    typer.echo(f"NetForensicAI web UI running at http://{host}:{port} (Ctrl+C to stop)")
+    # Single-threaded deliberately: CaseStore/DuckDB is single-writer, and
+    # this is a local single-user tool, not a production multi-user
+    # server - see netforensicai/web/app.py's module docstring.
+    flask_app.run(host=host, port=port, debug=False, threaded=False)
 
 
 def main():
