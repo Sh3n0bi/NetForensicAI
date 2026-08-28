@@ -539,6 +539,66 @@ def test_totals_stay_correct_when_progress_output_cannot_be_parsed(tmp_path):
     assert session.snapshot()["window_packet_count"] == 0
 
 
+def test_the_interface_dumpcap_actually_opened_is_reported(tmp_path):
+    """When no interface is requested dumpcap picks one, and its pick is
+    often a virtual or disconnected adapter. The snapshot has to name what
+    is really being captured, or a capture on the wrong NIC is
+    indistinguishable from a quiet network."""
+    session = capture_module.DumpcapCaptureSession("INC-0001", tmp_path, case_manager=None)
+
+    assert capture_module._DUMPCAP_INTERFACE.search("Capturing on 'Wi-Fi'").group(1) == "Wi-Fi"
+
+    session._capturing_on = "Wi-Fi"
+    assert session.snapshot()["capturing_on"] == "Wi-Fi"
+
+
+def test_an_explicitly_requested_interface_is_reported_before_dumpcap_answers(tmp_path):
+    session = capture_module.DumpcapCaptureSession(
+        "INC-0001", tmp_path, case_manager=None, interface="eth0"
+    )
+
+    assert session.snapshot()["capturing_on"] == "eth0"
+
+
+def test_repeated_empty_windows_are_reported_once(tmp_path):
+    """A capture on the wrong adapter runs happily forever producing
+    nothing. One empty window is ordinary; several in a row needs saying -
+    but saying it every rotation would turn a quiet link into a firehose."""
+    session = capture_module.DumpcapCaptureSession(
+        "INC-0001", tmp_path, case_manager=None, interface="eth0"
+    )
+
+    for _ in range(6):
+        session._note_empty_window()
+
+    warnings = [e for e in session.recent_events if "warning" in e]
+    assert len(warnings) == 1, "expected exactly one warning across six empty windows"
+    assert "eth0" in warnings[0]["warning"]
+    assert "--list-interfaces" in warnings[0]["warning"]
+    assert session.snapshot()["consecutive_empty_windows"] == 6
+
+
+def test_the_empty_window_streak_resets_when_traffic_arrives(tmp_path):
+    session = capture_module.DumpcapCaptureSession(
+        "INC-0001", tmp_path, case_manager=None, interface="eth0"
+    )
+
+    session._note_empty_window()
+    session._note_empty_window()
+    session._consecutive_empty_windows = 0  # what _sweep does on a non-empty window
+
+    assert session.snapshot()["consecutive_empty_windows"] == 0
+
+
+def test_the_scapy_backend_still_reports_a_capturing_on_field(tmp_path):
+    """Both backends feed the same UI, so the field must exist on each."""
+    session = capture_module.CaptureSession(
+        "INC-0001", tmp_path, case_manager=None, interface="eth0"
+    )
+
+    assert session.snapshot()["capturing_on"] == "eth0"
+
+
 def test_list_interfaces_always_returns_name_description_pairs():
     """The web UI and the CLI both render these; a bare string from one
     backend and a dict from the other would break one of them."""
