@@ -8,7 +8,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[Quick Start](#quick-start) · [Architecture](#architecture) · [Capabilities](#capabilities) · [Commands](#command-reference) · [AI Safety](#ai-safety-model) · [Limitations](#limitations)
+[Quick Start](#quick-start) · [Worked Example](#a-worked-investigation) · [Architecture](#architecture) · [Capabilities](#capabilities) · [Commands](#command-reference) · [AI Safety](#ai-safety-model) · [Limitations](#limitations)
 
 </div>
 
@@ -17,7 +17,7 @@
 ## Contents
 
 - [What it is](#what-it-is) · [The problem](#the-problem) · [Design principles](#design-principles)
-- [Installation](#installation) · [Quick start](#quick-start)
+- [Installation](#installation) · [Quick start](#quick-start) · [A worked investigation](#a-worked-investigation)
 - [Architecture](#architecture)
 - [Capabilities](#capabilities) · [Wireshark integration](#wireshark-integration)
 - [Command reference](#command-reference) · [Configuration](#configuration)
@@ -88,7 +88,42 @@ Everything beyond case management and the CLI core is optional.
 
 Only `intel`, `ai`, `ai-openai`, and `ai-gemini` can reach the network, and only when you explicitly invoke the feature that uses them. Ollama's traffic stays on your machine.
 
-**Wireshark is a separate, optional, external dependency** — not a pip extra. If it is installed, NetForensicAI uses `tshark` for dissection, `dumpcap` for live capture, and the GUI for packet-level pivots. If it is not, everything falls back to the pure-Python path and nothing breaks. See [Wireshark integration](#wireshark-integration).
+### Wireshark (optional, external)
+
+Wireshark is **not** a pip extra — it is a separate program, and NetForensicAI uses three binaries from it. All are optional; install none and the pure-Python path handles everything.
+
+| Binary | Used for | Without it |
+|---|---|---|
+| **`tshark`** | Dissection, display filters, slices, object export | Falls back to the built-in scapy engine |
+| **`dumpcap`** | Live capture | Falls back to the scapy sniffer |
+| **`Wireshark`** *(GUI)* | The `wireshark open` pivot only | `--print` still gives you the command to run elsewhere |
+
+**`tshark` is the one that matters.** It carries the whole analysis path, so a server, container, or CI runner only needs that — no GUI, no Qt, no desktop stack:
+
+```bash
+sudo apt install tshark          # Debian / Ubuntu
+sudo dnf install wireshark-cli   # Fedora / RHEL
+brew install wireshark           # macOS (CLI tools; add --cask for the GUI)
+```
+
+On a Windows analyst workstation the [standard Wireshark installer](https://www.wireshark.org/download.html) provides all three. It does not add itself to `PATH`, which is fine — NetForensicAI checks `C:\Program Files\Wireshark` directly.
+
+Check what was found and which engines are live:
+
+```bash
+netforensic wireshark status
+```
+
+```
+Wireshark: 4.6.8
+  tshark:  C:\Program Files\Wireshark\tshark.exe
+  dumpcap: C:\Program Files\Wireshark\dumpcap.exe
+  GUI:     C:\Program Files\Wireshark\wireshark.exe
+Parse engine:   tshark (requested: auto)
+Capture engine: dumpcap
+```
+
+See [Wireshark integration](#wireshark-integration) for what each one changes.
 
 ---
 
@@ -116,6 +151,94 @@ netforensic web --cases-dir cases      # then open http://127.0.0.1:8000
 2. **Cases** — create or open a case, then **Evidence → Choose File → Upload Evidence**.
 3. **Run Analyze** — parses, correlates, and runs detection rules in one step.
 4. Review **Timeline**, **Entities**, **Detections**, **ATT&CK**, **Custody**; record **Findings**; export a **Report**.
+
+---
+
+## A worked investigation
+
+One capture, start to finish. Output below is real, from a small capture containing an HTTP download and a TLS handshake.
+
+**1. Open a case and register the evidence.** The file is copied, hashed, and never modified again:
+
+```bash
+netforensic case create --name "Suspicious outbound activity" --investigator analyst
+netforensic evidence add ./capture.pcap --case INC-0001
+```
+
+```
+Ingested EV-0001: capture.pcap
+  Type:      pcap
+  SHA256:    555291419e0fc99d9c080adb4ca0d86c2fc55e78ff653ced3f066e3a421c93f6
+```
+
+**2. Analyze** — parse, extract entities, correlate, and run detection rules in one step:
+
+```bash
+netforensic analyze --case INC-0001
+```
+
+```
+  EV-0001 (pcap): 8 events, 15 entities
+Analysis complete for INC-0001: 8 events, 15 distinct entities
+Correlation: 21 related, 0 possible_relationship (time-proximity only)
+Detections: none.
+```
+
+**3. Read the timeline.** One chronological view, filterable by entity, type, or evidence item:
+
+```bash
+netforensic timeline show --case INC-0001
+```
+
+```
+2023-11-14T22:13:20.300000+00:00  http_request     EV-0001  HTTP GET http://evil.example.com/malware.exe (User-Agent: curl/8.0)
+2023-11-14T22:13:20.400000+00:00  http_response    EV-0001  HTTP 200 OK for http://evil.example.com/malware.exe
+2023-11-14T22:13:20.500000+00:00  tls_handshake    EV-0001  TLS ClientHello for c2.badguy.net
+unknown                           file_transfer    EV-0001  Recovered 45-byte file 'malware.exe' from HTTP traffic via Wireshark object export
+```
+
+The download was **recovered as a real file**, not guessed at from magic bytes — that is tshark's object export. It is written to the case's `artifacts/` directory and hashed.
+
+**4. Pivot on an entity** to see everything the case knows about it:
+
+```bash
+netforensic investigate --case INC-0001 --domain evil.example.com
+```
+
+```
+Entity: domain 'evil.example.com' (ENT-domain-2dbe0e7fa5fb)
+  Events:     1
+Related Entities:
+  ip_address        93.184.216.34                       (1 shared events)
+  url               http://evil.example.com/malware.exe (1 shared events)
+```
+
+**5. Narrow the evidence.** A display filter carves a new, hashed capture recorded against its parent and the exact filter that produced it:
+
+```bash
+netforensic wireshark slice --case INC-0001 --evidence EV-0001 --display-filter 'http'
+```
+
+```
+Wrote 2 packet(s) to cases/INC-0001/slices/EV-0001-slice.pcap
+Added as EV-0002 - parse it with:
+  netforensic parse --case INC-0001 --evidence EV-0002
+```
+
+**6. Look at the actual packets** behind any event, pre-filtered to that event's own frames:
+
+```bash
+netforensic wireshark open --case INC-0001 --event EVT-EV-0001-000001
+```
+
+**7. Record a finding and export.** Nothing above created a finding — that stays an explicit human act:
+
+```bash
+netforensic finding create --case INC-0001 --title "Executable retrieved from evil.example.com" \
+    --severity High --event EVT-EV-0001-000001
+netforensic report generate --case INC-0001 --format html
+netforensic case audit --case INC-0001 --verify     # chain of custody intact?
+```
 
 ---
 
@@ -369,7 +492,11 @@ Export a whole case to one zip archive with a SHA-256 manifest of every file. Im
 
 Optional and auto-detected. Install Wireshark and NetForensicAI starts using it; don't, and every feature below simply isn't offered while the rest of the platform works unchanged. Nothing here installs, downloads, or elevates anything.
 
-`netforensic wireshark status` reports exactly what was found and which engines are live.
+### tshark, not the GUI
+
+The integration is built on **`tshark`** — Wireshark's command-line engine — plus **`dumpcap`** for capture. The desktop GUI is used for exactly one thing: opening a capture for you to look at, when you ask it to. Everything else runs headless.
+
+That matters in practice: a server, container, or CI runner installs `tshark` alone and gets the entire analysis path. See [Installation](#wireshark-optional-external) for per-platform commands, and run `netforensic wireshark status` to see what was detected.
 
 ### What it adds
 
@@ -558,6 +685,7 @@ Stated plainly, because a forensics tool that hides its weaknesses is worse than
 - **Live capture needs Npcap/libpcap and elevated privileges**, which this tool does not install or grant.
 - **The two pcap engines do not produce identical output.** That is the point — tshark sees protocols the scapy engine cannot — but it means a case re-analyzed under a different engine will not have identical events. Each event records the engine that produced it, and `--engine` pins one when reproducibility matters.
 - **tshark object export runs as a second pass** over the capture. It keeps the streaming parse's memory profile intact, at the cost of reading the file twice when an output directory is given.
+- **Exported objects carry no timestamp.** tshark's object export reports the recovered file but not the frame it completed on, so `file_transfer` events from it sort at the end of the timeline as `unknown` rather than in position. A wrong timestamp on forensic evidence is worse than an absent one, so none is invented — the parent flow's events carry the timing.
 
 ---
 
