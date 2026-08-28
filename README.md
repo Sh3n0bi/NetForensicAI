@@ -113,19 +113,7 @@ netforensic web --cases-dir cases      # then open http://127.0.0.1:8000
 ```
 
 1. **Settings** *(top right)* — optionally add VirusTotal / AI keys and press **Test**. Everything except threat intel and the AI assistant works with no keys at all.
-2. **Wireshark** *(requires Wireshark installed)*
-
-```bash
-netforensic wireshark status
-netforensic wireshark check-filter 'tls.handshake.extensions_server_name contains "c2"'
-netforensic wireshark open  --case INC-0001 --event EVT-EV-0001-000042      # or --evidence EV-0001
-netforensic wireshark slice --case INC-0001 --evidence EV-0001 --display-filter 'dns'
-```
-
-`parse` and `analyze` take `--engine {auto,tshark,scapy}`; `parse` also takes `--display-filter`.
-`capture` takes `--engine {auto,dumpcap,scapy}`.
-
-**Cases** — create or open a case, then **Evidence → Choose File → Upload Evidence**.
+2. **Cases** — create or open a case, then **Evidence → Choose File → Upload Evidence**.
 3. **Run Analyze** — parses, correlates, and runs detection rules in one step.
 4. Review **Timeline**, **Entities**, **Detections**, **ATT&CK**, **Custody**; record **Findings**; export a **Report**.
 
@@ -302,7 +290,7 @@ Also handled: VLAN (802.1Q) tags, IP fragments, pcapng containers, truncated cap
 | `file_transfer` | **Real object export** (HTTP, SMB, FTP-DATA, TFTP, IMF) — the dissector knows where each object begins and ends, rather than inferring it from magic bytes. |
 | `network_connection` | Wireshark's own protocol stack per flow (`eth:ethertype:ip:tcp:tls:http2`), so an unfamiliar flow is identifiable without reopening the capture. |
 
-Everything else — DNS, HTTP request/response pairing, TLS SNI, flow aggregation, anomaly scoring — is produced by both engines. Every event records which engine produced it in `raw_event_reference.engine`, because *"which dissector found this"* is a question a report has to answer months later.
+Everything else — DNS, HTTP request/response pairing, TLS SNI, flow aggregation, anomaly scoring — is produced by both engines, **under the same event-type names**, so a timeline filter or a detection rule behaves identically whichever engine ran. Every event also records which engine produced it in `raw_event_reference.engine`, because *"which dissector found this"* is a question a report has to answer months later.
 
 ### Entity extraction & correlation
 Eleven entity types — user, hostname, device, IP address, domain, URL, file, hash, process, port, network connection — each linked to the events it appears in. Entity IDs derive deterministically from type + normalized value, so the same real-world entity resolves to the same ID across every evidence source. **That is the mechanism that makes cross-source correlation work.**
@@ -379,9 +367,7 @@ Export a whole case to one zip archive with a SHA-256 manifest of every file. Im
 
 ## Wireshark integration
 
-Optional and auto-detected. Install Wireshark and NetForensicAI starts using it; don't, and every
-feature below simply isn't offered while the rest of the platform works unchanged. Nothing here
-installs, downloads, or elevates anything.
+Optional and auto-detected. Install Wireshark and NetForensicAI starts using it; don't, and every feature below simply isn't offered while the rest of the platform works unchanged. Nothing here installs, downloads, or elevates anything.
 
 `netforensic wireshark status` reports exactly what was found and which engines are live.
 
@@ -396,25 +382,19 @@ installs, downloads, or elevates anything.
 
 ### Display filters
 
-Filters can narrow ingestion, which is how a focused subset of a very large capture gets analyzed
-without carving it first:
+Filters can narrow ingestion, which is how a focused subset of a very large capture gets analyzed without carving it first:
 
 ```bash
 netforensic parse --case INC-0001 --evidence EV-0001 --display-filter 'ip.addr == 10.0.0.5 && tcp.port == 445'
 ```
 
-Or carve a slice, which is the *evidentiary* form. The slice is a real capture file, so it goes back
-through the normal evidence path — hashed, recorded against its parent and the exact filter that
-produced it, and analyzable on its own. That is what makes "I filtered the capture down to this"
-reproducible by someone else later, which a screenshot of a filtered GUI is not:
+Or carve a slice, which is the *evidentiary* form. The slice is a real capture file, so it goes back through the normal evidence path — hashed, recorded against its parent and the exact filter that produced it, and analyzable on its own. That is what makes "I filtered the capture down to this" reproducible by someone else later, which a screenshot of a filtered GUI is not:
 
 ```bash
 netforensic wireshark slice --case INC-0001 --evidence EV-0001 --display-filter 'dns.qry.name contains "evil"'
 ```
 
-A filter that matches nothing writes nothing: an empty capture in the chain of custody would imply
-something was found. Asking for a display filter while the scapy engine is in use is an **error**, not
-a silent no-op — being handed every packet while believing you filtered is the worst possible outcome.
+A filter that matches nothing writes nothing: an empty capture in the chain of custody would imply something was found. Asking for a display filter while the scapy engine is in use is an **error**, not a silent no-op — being handed every packet while believing you filtered is the worst possible outcome.
 
 ### GUI pivot
 
@@ -422,23 +402,15 @@ a silent no-op — being handed every packet while believing you filtered is the
 netforensic wireshark open --case INC-0001 --event EVT-EV-0001-000042
 ```
 
-The filter is derived from the event's own recorded frame numbers, so what opens is exactly the
-traffic behind the finding rather than something that merely resembles it. `--print` emits the command
-instead of launching, for use over SSH or in a report.
+The filter is derived from the event's own recorded frame numbers, so what opens is exactly the traffic behind the finding rather than something that merely resembles it. `--print` emits the command instead of launching, for use over SSH or in a report.
 
-The web UI deliberately **does not** launch the GUI. It returns the filter and the command for you to
-run: a browser page must not be able to spawn a desktop application on the machine running the server,
-and "it's bound to localhost" is a deployment detail, not a guarantee.
+The web UI deliberately **does not** launch the GUI. It returns the filter and the command for you to run: a browser page must not be able to spawn a desktop application on the machine running the server, and "it's bound to localhost" is a deployment detail, not a guarantee.
 
 ### Discovery
 
-PATH first, then the standard install directories (including `C:\Program Files\Wireshark`, which the
-Windows installer does not add to PATH). Override with `NETFORENSIC_WIRESHARK_DIR`, or point at
-individual binaries with `NETFORENSIC_TSHARK` / `NETFORENSIC_DUMPCAP` / `NETFORENSIC_WIRESHARK`.
+PATH first, then the standard install directories (including `C:\Program Files\Wireshark`, which the Windows installer does not add to PATH). Override with `NETFORENSIC_WIRESHARK_DIR`, or point at individual binaries with `NETFORENSIC_TSHARK` / `NETFORENSIC_DUMPCAP` / `NETFORENSIC_WIRESHARK`.
 
-Requesting a specific engine that isn't installed is an error rather than a silent fallback — an
-analyst who passed `--engine tshark` is asking for a reproducible dissection, and quietly substituting
-a different one would put results in a report that the command printed beside them cannot reproduce.
+Requesting a specific engine that isn't installed is an error rather than a silent fallback — an analyst who passed `--engine tshark` is asking for a reproducible dissection, and quietly substituting a different one would put results in a report that the command printed beside them cannot reproduce.
 
 ---
 
@@ -459,15 +431,24 @@ netforensic case import ./INC-0001.zip [--cases-dir other_cases]
 ```bash
 netforensic evidence add ./file --case INC-0001     # .pcap/.pcapng/.json/.csv/.evtx
 netforensic evidence list --case INC-0001
-netforensic parse --case INC-0001 --evidence EV-0001
+netforensic parse --case INC-0001 --evidence EV-0001 [--engine auto|tshark|scapy] [--display-filter '...']
 ```
 
 **Analysis**
 ```bash
 netforensic analyze --case INC-0001                 # parse + correlate + detect
+netforensic analyze --case INC-0001 --engine tshark # pin the dissection engine
 netforensic timeline build --case INC-0001
 netforensic timeline show  --case INC-0001 [--user ...] [--ip ...] [--type ...] [--evidence EV-0001]
 netforensic detections list --case INC-0001 [--severity high]
+```
+
+**Wireshark** *(only available when Wireshark is installed — see [Wireshark integration](#wireshark-integration))*
+```bash
+netforensic wireshark status                        # what was found, which engines are live
+netforensic wireshark check-filter 'tls.handshake.extensions_server_name contains "c2"'
+netforensic wireshark open  --case INC-0001 --event EVT-EV-0001-000042   # or --evidence EV-0001, + --print
+netforensic wireshark slice --case INC-0001 --evidence EV-0001 --display-filter 'dns'
 ```
 
 **Investigation**
@@ -498,6 +479,7 @@ netforensic attack update --case INC-0001 --technique T1059.001 --status confirm
 netforensic report generate --case INC-0001 --format markdown|json|html [--output PATH]
 netforensic capture --list-interfaces
 netforensic capture --case INC-0001 --interface "\Device\NPF_{...}" --filter "tcp port 443" --rotate-seconds 30
+netforensic capture --case INC-0001 --engine dumpcap|scapy   # default: auto
 netforensic web --cases-dir cases [--host 127.0.0.1] [--port 8000]
 netforensic scan ./capture.pcap [--vt-api KEY] [--save-files] [--no-dashboard]   # legacy standalone
 ```
@@ -517,8 +499,7 @@ Resolution order: **explicit flag → provider environment variable → saved co
 | OpenAI | `OPENAI_API_KEY` |
 | Gemini | `GEMINI_API_KEY` |
 
-Engine selection is a saved setting rather than a key, and follows **explicit flag → environment
-variable → saved config → `auto`**:
+Engine selection is a saved setting rather than a key, and follows **explicit flag → environment variable → saved config → `auto`**:
 
 | Setting | Environment variable | Values |
 |---|---|---|
@@ -587,11 +568,11 @@ pip install -e ".[dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web]"
 pytest
 ```
 
-**433 tests**, run in CI against Python 3.9 and 3.12, plus a packaging check that installs the built wheel into a clean environment and confirms the web UI's assets are actually bundled.
+**486 tests**, run in CI against Python 3.9 and 3.12, plus a dedicated job that installs tshark so the Wireshark integration is genuinely exercised rather than skipped, and a packaging check that installs the built wheel into a clean environment and confirms the web UI's assets are actually bundled.
 
-The suite favours real fixtures over mocks: pcaps built with scapy, EVTX from hand-crafted XML matching the real schema, cases from `tmp_path`. Mocks are reserved for what genuinely cannot be exercised — external APIs and live packet capture.
+The suite favours real fixtures over mocks: pcaps built with scapy, EVTX from hand-crafted XML matching the real schema, cases from `tmp_path`, and real tshark invocations wherever Wireshark is present. Mocks are reserved for what genuinely cannot be exercised in CI — external APIs, and opening a live network interface.
 
-Several classes of bug were found only by running against real captures rather than synthetic ones — silently-dropped IPv6, HTTPS payloads skipped because scapy re-dissects them, DNS missed off port 53, a quadratic insert that made a 30 MB file take over 15 minutes. Each is now pinned by a regression test.
+Several classes of bug were found only by running against real evidence and real tooling rather than synthetic fixtures — silently-dropped IPv6, HTTPS payloads skipped because scapy re-dissects them, DNS missed off port 53, a quadratic insert that made a 30 MB file take over 15 minutes, and a live-capture counter that reported the session total in the per-window field. Each is now pinned by a regression test.
 
 ---
 

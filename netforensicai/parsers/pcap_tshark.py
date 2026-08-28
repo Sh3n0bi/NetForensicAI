@@ -34,8 +34,12 @@ Event types produced:
     summarizing packet and byte counts, with Wireshark's own protocol
     stack (frame.protocols) recorded so an analyst can see that a flow was
     e.g. `eth:ip:tcp:tls:http2` without re-opening the capture.
-  - dns_query: one per DNS query or response, with the queried name in
-    `domain` and any resolved addresses in the message.
+  - dns_query / dns_response: one per DNS query and per response, with the
+    queried name in `domain` and any resolved addresses in the message.
+    Split into two event types to match the scapy engine exactly - the
+    Common Event Model must mean the same thing whichever engine produced
+    it, or a timeline filter and a detection rule change behaviour
+    depending on whether the analyst had Wireshark installed.
   - http_request / http_response: request line and status line, paired by
     tshark's own stream index rather than by our own reassembly.
   - tls_handshake: one per ClientHello, SNI hostname in `domain`.
@@ -283,12 +287,17 @@ class _TsharkCollector:
             self._event(
                 {
                     **common,
-                    "event_type": "dns_query",
+                    # Responses are their own event type, matching the scapy
+                    # engine. The Common Event Model must not shift meaning
+                    # with the engine: folding responses into dns_query here
+                    # would make `timeline show --type dns_response` return
+                    # nothing on a case parsed with tshark, and silently
+                    # change what a detection rule keyed on it matches.
+                    "event_type": "dns_response" if is_response else "dns_query",
                     "domain": name,
                     "message": message,
                     "raw_event_reference": {
                         "packet_number": packet_number,
-                        "dns_response": is_response,
                         "answers": answers or None,
                         "engine": "tshark",
                     },

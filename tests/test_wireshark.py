@@ -340,6 +340,28 @@ def test_the_tshark_engine_produces_dns_http_and_flow_events(tmp_path):
 
 
 @requires_tshark
+def test_both_engines_name_the_same_event_types_for_the_same_capture(tmp_path):
+    """The Common Event Model must mean the same thing whichever engine
+    produced it. If tshark folded DNS responses into `dns_query`, then
+    `timeline show --type dns_response` would return nothing on a case
+    parsed with Wireshark installed, and a detection rule keyed on it
+    would quietly stop matching - a behaviour change driven purely by
+    what the analyst happened to have installed.
+    """
+    source = _sample_pcap(tmp_path / "source.pcap")
+    parser = pcap_engine.PcapEngineParser()
+
+    scapy_types = {e.event_type for e in parser.parse(source, "EV-0001", engine="scapy")}
+    tshark_types = {e.event_type for e in parser.parse(source, "EV-0001", engine="tshark")}
+
+    # tshark legitimately sees more (authentication, file_access). It must
+    # not, however, rename anything the scapy engine already emits.
+    shared = {"dns_query", "dns_response", "http_request", "http_response", "network_connection"}
+    assert shared <= scapy_types, scapy_types
+    assert shared <= tshark_types, tshark_types
+
+
+@requires_tshark
 def test_tshark_events_record_which_engine_produced_them(tmp_path):
     """A report has to be able to say which dissector produced a finding,
     months later, on a machine that may no longer have the same tooling."""

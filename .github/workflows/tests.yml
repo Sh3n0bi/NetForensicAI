@@ -44,6 +44,53 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  wireshark:
+    # The Wireshark integration is optional and its tests skip when tshark
+    # is absent - which means the matrix job above, on a runner with no
+    # Wireshark, reports green while never executing a single line of the
+    # tshark engine, the display-filter code, or the dumpcap backend. This
+    # job exists so that "the tests passed" actually covers them.
+    #
+    # It mirrors the matrix job rather than replacing it: that one proves
+    # the pure-Python fallback still works with Wireshark absent, this one
+    # proves the Wireshark path works with it present. Both matter,
+    # because either can break without the other noticing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install tshark
+        # tshark only, not the `wireshark` metapackage, which would pull in
+        # Qt and the whole desktop stack for no benefit: the GUI-pivot
+        # tests only build and print commands, they never launch anything.
+        # DEBIAN_FRONTEND stops the wireshark-common postinst prompting
+        # about who may capture packets, which would hang the runner.
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+          tshark --version | head -1
+
+      - name: Install package with test-relevant extras
+        run: pip install -e ".[dev,pcap,intel,evtx,web]"
+
+      - name: Confirm the Wireshark path is actually being exercised
+        # Without this, a discovery regression would quietly send every
+        # Wireshark test back to skipping and this job would still pass -
+        # which is the exact failure mode the job was added to prevent.
+        run: |
+          python -c "
+          from netforensicai.integrations import wireshark
+          assert wireshark.available(), 'tshark is installed but was not discovered'
+          print('tshark discovered:', wireshark.version(), wireshark.tshark_path())
+          "
+
+      - name: Run tests
+        run: pytest -q
+
   build-check:
     # Separate from the test matrix: this only needs to run once and
     # exists to catch packaging regressions (e.g. a new static/data file
