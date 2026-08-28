@@ -573,9 +573,29 @@ def test_parse_missing_file_raises():
 
 
 def test_pcap_parser_is_registered_in_base_registry():
+    """The engine dispatcher owns the "pcap" registration, not either
+    engine directly - so pcap support survives scapy being absent on a
+    machine that has Wireshark. See parsers/pcap_engine.py."""
+    from netforensicai.parsers import base
+    from netforensicai.parsers.pcap_engine import PcapEngineParser
+
+    assert isinstance(base.get_parser("pcap"), PcapEngineParser)
+
+
+def test_registered_pcap_parser_dispatches_to_the_scapy_engine_when_pinned(tmp_path):
+    """The dispatcher must actually delegate, not just register: an
+    unwired dispatcher would register fine and produce no events."""
     from netforensicai.parsers import base
 
-    assert isinstance(base.get_parser("pcap"), PcapParser)
+    query = IP(src="10.0.0.5", dst="8.8.8.8") / UDP(sport=51000, dport=53) / DNS(
+        rd=1, qd=DNSQR(qname="dispatch.example.com")
+    )
+    query.time = 1_700_000_900.0
+    pcap_path = _write_pcap(tmp_path, "dispatch.pcap", [query])
+
+    events = base.get_parser("pcap").parse(pcap_path, evidence_id="EV-0100")
+
+    assert any(e.event_type == "dns_query" and e.domain == "dispatch.example.com" for e in events)
 
 
 # --- JSON / CSV normalization ---

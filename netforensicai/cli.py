@@ -304,19 +304,34 @@ def evidence_list_cmd(
         )
 
 
-def _parse_one_evidence(evidence, case_dir, case_manager, case_id, store):
+def _parse_one_evidence(evidence, case_dir, case_manager, case_id, store, parse_options=None):
     """Thin wrapper kept for callers already importing this name; the real
     logic lives in core/pipeline.py so cli.py, the web UI, and the live
     capture module all share exactly one implementation."""
     from netforensicai.core.pipeline import parse_evidence_item
 
-    return parse_evidence_item(evidence, case_dir, case_manager, case_id, store)
+    return parse_evidence_item(evidence, case_dir, case_manager, case_id, store, parse_options)
+
+
+ENGINE_HELP = (
+    "pcap dissection engine: 'auto' (tshark when Wireshark is installed, else scapy), "
+    "'tshark', or 'scapy'"
+)
 
 
 @app.command("parse")
 def parse_evidence(
     case_id: str = typer.Option(..., "--case", help="Case ID the evidence belongs to"),
     evidence_id: str = typer.Option(..., "--evidence", help="Evidence ID to parse (e.g. EV-0001)"),
+    engine: str = typer.Option(None, "--engine", help=ENGINE_HELP),
+    display_filter: str = typer.Option(
+        None,
+        "--display-filter",
+        help=(
+            "Wireshark display filter restricting which packets are parsed, "
+            "e.g. 'ip.addr == 10.0.0.5 && tcp.port == 445'. Needs the tshark engine."
+        ),
+    ),
     cases_dir: str = typer.Option(
         DEFAULT_CASES_DIR,
         "--cases-dir",
@@ -343,8 +358,11 @@ def parse_evidence(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
 
+    parse_options = {"engine": engine, "display_filter": display_filter}
     with CaseStore(case_dir) as store:
-        event_count, entity_count, error = _parse_one_evidence(evidence, case_dir, case_manager, case.case_id, store)
+        event_count, entity_count, error = _parse_one_evidence(
+            evidence, case_dir, case_manager, case.case_id, store, parse_options
+        )
 
     if error:
         typer.echo(f"Error parsing {evidence_id}: {error}", err=True)
@@ -356,6 +374,7 @@ def parse_evidence(
 @app.command("analyze")
 def analyze_case(
     case_id: str = typer.Option(..., "--case", help="Case ID to analyze"),
+    engine: str = typer.Option(None, "--engine", help=ENGINE_HELP),
     cases_dir: str = typer.Option(
         DEFAULT_CASES_DIR,
         "--cases-dir",
@@ -387,7 +406,9 @@ def analyze_case(
     total_events = 0
     with CaseStore(case_dir) as store:
         for evidence in items:
-            event_count, entity_count, error = _parse_one_evidence(evidence, case_dir, case_manager, case.case_id, store)
+            event_count, entity_count, error = _parse_one_evidence(
+                evidence, case_dir, case_manager, case.case_id, store, {"engine": engine}
+            )
             if error:
                 typer.echo(f"  {evidence.evidence_id} ({evidence.evidence_type}): skipped - {error}")
                 continue
@@ -1217,6 +1238,250 @@ def scan(
         logger.info("Dashboard skipped. Use --no-dashboard to disable or ensure anomalies are detected.")
 
 
+wireshark_app = typer.Typer(
+    help="Wireshark integration: engine status, display filters, and opening evidence in the GUI.",
+    no_args_is_help=True,
+)
+app.add_typer(wireshark_app, name="wireshark")
+
+
+def _resolve_pcap_evidence(case_dir, evidence_id):
+    """Load a pcap evidence item and return (evidence, stored_path).
+
+    Always resolves to the *stored* copy under the case rather than
+    whatever path the file was added from: the stored copy is the one that
+    was hashed into the chain of custody, so it is the only one a pivot or
+    a slice may be taken from.
+    """
+    from netforensicai.core.evidence import EvidenceError, EvidenceManager
+
+    manager = EvidenceManager(case_dir)
+    try:
+        evidence = manager.load(evidence_id)
+    except EvidenceError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    if evidence.evidence_type != "pcap":
+        typer.echo(
+            f"Error: {evidence_id} is {evidence.evidence_type} evidence, not a capture file.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return evidence, manager.stored_file_path(evidence.evidence_id)
+
+
+@wireshark_app.command("status")
+def wireshark_status():
+    """Show which Wireshark tools were found and which engines are in use."""
+    from netforensicai.core import capture as capture_module
+    from netforensicai.integrations import wireshark
+    from netforensicai.parsers import pcap_engine
+
+    info = wireshark.status()
+    if not info["available"]:
+        typer.echo("Wireshark: not found.")
+        typer.echo(
+            "  NetForensicAI works without it - pcap parsing falls back to the built-in scapy "
+            "engine. Install Wireshark to get its ~3000 dissectors, object export, display "
+            "filters and the GUI pivot."
+        )
+        typer.echo("  If it is installed somewhere unusual, set NETFORENSIC_WIRESHARK_DIR.")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Wireshark: {info['version']}")
+    typer.echo(f"  tshark:  {info['tshark']}")
+    typer.echo(f"  dumpcap: {info['dumpcap'] or '(not found)'}")
+    typer.echo(f"  GUI:     {info['gui'] or '(not found)'}")
+
+    engine = pcap_engine.engine_status()
+    typer.echo(f"Parse engine:   {engine['selected'] or 'unavailable'} (requested: {engine['requested']})")
+    if engine["error"]:
+        typer.echo(f"  {engine['error']}")
+    try:
+        typer.echo(f"Capture engine: {capture_module.resolve_capture_engine()}")
+    except capture_module.CaptureError as e:
+        typer.echo(f"Capture engine: unavailable - {e}")
+
+
+@wireshark_app.command("check-filter")
+def wireshark_check_filter(
+    display_filter: str = typer.Argument(..., help="Display filter to validate, e.g. 'dns.qry.name contains \"evil\"'"),
+):
+    """Validate a Wireshark display filter without running it against a capture."""
+    from netforensicai.integrations import wireshark
+
+    valid, error = wireshark.validate_display_filter(display_filter)
+    if valid:
+        typer.echo(f"Valid: {display_filter}")
+        return
+    typer.echo(f"Invalid: {error}", err=True)
+    raise typer.Exit(code=1)
+
+
+@wireshark_app.command("open")
+def wireshark_open(
+    case_id: str = typer.Option(..., "--case", help="Case ID the evidence belongs to"),
+    evidence_id: str = typer.Option(None, "--evidence", help="Capture evidence to open (e.g. EV-0001)"),
+    event_id: str = typer.Option(
+        None,
+        "--event",
+        help="Open the capture this event came from, pre-filtered to the exact packets behind it",
+    ),
+    display_filter: str = typer.Option(
+        None, "--display-filter", help="Display filter to open with (overrides the one derived from --event)"
+    ),
+    print_only: bool = typer.Option(
+        False, "--print", help="Print the command instead of launching the GUI"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Open case evidence in the Wireshark GUI, pre-filtered to a finding's packets.
+
+    This is the pivot out of the platform and into packet-level review:
+    --event derives the filter from the event's own recorded frame numbers,
+    so what opens is exactly the traffic the finding was drawn from rather
+    than something that merely resembles it.
+    """
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.store import CaseStore
+    from netforensicai.integrations import wireshark
+
+    if not evidence_id and not event_id:
+        typer.echo("Error: pass --evidence or --event.", err=True)
+        raise typer.Exit(code=1)
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    case_dir = Path(cases_dir) / case.case_id
+
+    derived_filter = None
+    if event_id:
+        with CaseStore(case_dir) as store:
+            event = store.get_event(event_id)
+        if event is None:
+            typer.echo(f"Error: no event {event_id} in {case.case_id}.", err=True)
+            raise typer.Exit(code=1)
+        evidence_id = evidence_id or event.evidence_id
+        derived_filter = wireshark.filter_for_event(event)
+        if derived_filter is None and not display_filter:
+            typer.echo(
+                f"Note: {event_id} carries no packet reference to pivot on; opening the whole capture."
+            )
+
+    evidence, stored_path = _resolve_pcap_evidence(case_dir, evidence_id)
+    effective_filter = display_filter or derived_filter
+
+    if print_only:
+        typer.echo(wireshark.gui_command(stored_path, effective_filter))
+        return
+
+    try:
+        wireshark.open_gui(stored_path, effective_filter)
+    except wireshark.WiresharkError as e:
+        typer.echo(f"Error: {e}", err=True)
+        typer.echo(f"Run this yourself instead:\n  {wireshark.gui_command(stored_path, effective_filter)}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Opened {evidence.evidence_id} in Wireshark.")
+    if effective_filter:
+        typer.echo(f"  Display filter: {effective_filter}")
+
+
+@wireshark_app.command("slice")
+def wireshark_slice(
+    case_id: str = typer.Option(..., "--case", help="Case ID the evidence belongs to"),
+    evidence_id: str = typer.Option(..., "--evidence", help="Capture evidence to slice (e.g. EV-0001)"),
+    display_filter: str = typer.Option(..., "--display-filter", help="Wireshark display filter selecting the packets to keep"),
+    add_as_evidence: bool = typer.Option(
+        True,
+        "--add-as-evidence/--no-add-as-evidence",
+        help="Add the slice back into the case as its own hashed evidence item",
+    ),
+    output: str = typer.Option(None, "--output", help="Where to write the slice (defaults to a file in the case directory)"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Carve the packets matching a display filter into a new capture file.
+
+    The slice is a real capture, not a view, so by default it goes back
+    into the case through the normal evidence path - hashed, recorded in
+    the audit trail, and analyzable on its own. That is what makes
+    "I filtered the capture down to this" reproducible by someone else
+    later, which a screenshot of a filtered GUI is not.
+    """
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceError, EvidenceManager
+    from netforensicai.integrations import wireshark
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    case_dir = Path(cases_dir) / case.case_id
+
+    evidence, stored_path = _resolve_pcap_evidence(case_dir, evidence_id)
+    destination = Path(output) if output else case_dir / "slices" / f"{evidence.evidence_id}-slice.pcap"
+
+    try:
+        slice_path, packet_count = wireshark.extract_slice(stored_path, display_filter, destination)
+    except wireshark.WiresharkError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    if packet_count == 0:
+        # An empty slice is a valid answer to the filter, but adding it as
+        # evidence would put an empty capture into the chain of custody
+        # and imply something was found.
+        slice_path.unlink(missing_ok=True)
+        typer.echo(f"No packets in {evidence.evidence_id} matched: {display_filter}")
+        return
+
+    typer.echo(f"Wrote {packet_count} packet(s) to {slice_path}")
+    if not add_as_evidence:
+        return
+
+    try:
+        new_evidence = EvidenceManager(case_dir).add(slice_path, case_id=case.case_id)
+    except EvidenceError as e:
+        typer.echo(f"Error adding the slice as evidence: {e}", err=True)
+        raise typer.Exit(code=1)
+    case_manager.register_evidence(case.case_id, new_evidence.evidence_id)
+
+    # The slice's own evidence record says only that a pcap was added. The
+    # audit entry is what ties it back to the capture and the exact filter
+    # it came from - without it the derived evidence would be untraceable
+    # to its parent, which is the one thing a derived artifact must not be.
+    from netforensicai.core import audit
+
+    audit.record(
+        case_dir,
+        audit.EVIDENCE_SLICED,
+        {
+            "evidence_id": new_evidence.evidence_id,
+            "derived_from": evidence.evidence_id,
+            "display_filter": display_filter,
+            "packet_count": packet_count,
+        },
+    )
+    typer.echo(f"Added as {new_evidence.evidence_id} - parse it with:")
+    typer.echo(f"  netforensic parse --case {case.case_id} --evidence {new_evidence.evidence_id}")
+
+
 @app.command("web")
 def web(
     cases_dir: str = typer.Option(
@@ -1260,6 +1525,11 @@ def capture_cmd(
     list_interfaces_flag: bool = typer.Option(
         False, "--list-interfaces", help="List available network interfaces and exit"
     ),
+    engine: str = typer.Option(
+        "auto",
+        "--engine",
+        help="Capture backend: 'auto' (dumpcap when Wireshark is installed), 'dumpcap', or 'scapy'",
+    ),
     cases_dir: str = typer.Option(
         DEFAULT_CASES_DIR,
         "--cases-dir",
@@ -1284,7 +1554,11 @@ def capture_cmd(
             typer.echo(f"Error listing interfaces: {e}", err=True)
             raise typer.Exit(code=1)
         for iface in interfaces:
-            typer.echo(iface)
+            # The description is what makes a Windows \Device\NPF_{GUID}
+            # identifiable as a particular NIC, so print it when dumpcap
+            # supplied one.
+            description = iface.get("description")
+            typer.echo(f"{iface['name']}  ({description})" if description else iface["name"])
         return
 
     if not case_id:
@@ -1299,7 +1573,18 @@ def capture_cmd(
         raise typer.Exit(code=1)
 
     case_dir = Path(cases_dir) / case.case_id
-    session = capture_module.CaptureSession(
+    try:
+        selected_engine = capture_module.resolve_capture_engine(engine)
+    except capture_module.CaptureError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    session_class = (
+        capture_module.DumpcapCaptureSession
+        if selected_engine == capture_module.ENGINE_DUMPCAP
+        else capture_module.CaptureSession
+    )
+    session = session_class(
         case.case_id, case_dir, case_manager, interface=interface, bpf_filter=bpf_filter, rotate_seconds=rotate_seconds
     )
 
@@ -1309,7 +1594,10 @@ def capture_cmd(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
 
-    typer.echo(f"Capturing into {case.case_id} on interface {interface or '(default)'} - Ctrl+C to stop.")
+    typer.echo(
+        f"Capturing into {case.case_id} on interface {interface or '(default)'} "
+        f"using the {selected_engine} engine - Ctrl+C to stop."
+    )
     typer.echo(f"Rotating every {rotate_seconds}s; each finished window is ingested as evidence automatically.")
     try:
         while True:

@@ -28,15 +28,25 @@ def _batched(iterable, size):
         yield batch
 
 
-def parse_evidence_item(evidence, case_dir, case_manager, case_id, store):
+def parse_evidence_item(evidence, case_dir, case_manager, case_id, store, parse_options=None):
     """Parse one evidence item, persist its events + extracted entities into
     `store`, and register any newly saved artifact files against the case.
 
     Events are streamed from the parser and written in batches rather than
     collected into a single list first - see INGEST_BATCH_SIZE.
 
+    parse_options are format-specific knobs forwarded to the parser, e.g.
+    the pcap dispatcher's `engine` and `display_filter`. They are threaded
+    through this one function rather than applied by each caller so that
+    however an item was ingested - CLI, web upload, live-capture rotation
+    - the options end up in the audit trail identically. Parsers ignore
+    options they don't recognize (BaseParser takes **options), so a
+    pcap-specific knob reaching a JSON evidence item is harmless.
+
     Returns (event_count, entity_count, error). error is None on success.
     """
+    parse_options = {k: v for k, v in (parse_options or {}).items() if v is not None}
+
     from netforensicai.core.entities import extract_and_store_ids
     from netforensicai.core.evidence import EvidenceManager
     from netforensicai.parsers import base, load_parsers
@@ -55,7 +65,10 @@ def parse_evidence_item(evidence, case_dir, case_manager, case_id, store):
     try:
         store.delete_events_for_evidence(evidence.evidence_id)
         stream = parser.iter_parse(
-            stored_path, evidence_id=evidence.evidence_id, output_dir=str(output_dir)
+            stored_path,
+            evidence_id=evidence.evidence_id,
+            output_dir=str(output_dir),
+            **parse_options,
         )
         for batch in _batched(stream, INGEST_BATCH_SIZE):
             store.insert_events(batch)
@@ -91,6 +104,11 @@ def parse_evidence_item(evidence, case_dir, case_manager, case_id, store):
             "event_count": event_count,
             "entity_count": len(entity_ids),
             "artifacts_extracted": len(artifact_paths),
+            # Recorded because "which dissector produced these events, and
+            # was the capture filtered on the way in" are questions a
+            # defensible report has to answer months later, on a machine
+            # that may no longer have the same tooling installed.
+            **({"parse_options": parse_options} if parse_options else {}),
         },
     )
 

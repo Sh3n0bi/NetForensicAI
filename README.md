@@ -19,7 +19,7 @@
 - [What it is](#what-it-is) · [The problem](#the-problem) · [Design principles](#design-principles)
 - [Installation](#installation) · [Quick start](#quick-start)
 - [Architecture](#architecture)
-- [Capabilities](#capabilities)
+- [Capabilities](#capabilities) · [Wireshark integration](#wireshark-integration)
 - [Command reference](#command-reference) · [Configuration](#configuration)
 - [AI safety model](#ai-safety-model) · [Performance](#performance) · [Limitations](#limitations)
 - [Testing](#testing) · [Contributing](#contributing) · [Security policy](#security-policy) · [License](#license)
@@ -87,6 +87,8 @@ Everything beyond case management and the CLI core is optional.
 | `build` | build, twine | Packaging a release (maintainers) |
 
 Only `intel`, `ai`, `ai-openai`, and `ai-gemini` can reach the network, and only when you explicitly invoke the feature that uses them. Ollama's traffic stays on your machine.
+
+**Wireshark is a separate, optional, external dependency** — not a pip extra. If it is installed, NetForensicAI uses `tshark` for dissection, `dumpcap` for live capture, and the GUI for packet-level pivots. If it is not, everything falls back to the pure-Python path and nothing breaks. See [Wireshark integration](#wireshark-integration).
 
 ---
 
@@ -198,10 +200,13 @@ netforensicai/
 │   ├── ai_assistant.py  Multi-provider AI with evidence contract
 │   ├── finding.py       Investigator-owned findings
 │   ├── report.py        Markdown / JSON / HTML rendering
-│   ├── capture.py       Live capture with rotating windows
+│   ├── capture.py       Live capture with rotating windows (dumpcap · scapy)
 │   ├── export.py        Portable case archives
 │   └── config.py        API keys and preferences (outside cases/)
-├── parsers/             base · pcap · generic (JSON/CSV) · evtx
+├── integrations/
+│   └── wireshark.py     Tool discovery, display filters, slices, GUI pivot
+├── parsers/             base · pcap_engine (dispatch) · pcap (scapy) ·
+│                        pcap_tshark · generic (JSON/CSV) · evtx
 ├── web/                 Flask API + dependency-free frontend
 └── cli.py               Typer command surface
 ```
@@ -251,7 +256,7 @@ All parsers normalize into one **Common Event Model**: `event_id`, `evidence_id`
 
 | Format | Notes |
 |---|---|
-| `.pcap` / `.pcapng` | scapy-based, pure Python — no tshark required. Single streaming pass. |
+| `.pcap` / `.pcapng` | Two interchangeable engines — **tshark** when Wireshark is installed, **scapy** (pure Python, no external binary) otherwise. Single streaming pass either way. See [Wireshark integration](#wireshark-integration). |
 | `.json` | Array, `{"events": [...]}`-wrapped, or single object. Case/separator-insensitive field aliasing (`src_ip` / `SourceIP` / `source_ip` all match). |
 | `.csv` | Same aliasing, one event per row. |
 | `.evtx` | Sysmon (ProcessCreate, NetworkConnection, ProcessTerminate, FileCreate, DNSQuery) gets rich field mapping; every other provider gets universal System fields plus full raw EventData. Pure Python, so Windows logs can be analyzed from any OS. |
@@ -259,7 +264,9 @@ All parsers normalize into one **Common Event Model**: `event_id`, `evidence_id`
 Adding a fifth format means one `BaseParser` subclass — entity extraction, correlation, timeline, detections, and reporting need no changes.
 
 ### Network protocol analysis
-The pcap parser produces **eight event types**, over both **IPv4 and IPv6**:
+The pcap parser has two engines. Neither is a superset of the other, so neither is hardcoded — `auto` picks tshark when Wireshark is installed and scapy when it is not, and `--engine` pins either one.
+
+**scapy engine** — pure Python, works from a plain `pip install`, and produces **eight event types**, over both **IPv4 and IPv6**:
 
 | Event type | What it captures |
 |---|---|
@@ -273,6 +280,17 @@ The pcap parser produces **eight event types**, over both **IPv4 and IPv6**:
 | `anomaly` | IsolationForest outliers over size / inter-arrival / ports. Small captures only — see [Limitations](#limitations). |
 
 Also handled: VLAN (802.1Q) tags, IP fragments, pcapng containers, truncated captures *(keeps what was read)*, and malformed payloads *(never aborts the parse)*.
+
+**tshark engine** — Wireshark's ~3000 dissectors instead of eight hand-written analyses. Same Common Event Model, same streaming, and it adds what the scapy engine structurally cannot see:
+
+| Event type | What the tshark engine adds |
+|---|---|
+| `authentication` | **Kerberos and NTLM attempts** — principal, realm, workstation. Lateral movement *is* authentication traffic; to the scapy engine a Kerberoasting run is an unremarkable TCP flow to port 88. |
+| `file_access` | SMB file opens, reads and writes, naming the share path touched. |
+| `file_transfer` | **Real object export** (HTTP, SMB, FTP-DATA, TFTP, IMF) — the dissector knows where each object begins and ends, rather than inferring it from magic bytes. |
+| `network_connection` | Wireshark's own protocol stack per flow (`eth:ethertype:ip:tcp:tls:http2`), so an unfamiliar flow is identifiable without reopening the capture. |
+
+Everything else — DNS, HTTP request/response pairing, TLS SNI, flow aggregation, anomaly scoring — is produced by both engines, **under the same event-type names**, so a timeline filter or a detection rule behaves identically whichever engine ran. Every event also records which engine produced it in `raw_event_reference.engine`, because *"which dissector found this"* is a question a report has to answer months later.
 
 ### Entity extraction & correlation
 Eleven entity types — user, hostname, device, IP address, domain, URL, file, hash, process, port, network connection — each linked to the events it appears in. Entity IDs derive deterministically from type + normalized value, so the same real-world entity resolves to the same ID across every evidence source. **That is the mechanism that makes cross-source correlation work.**
@@ -331,10 +349,68 @@ Overview · Evidence *(upload + analyze)* · Timeline · Entities *(graph + inve
 ### Live capture
 Rotating pcap capture that auto-ingests each finished window through the **exact same pipeline** as a manually added file — including detection rules, so a match surfaces as an alert within one poll. That makes it a lightweight live-alerting mode with no separate "watch" step.
 
+Two backends, selected the same way the parser selects an engine:
+
+| Backend | Notes |
+|---|---|
+| `dumpcap` | Wireshark's capture engine, preferred when installed. Does the packet copying and the rotation itself, in C, using its own ring buffer — so no packet is lost at a window boundary the way a Python-side rotation can lose one. It is also the one small program Wireshark isolates capture privileges into. |
+| `scapy` | Pure-Python fallback. Every packet crosses into Python to be written, which is what limits it on a busy link. |
+
+With dumpcap present, `--list-interfaces` also shows Wireshark's human-readable interface descriptions — which is what makes a Windows `\Device\NPF_{GUID}` identifiable as a particular NIC.
+
 > Requires a packet-capture driver (Npcap / libpcap) and elevated privileges. This tool installs neither and grants neither.
 
 ### Case portability
 Export a whole case to one zip archive with a SHA-256 manifest of every file. Import verifies **every** file against that manifest before writing anything, so a tampered or corrupted archive is rejected outright rather than partially extracted.
+
+---
+
+## Wireshark integration
+
+Optional and auto-detected. Install Wireshark and NetForensicAI starts using it; don't, and every feature below simply isn't offered while the rest of the platform works unchanged. Nothing here installs, downloads, or elevates anything.
+
+`netforensic wireshark status` reports exactly what was found and which engines are live.
+
+### What it adds
+
+| | |
+|---|---|
+| **Dissection** | tshark's ~3000 protocol dissectors replace eight hand-written analyses — see [Network protocol analysis](#network-protocol-analysis). |
+| **Live capture** | dumpcap replaces the scapy sniffer — see [Live capture](#live-capture). |
+| **Display filters** | Wireshark's filter language, validated by tshark itself, both to narrow a parse and to carve evidentiary slices. |
+| **GUI pivot** | Open the capture behind any finding in Wireshark, pre-filtered to the exact packets that finding was drawn from. |
+
+### Display filters
+
+Filters can narrow ingestion, which is how a focused subset of a very large capture gets analyzed without carving it first:
+
+```bash
+netforensic parse --case INC-0001 --evidence EV-0001 --display-filter 'ip.addr == 10.0.0.5 && tcp.port == 445'
+```
+
+Or carve a slice, which is the *evidentiary* form. The slice is a real capture file, so it goes back through the normal evidence path — hashed, recorded against its parent and the exact filter that produced it, and analyzable on its own. That is what makes "I filtered the capture down to this" reproducible by someone else later, which a screenshot of a filtered GUI is not:
+
+```bash
+netforensic wireshark slice --case INC-0001 --evidence EV-0001 --display-filter 'dns.qry.name contains "evil"'
+```
+
+A filter that matches nothing writes nothing: an empty capture in the chain of custody would imply something was found. Asking for a display filter while the scapy engine is in use is an **error**, not a silent no-op — being handed every packet while believing you filtered is the worst possible outcome.
+
+### GUI pivot
+
+```bash
+netforensic wireshark open --case INC-0001 --event EVT-EV-0001-000042
+```
+
+The filter is derived from the event's own recorded frame numbers, so what opens is exactly the traffic behind the finding rather than something that merely resembles it. `--print` emits the command instead of launching, for use over SSH or in a report.
+
+The web UI deliberately **does not** launch the GUI. It returns the filter and the command for you to run: a browser page must not be able to spawn a desktop application on the machine running the server, and "it's bound to localhost" is a deployment detail, not a guarantee.
+
+### Discovery
+
+PATH first, then the standard install directories (including `C:\Program Files\Wireshark`, which the Windows installer does not add to PATH). Override with `NETFORENSIC_WIRESHARK_DIR`, or point at individual binaries with `NETFORENSIC_TSHARK` / `NETFORENSIC_DUMPCAP` / `NETFORENSIC_WIRESHARK`.
+
+Requesting a specific engine that isn't installed is an error rather than a silent fallback — an analyst who passed `--engine tshark` is asking for a reproducible dissection, and quietly substituting a different one would put results in a report that the command printed beside them cannot reproduce.
 
 ---
 
@@ -355,15 +431,24 @@ netforensic case import ./INC-0001.zip [--cases-dir other_cases]
 ```bash
 netforensic evidence add ./file --case INC-0001     # .pcap/.pcapng/.json/.csv/.evtx
 netforensic evidence list --case INC-0001
-netforensic parse --case INC-0001 --evidence EV-0001
+netforensic parse --case INC-0001 --evidence EV-0001 [--engine auto|tshark|scapy] [--display-filter '...']
 ```
 
 **Analysis**
 ```bash
 netforensic analyze --case INC-0001                 # parse + correlate + detect
+netforensic analyze --case INC-0001 --engine tshark # pin the dissection engine
 netforensic timeline build --case INC-0001
 netforensic timeline show  --case INC-0001 [--user ...] [--ip ...] [--type ...] [--evidence EV-0001]
 netforensic detections list --case INC-0001 [--severity high]
+```
+
+**Wireshark** *(only available when Wireshark is installed — see [Wireshark integration](#wireshark-integration))*
+```bash
+netforensic wireshark status                        # what was found, which engines are live
+netforensic wireshark check-filter 'tls.handshake.extensions_server_name contains "c2"'
+netforensic wireshark open  --case INC-0001 --event EVT-EV-0001-000042   # or --evidence EV-0001, + --print
+netforensic wireshark slice --case INC-0001 --evidence EV-0001 --display-filter 'dns'
 ```
 
 **Investigation**
@@ -394,6 +479,7 @@ netforensic attack update --case INC-0001 --technique T1059.001 --status confirm
 netforensic report generate --case INC-0001 --format markdown|json|html [--output PATH]
 netforensic capture --list-interfaces
 netforensic capture --case INC-0001 --interface "\Device\NPF_{...}" --filter "tcp port 443" --rotate-seconds 30
+netforensic capture --case INC-0001 --engine dumpcap|scapy   # default: auto
 netforensic web --cases-dir cases [--host 127.0.0.1] [--port 8000]
 netforensic scan ./capture.pcap [--vt-api KEY] [--save-files] [--no-dashboard]   # legacy standalone
 ```
@@ -412,6 +498,14 @@ Resolution order: **explicit flag → provider environment variable → saved co
 | Anthropic | `ANTHROPIC_API_KEY` |
 | OpenAI | `OPENAI_API_KEY` |
 | Gemini | `GEMINI_API_KEY` |
+
+Engine selection is a saved setting rather than a key, and follows **explicit flag → environment variable → saved config → `auto`**:
+
+| Setting | Environment variable | Values |
+|---|---|---|
+| pcap dissection engine | `NETFORENSIC_PCAP_ENGINE` | `auto`, `tshark`, `scapy` |
+| Live capture backend | `NETFORENSIC_CAPTURE_ENGINE` | `auto`, `dumpcap`, `scapy` |
+| Wireshark install directory | `NETFORENSIC_WIRESHARK_DIR` | a path |
 
 Saved keys live in `~/.netforensicai/config.json` (owner read/write where the OS enforces it) — deliberately **outside** the cases directory, so they can never be included in an exported case archive. The web API never returns a saved key to the browser; only whether it is set, and its last four characters.
 
@@ -462,6 +556,8 @@ Stated plainly, because a forensics tool that hides its weaknesses is worse than
 - **EVTX covers five Sysmon event types richly**, everything else generically.
 - **The custody hash chain** detects corruption and casual editing, not an attacker who owns the machine.
 - **Live capture needs Npcap/libpcap and elevated privileges**, which this tool does not install or grant.
+- **The two pcap engines do not produce identical output.** That is the point — tshark sees protocols the scapy engine cannot — but it means a case re-analyzed under a different engine will not have identical events. Each event records the engine that produced it, and `--engine` pins one when reproducibility matters.
+- **tshark object export runs as a second pass** over the capture. It keeps the streaming parse's memory profile intact, at the cost of reading the file twice when an output directory is given.
 
 ---
 
@@ -472,11 +568,11 @@ pip install -e ".[dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web]"
 pytest
 ```
 
-**433 tests**, run in CI against Python 3.9 and 3.12, plus a packaging check that installs the built wheel into a clean environment and confirms the web UI's assets are actually bundled.
+**486 tests**, run in CI against Python 3.9 and 3.12, plus a dedicated job that installs tshark so the Wireshark integration is genuinely exercised rather than skipped, and a packaging check that installs the built wheel into a clean environment and confirms the web UI's assets are actually bundled.
 
-The suite favours real fixtures over mocks: pcaps built with scapy, EVTX from hand-crafted XML matching the real schema, cases from `tmp_path`. Mocks are reserved for what genuinely cannot be exercised — external APIs and live packet capture.
+The suite favours real fixtures over mocks: pcaps built with scapy, EVTX from hand-crafted XML matching the real schema, cases from `tmp_path`, and real tshark invocations wherever Wireshark is present. Mocks are reserved for what genuinely cannot be exercised in CI — external APIs, and opening a live network interface.
 
-Several classes of bug were found only by running against real captures rather than synthetic ones — silently-dropped IPv6, HTTPS payloads skipped because scapy re-dissects them, DNS missed off port 53, a quadratic insert that made a 30 MB file take over 15 minutes. Each is now pinned by a regression test.
+Several classes of bug were found only by running against real evidence and real tooling rather than synthetic fixtures — silently-dropped IPv6, HTTPS payloads skipped because scapy re-dissects them, DNS missed off port 53, a quadratic insert that made a 30 MB file take over 15 minutes, and a live-capture counter that reported the session total in the per-window field. Each is now pinned by a regression test.
 
 ---
 
