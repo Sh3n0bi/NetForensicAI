@@ -442,6 +442,39 @@ def create_app(cases_dir="cases"):
             raise ApiError(str(e), 502)
         return jsonify(hypothesis.model_dump())
 
+    @app.route("/api/cases/<case_id>/chat", methods=["POST"])
+    def ai_chat(case_id):
+        """Ask a question about the case, with the assistant retrieving
+        evidence through read-only tools.
+
+        Every claim is checked against what those tools actually returned;
+        an answer citing anything else is refused by core/chat.py and
+        surfaced here as an error rather than as an answer with a caveat.
+        A 502 is the right shape for that: the provider produced something
+        unusable, and there is no partial result worth showing.
+        """
+        case = _load_case(case_id)
+        payload = request.get_json(force=True, silent=True) or {}
+        question = (payload.get("question") or "").strip()
+        if not question:
+            raise ApiError("question is required")
+
+        from netforensicai.core import chat as chat_module
+
+        try:
+            result = chat_module.ask(
+                question,
+                _case_dir(case),
+                provider=payload.get("provider") or "anthropic",
+                api_key=payload.get("api_key"),
+                model=payload.get("model") or None,
+                base_url=payload.get("base_url") or None,
+                max_steps=int(payload.get("max_steps") or chat_module.MAX_STEPS),
+            )
+        except chat_module.ChatError as e:
+            raise ApiError(str(e), 502)
+        return jsonify(result.to_dict())
+
     # --- findings ---
     # Creating/updating a finding remains an explicit, investigator-owned
     # action (see core/finding.py's module docstring) - the web UI is a

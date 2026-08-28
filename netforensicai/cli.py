@@ -23,6 +23,7 @@ DEFAULT_CASES_DIR = "cases"
 SEARCH_DEFAULT_MAX_HITS = 200
 STREAM_DEFAULT_MAX_BYTES = 64 * 1024
 CTF_DEFAULT_MAX_HITS = 50
+CHAT_DEFAULT_MAX_STEPS = 8
 
 app = typer.Typer(
     name="netforensic",
@@ -1446,6 +1447,101 @@ def stream_follow(
         typer.echo(turn.text)
     if followed.truncated:
         typer.echo(f"\n(truncated at --max-bytes {max_bytes})")
+
+
+@app.command("chat")
+def chat_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID to ask about"),
+    question: str = typer.Argument(None, help="Your question (omit for an interactive session)"),
+    provider: str = typer.Option("anthropic", "--ai-provider", help="anthropic, openai, ollama, or gemini"),
+    ai_model: str = typer.Option(None, "--model", help="Override the provider's default model"),
+    api_key: str = typer.Option(None, "--api-key", help="API key (falls back to env var, then saved config)"),
+    base_url: str = typer.Option(None, "--ollama-url", help="Ollama base URL"),
+    max_steps: int = typer.Option(
+        CHAT_DEFAULT_MAX_STEPS, "--max-steps", help="Tool calls allowed before the model must answer"
+    ),
+    show_steps: bool = typer.Option(True, "--steps/--no-steps", help="Show which tools were called"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Ask a question about a case. The assistant retrieves evidence itself.
+
+    Every claim in the answer is checked against what its tools actually
+    returned. An answer citing anything else is refused outright rather
+    than shown with a caveat - see core/chat.py.
+
+    Optional and explicitly invoked, like every AI feature here: nothing
+    calls a provider unless you run this.
+    """
+    from netforensicai.core import chat as chat_module
+    from netforensicai.core.case import CaseError, CaseManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+
+    def answer_one(text):
+        try:
+            result = chat_module.ask(
+                text,
+                case_dir,
+                provider=provider,
+                api_key=api_key,
+                model=ai_model,
+                base_url=base_url,
+                max_steps=max_steps,
+            )
+        except chat_module.ChatError as e:
+            typer.echo(f"Error: {e}", err=True)
+            return False
+
+        if show_steps and result.steps:
+            typer.echo("\nRetrieved:")
+            for step in result.steps:
+                detail = step.error or step.summary
+                typer.echo(f"  {step.tool}({_compact(step.arguments)}) -> {detail}")
+
+        typer.echo(f"\n{result.answer}")
+        if not result.evidence_sufficient:
+            typer.echo("\n  (the assistant judged the available evidence insufficient)")
+        if result.citations:
+            typer.echo("\nCited evidence:")
+            for citation in result.citations:
+                typer.echo(f"  {citation.kind:<10} {citation.evidence_id}  {citation.reference}")
+        else:
+            typer.echo("\n  (no evidence cited)")
+        return True
+
+    if question:
+        if not answer_one(question):
+            raise typer.Exit(code=1)
+        return
+
+    typer.echo(f"Chat about {case.case_id} ({case.name}). Ctrl+C or an empty line to finish.")
+    while True:
+        try:
+            text = typer.prompt("\n?", default="", show_default=False)
+        except (KeyboardInterrupt, EOFError):
+            typer.echo("")
+            return
+        if not text.strip():
+            return
+        answer_one(text)
+
+
+def _compact(arguments):
+    if not arguments:
+        return ""
+    return ", ".join(f"{key}={value!r}" for key, value in arguments.items())
 
 
 ctf_app = typer.Typer(
