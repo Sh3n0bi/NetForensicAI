@@ -1379,6 +1379,29 @@ async function renderCapture(app, c) {
     }
     statusPanel.appendChild(stats);
 
+    // Name the interface actually being captured. When none was chosen it is
+    // the backend's own pick, which is frequently a virtual or disconnected
+    // adapter - and a capture on the wrong one looks exactly like a quiet
+    // network unless the name and the empty-window streak are both visible.
+    if (snap.capturing_on) {
+      statusPanel.appendChild(
+        el("div", {
+          style: "margin-top:8px;font-size:12px;opacity:0.75;",
+          text: "Capturing on: " + snap.capturing_on + (snap.engine ? " (" + snap.engine + " engine)" : ""),
+        })
+      );
+    }
+    if (snap.consecutive_empty_windows >= 3) {
+      statusPanel.appendChild(
+        el("div", {
+          style: "margin-top:8px;color:#e0a030;",
+          text:
+            snap.consecutive_empty_windows +
+            " consecutive windows captured no packets. If traffic is expected, the interface is probably wrong.",
+        })
+      );
+    }
+
     const protoEntries = Object.entries(snap.window_protocols || {});
     if (protoEntries.length) {
       const protoBox = el("div", { style: "margin-top:12px;" });

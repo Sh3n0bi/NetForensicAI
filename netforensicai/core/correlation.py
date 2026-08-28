@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIME_WINDOW_SECONDS = 300
 DEFAULT_MAX_PAIRS = 50_000
 
+# Bounds CPU, not output. Deliberately far larger than DEFAULT_MAX_PAIRS:
+# the link budget decides what is worth *keeping*, this only stops a
+# pathologically dense case from pairing forever.
+DEFAULT_MAX_SCANNED_PAIRS = 2_000_000
+
 RELATED = "related"
 POSSIBLE_RELATIONSHIP = "possible_relationship"
 
@@ -55,7 +60,7 @@ def _link_id(event_id_a, event_id_b, relationship_type):
     return f"LINK-{digest[:16]}"
 
 
-def _find_time_window_pairs(sorted_events, window_seconds, max_pairs):
+def _find_time_window_pairs(sorted_events, window_seconds, max_scanned_pairs=DEFAULT_MAX_SCANNED_PAIRS):
     """Yield (event_a, event_b, delta_seconds) for every pair of
     chronologically-sorted, timestamped events within window_seconds of
     each other. a always precedes or is concurrent with b.
@@ -67,27 +72,34 @@ def _find_time_window_pairs(sorted_events, window_seconds, max_pairs):
     window, not of the size of the case.
 
     O(n + pairs_found) rather than O(n^2): events leaving the window are
-    discarded, so the inner loop only ever visits genuine candidates. Capped
-    at max_pairs as a safety net for pathological cases (e.g. thousands of
-    events sharing near-identical timestamps), which would otherwise still
-    degrade toward O(n^2) since that many pairs genuinely are within the
-    window.
+    discarded, so the inner loop only ever visits genuine candidates.
+
+    Candidates for each event are yielded MOST RECENT PREDECESSOR FIRST.
+    That ordering is what lets correlate_case spend a limited link budget
+    on the temporally closest pairs - the ones most likely to mean
+    anything - instead of on whichever pairs happened to come first.
+
+    max_scanned_pairs bounds CPU only, and is deliberately far larger than
+    any link budget. Choosing which pairs survive is the caller's job:
+    stopping here truncates strictly chronologically, which on a growing
+    case silently discards the newest events - exactly the ones an analyst
+    running a live capture is watching for.
     """
     window = deque()
-    emitted = 0
+    scanned = 0
     for b in sorted_events:
         # Events too old to pair with anything from here on are dropped;
         # the input is sorted, so this can never discard a future match.
         while window and (b.timestamp - window[0].timestamp).total_seconds() > window_seconds:
             window.popleft()
-        for a in window:
+        for a in reversed(window):
             yield a, b, (b.timestamp - a.timestamp).total_seconds()
-            emitted += 1
-            if emitted >= max_pairs:
+            scanned += 1
+            if scanned >= max_scanned_pairs:
                 logger.warning(
-                    f"Correlation pair limit ({max_pairs}) reached; some possible "
-                    "time-window correlations were not computed. Consider a smaller "
-                    "time window for this case."
+                    f"Correlation stopped after scanning {max_scanned_pairs:,} candidate pairs. "
+                    "The case is dense enough that time-proximity pairing over this window is "
+                    "not informative - use a shorter --time-window."
                 )
                 return
         window.append(b)
@@ -103,13 +115,31 @@ def _shared_entity(event_id_a, event_id_b, entities_by_event):
     return None
 
 
-def correlate_case(store, time_window_seconds=DEFAULT_TIME_WINDOW_SECONDS, max_pairs=DEFAULT_MAX_PAIRS):
+def correlate_case(
+    store,
+    time_window_seconds=DEFAULT_TIME_WINDOW_SECONDS,
+    max_pairs=DEFAULT_MAX_PAIRS,
+    include_possible=True,
+):
     """Recompute every correlation_links row for the whole case in `store`.
 
     Always a full rebuild, never an incremental update: correlation crosses
     evidence-item boundaries by design, so there's no single evidence_id to
     scope an incremental recompute to, and a full rebuild is simple,
     correct, and cheap enough at this data scale to just always do.
+
+    THE LINK BUDGET IS SPENT ON SIGNAL FIRST. `related` links - a shared
+    entity plus time proximity, the strongest thing this engine produces -
+    are never dropped in favour of `possible_relationship` links, which are
+    temporal proximity alone and explicitly weak. On a busy capture almost
+    every pair within the window shares no entity, so a single undifferen-
+    tiated budget is spent almost entirely on the weak tier while the
+    shared-entity links an investigation actually turns on get crowded out.
+
+    include_possible=False drops the weak tier entirely. That is the right
+    setting for a dense source such as live capture, where "these two
+    packets happened within five minutes of each other" is true of
+    essentially every pair and therefore says nothing.
 
     Returns the list of link dicts that were written.
     """
@@ -121,7 +151,9 @@ def correlate_case(store, time_window_seconds=DEFAULT_TIME_WINDOW_SECONDS, max_p
     entities_by_event = store.entity_ids_by_event()
 
     links = []
-    for a, b, delta in _find_time_window_pairs(events, time_window_seconds, max_pairs):
+    possible_links = []
+    dropped_possible = 0
+    for a, b, delta in _find_time_window_pairs(events, time_window_seconds):
         shared = _shared_entity(a.event_id, b.event_id, entities_by_event)
         if shared:
             entity_id, entity_type, entity_value = shared
@@ -131,6 +163,8 @@ def correlate_case(store, time_window_seconds=DEFAULT_TIME_WINDOW_SECONDS, max_p
                 f"{time_window_seconds}s of each other"
             )
         else:
+            if not include_possible:
+                continue
             entity_id = entity_type = entity_value = None
             relationship_type = POSSIBLE_RELATIONSHIP
             basis = (
@@ -138,7 +172,36 @@ def correlate_case(store, time_window_seconds=DEFAULT_TIME_WINDOW_SECONDS, max_p
                 "entity - temporal proximity only, not a confirmed relationship"
             )
 
-        links.append(
+        if relationship_type == RELATED:
+            if len(links) >= max_pairs:
+                # Strong links alone have filled the budget. Stopping here
+                # still truncates chronologically, but only once there is
+                # genuinely more strong signal than the case can hold -
+                # which is a real "this case is too dense" signal rather
+                # than an artefact of weak links getting there first.
+                logger.warning(
+                    f"Correlation reached its link budget ({max_pairs:,}) on shared-entity "
+                    "links alone; later events were not correlated. Use a shorter "
+                    "--time-window."
+                )
+                break
+            if len(links) + len(possible_links) >= max_pairs and possible_links:
+                # A strong link DISPLACES a weak one rather than being
+                # queued behind it. Without this the budget silently
+                # overshoots, and worse, whether a shared-entity link
+                # survives would depend on how much temporal noise happened
+                # to precede it.
+                possible_links.pop()
+                dropped_possible += 1
+        elif len(links) + len(possible_links) >= max_pairs:
+            # Weak links only ever use budget left over by strong ones, and
+            # are counted rather than silently discarded so the caller can
+            # say how much temporal noise was suppressed.
+            dropped_possible += 1
+            continue
+
+        target = links if relationship_type == RELATED else possible_links
+        target.append(
             {
                 "link_id": _link_id(a.event_id, b.event_id, relationship_type),
                 "event_id_a": a.event_id,
@@ -153,5 +216,15 @@ def correlate_case(store, time_window_seconds=DEFAULT_TIME_WINDOW_SECONDS, max_p
             }
         )
 
+    if dropped_possible:
+        logger.info(
+            f"Kept {len(links):,} shared-entity link(s) and {len(possible_links):,} "
+            f"time-proximity link(s); {dropped_possible:,} further time-proximity pair(s) "
+            "were suppressed once the budget was full. No shared-entity link was dropped."
+        )
+
+    # Weak links are appended after strong ones so that a truncated budget
+    # can never have cost a shared-entity link.
+    links.extend(possible_links)
     store.replace_correlation_links(links)
     return links

@@ -88,6 +88,18 @@ DUMPCAP_STOP_TIMEOUT_SECONDS = 10
 # rotation file itself once it is complete.
 _DUMPCAP_PROGRESS = re.compile(r"Packets(?: captured)?:\s*(\d+)")
 
+# dumpcap announces the interface it actually opened, e.g.
+# "Capturing on 'Wi-Fi'". Worth capturing because when no --interface is
+# given, dumpcap picks one itself, and its choice is frequently a virtual
+# or disconnected adapter that yields nothing - a silent failure that
+# looks exactly like a quiet network.
+_DUMPCAP_INTERFACE = re.compile(r"Capturing on '([^']+)'")
+
+# Consecutive empty rotations before saying the interface is probably
+# wrong. One empty window is ordinary on a quiet link; several in a row on
+# a link that should have traffic means the wrong adapter was selected.
+EMPTY_WINDOWS_BEFORE_WARNING = 3
+
 
 class CaptureError(Exception):
     """Raised for capture setup/control failures: bad interface, no driver, already running."""
@@ -255,7 +267,19 @@ class CaptureSession:
             if error:
                 self._record_event({"evidence_id": evidence.evidence_id, "error": error})
                 return
-            correlate_case(store)
+            # Live capture is the densest source this platform has, and the
+            # two defaults that suit a static evidence file are actively
+            # wrong here. A 300-second window over a busy link puts nearly
+            # every event within reach of every other, and almost none of
+            # those pairs share an entity - so the weak `possible_relation-
+            # ship` tier alone can exhaust the link budget every rotation
+            # while saying nothing. Correlate over the rotation period and
+            # keep shared-entity links only.
+            correlate_case(
+                store,
+                time_window_seconds=max(self.rotate_seconds, 1),
+                include_possible=False,
+            )
             # Bundled detection rules (core/detections.py) run automatically
             # here too, same as `analyze` - a full case rescan each window,
             # filtered down to just this window's evidence so the live feed
@@ -292,6 +316,12 @@ class CaptureSession:
                 "running": self._running,
                 "engine": self.engine,
                 "interface": self.interface,
+                # What is actually being captured, which differs from
+                # `interface` whenever none was requested and the backend
+                # picked one. The UI shows this so a capture on the wrong
+                # adapter is visible rather than silently empty.
+                "capturing_on": getattr(self, "_capturing_on", None) or self.interface,
+                "consecutive_empty_windows": getattr(self, "_consecutive_empty_windows", 0),
                 "filter": self.bpf_filter,
                 "rotate_seconds": self.rotate_seconds,
                 "started_at": self._started_at.isoformat() if self._started_at else None,
@@ -337,6 +367,10 @@ class DumpcapCaptureSession(CaptureSession):
         # for the whole session, not per-file - see _refresh_counts.
         self._rotated_packet_count = 0
         self._live_packet_count = 0
+        # The interface dumpcap actually opened, which is only the same as
+        # self.interface when one was explicitly requested.
+        self._capturing_on = None
+        self._consecutive_empty_windows = 0
 
     def start(self):
         from netforensicai.integrations import wireshark
@@ -454,8 +488,10 @@ class DumpcapCaptureSession(CaptureSession):
                 # of anything, and ingesting it would fill the case with
                 # empty evidence items.
                 path.unlink(missing_ok=True)
+                self._note_empty_window()
                 continue
             with self._lock:
+                self._consecutive_empty_windows = 0
                 self._rotation_index += 1
                 self._rotated_packet_count += packet_count
                 self._window_started_at = time.time()
@@ -463,6 +499,30 @@ class DumpcapCaptureSession(CaptureSession):
             # _ingest deletes the file when it is done with it, and runs on
             # its own thread so a slow parse never stalls the sweep.
             threading.Thread(target=self._ingest, args=(path, packet_count), daemon=True).start()
+
+    def _note_empty_window(self):
+        """Surface the failure mode that looks exactly like success.
+
+        A capture on the wrong adapter runs happily forever and produces
+        nothing, which is indistinguishable from a genuinely idle link
+        unless someone says so. Reported once, on crossing the threshold,
+        rather than every rotation - a quiet link should not become a log
+        firehose.
+        """
+        with self._lock:
+            self._consecutive_empty_windows += 1
+            count = self._consecutive_empty_windows
+            interface = self._capturing_on or self.interface or "(dumpcap's default)"
+        if count != EMPTY_WINDOWS_BEFORE_WARNING:
+            return
+        detail = f" and capture filter '{self.bpf_filter}'" if self.bpf_filter else ""
+        message = (
+            f"{count} consecutive capture windows on interface '{interface}'{detail} "
+            "contained no packets. If traffic is expected, the interface is probably "
+            "wrong - stop the capture and check `netforensic capture --list-interfaces`."
+        )
+        logger.warning(message)
+        self._record_event({"warning": message})
 
     @staticmethod
     def _count_packets(path):
@@ -511,6 +571,22 @@ class DumpcapCaptureSession(CaptureSession):
                     with self._lock:
                         self._live_packet_count = int(match.group(1))
                         self._refresh_counts()
+                    continue
+                opened = _DUMPCAP_INTERFACE.search(line)
+                if opened:
+                    with self._lock:
+                        self._capturing_on = opened.group(1)
+                    if not self.interface:
+                        # No interface was requested, so dumpcap chose. Say
+                        # which one out loud: its default is often a virtual
+                        # or disconnected adapter, and a capture that yields
+                        # nothing because of that is indistinguishable from a
+                        # quiet network unless the name is visible.
+                        logger.info(
+                            f"No interface requested; dumpcap selected '{opened.group(1)}'. "
+                            "If that is not the link you meant to capture, stop and pass "
+                            "--interface (see --list-interfaces)."
+                        )
                 elif line.strip():
                     logger.debug(f"dumpcap: {line.strip()}")
         except Exception:
