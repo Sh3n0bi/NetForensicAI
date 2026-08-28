@@ -794,4 +794,8 @@ class PcapParser(base.BaseParser):
         logger.info(f"Parsed {collector.packet_count:,} packets into {emitted:,} events")
 
 
-base.register(PcapParser())
+# NOT registered here. parsers/pcap_engine.py owns the "pcap" registration
+# and picks between this engine and the tshark one at parse time - see the
+# module docstring there for why the choice has to live in one place. This
+# module stays directly importable and directly usable (tests do exactly
+# that) so the scapy engine can always be exercised on its own.

@@ -12,7 +12,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 _KNOWN_PARSER_MODULES = (
-    "netforensicai.parsers.pcap",
+    # pcap_engine registers for "pcap" and imports neither dissection
+    # engine at module scope, so pcap support is discovered whenever
+    # *either* scapy or tshark is present. Listing parsers.pcap here
+    # instead would make scapy's absence remove pcap support entirely,
+    # even on a machine with Wireshark installed.
+    "netforensicai.parsers.pcap_engine",
     "netforensicai.parsers.generic",
     "netforensicai.parsers.evtx",
 )

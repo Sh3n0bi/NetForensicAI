@@ -47,6 +47,10 @@ PLAIN_KEYS = {
     "ai_provider": "anthropic",
     "ai_model": "",
     "ollama_base_url": "",
+    # Which pcap dissection engine to use: "auto" (tshark when Wireshark
+    # is installed, otherwise scapy), "tshark", or "scapy". See
+    # parsers/pcap_engine.py.
+    "pcap_engine": "auto",
 }
 
 

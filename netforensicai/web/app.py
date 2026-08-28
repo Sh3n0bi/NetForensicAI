@@ -190,12 +190,22 @@ def create_app(cases_dir="cases"):
         from netforensicai.core.detections import scan_case as scan_detections
         from netforensicai.core.pipeline import parse_evidence_item
 
+        payload = request.get_json(force=True, silent=True) or {}
+        # Same knobs as `netforensic analyze --engine ...`. Threaded
+        # through parse_evidence_item rather than applied here so a case
+        # analyzed from the web UI records the identical audit detail as
+        # one analyzed from the CLI.
+        parse_options = {
+            "engine": payload.get("engine") or None,
+            "display_filter": payload.get("display_filter") or None,
+        }
+
         items = EvidenceManager(_case_dir(case)).list()
         results = []
         with locked_store(_case_dir(case)) as store:
             for evidence in items:
                 event_count, entity_count, error = parse_evidence_item(
-                    evidence, _case_dir(case), case_manager, case.case_id, store
+                    evidence, _case_dir(case), case_manager, case.case_id, store, parse_options
                 )
                 results.append(
                     {
@@ -588,6 +598,7 @@ def create_app(cases_dir="cases"):
                 interface=payload.get("interface") or None,
                 bpf_filter=payload.get("filter") or None,
                 rotate_seconds=rotate_seconds,
+                engine=payload.get("engine") or None,
             )
         except capture_module.CaptureError as e:
             status = 409 if "already running" in str(e) else 400
@@ -604,5 +615,138 @@ def create_app(cases_dir="cases"):
         except capture_module.CaptureError as e:
             raise ApiError(str(e), 404)
         return jsonify({"stopped": True})
+
+    # --- Wireshark integration ---
+    #
+    # The GUI pivot is deliberately NOT a "launch Wireshark" endpoint. The
+    # web UI is served over HTTP and a browser page must not be able to
+    # spawn a desktop application on the machine running the server - that
+    # is a remote-process-launch primitive, and the fact that this server
+    # is normally bound to localhost is a deployment detail, not a
+    # guarantee. So this returns the display filter and the exact command,
+    # and the analyst runs it (or uses `netforensic wireshark open`, where
+    # the intent to launch is unambiguous because they typed it).
+
+    @app.route("/api/wireshark/status")
+    def wireshark_status():
+        from netforensicai.integrations import wireshark
+        from netforensicai.parsers import pcap_engine
+
+        info = wireshark.status()
+        info["parse_engine"] = pcap_engine.engine_status()
+        return jsonify(info)
+
+    @app.route("/api/wireshark/check-filter", methods=["POST"])
+    def wireshark_check_filter():
+        from netforensicai.integrations import wireshark
+
+        payload = request.get_json(force=True, silent=True) or {}
+        display_filter = (payload.get("display_filter") or "").strip()
+        if not display_filter:
+            raise ApiError("display_filter is required.")
+        valid, error = wireshark.validate_display_filter(display_filter)
+        return jsonify({"valid": valid, "error": error})
+
+    @app.route("/api/cases/<case_id>/events/<event_id>/wireshark")
+    def wireshark_pivot(case_id, event_id):
+        """The display filter and command that isolate one event's packets."""
+        case = _load_case(case_id)
+        from netforensicai.integrations import wireshark
+
+        with locked_store(_case_dir(case)) as store:
+            event = store.get_event(event_id)
+        if event is None:
+            raise ApiError(f"No event {event_id} in {case.case_id}.", 404)
+
+        evidence_manager = EvidenceManager(_case_dir(case))
+        try:
+            evidence = evidence_manager.load(event.evidence_id)
+        except EvidenceError as e:
+            raise ApiError(str(e), 404)
+        if evidence.evidence_type != "pcap":
+            raise ApiError(
+                f"{event_id} came from {evidence.evidence_type} evidence, which has no packets to open.",
+                400,
+            )
+
+        stored_path = evidence_manager.stored_file_path(evidence.evidence_id)
+        display_filter = wireshark.filter_for_event(event)
+        return jsonify(
+            {
+                "event_id": event_id,
+                "evidence_id": evidence.evidence_id,
+                "display_filter": display_filter,
+                "command": wireshark.gui_command(stored_path, display_filter),
+                "gui_available": wireshark.gui_path() is not None,
+            }
+        )
+
+    @app.route("/api/cases/<case_id>/evidence/<evidence_id>/slice", methods=["POST"])
+    def wireshark_slice(case_id, evidence_id):
+        """Carve the packets matching a display filter into a new, hashed
+        evidence item.
+
+        Adding the slice back as evidence rather than streaming it to the
+        browser is the point: a filtered view someone screenshotted is not
+        reproducible, and a hashed capture recorded against its parent
+        filter is.
+        """
+        case = _load_case(case_id)
+        from netforensicai.core import audit
+        from netforensicai.integrations import wireshark
+
+        payload = request.get_json(force=True, silent=True) or {}
+        display_filter = (payload.get("display_filter") or "").strip()
+        if not display_filter:
+            raise ApiError("display_filter is required.")
+
+        evidence_manager = EvidenceManager(_case_dir(case))
+        try:
+            evidence = evidence_manager.load(evidence_id)
+        except EvidenceError as e:
+            raise ApiError(str(e), 404)
+        if evidence.evidence_type != "pcap":
+            raise ApiError(f"{evidence_id} is {evidence.evidence_type} evidence, not a capture file.")
+
+        stored_path = evidence_manager.stored_file_path(evidence.evidence_id)
+        staging_dir = Path(tempfile.mkdtemp(prefix="netforensic_slice_"))
+        try:
+            try:
+                slice_path, packet_count = wireshark.extract_slice(
+                    stored_path, display_filter, staging_dir / f"{evidence.evidence_id}-slice.pcap"
+                )
+            except wireshark.WiresharkError as e:
+                raise ApiError(str(e))
+
+            if packet_count == 0:
+                # A valid answer to the filter, but adding an empty capture
+                # to the chain of custody would imply something was found.
+                return jsonify({"packet_count": 0, "evidence_id": None, "display_filter": display_filter})
+
+            try:
+                new_evidence = evidence_manager.add(slice_path, case_id=case.case_id)
+            except EvidenceError as e:
+                raise ApiError(str(e))
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+        case_manager.register_evidence(case.case_id, new_evidence.evidence_id)
+        audit.record(
+            _case_dir(case),
+            audit.EVIDENCE_SLICED,
+            {
+                "evidence_id": new_evidence.evidence_id,
+                "derived_from": evidence.evidence_id,
+                "display_filter": display_filter,
+                "packet_count": packet_count,
+            },
+        )
+        return jsonify(
+            {
+                "packet_count": packet_count,
+                "evidence_id": new_evidence.evidence_id,
+                "display_filter": display_filter,
+            }
+        ), 201
 
     return app

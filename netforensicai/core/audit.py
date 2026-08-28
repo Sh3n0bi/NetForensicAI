@@ -43,6 +43,11 @@ GENESIS_HASH = "0" * 64
 CASE_CREATED = "case.created"
 EVIDENCE_ADDED = "evidence.added"
 EVIDENCE_PARSED = "evidence.parsed"
+# A capture carved out of another capture by a Wireshark display
+# filter. Recorded separately from evidence.added because a derived
+# artifact has to name its parent and the exact filter that produced
+# it, or it cannot be reproduced from the original.
+EVIDENCE_SLICED = "evidence.sliced"
 CASE_ANALYZED = "case.analyzed"
 FINDING_CREATED = "finding.created"
 FINDING_UPDATED = "finding.updated"

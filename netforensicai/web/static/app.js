@@ -1339,7 +1339,15 @@ async function renderCapture(app, c) {
   apiGet("/interfaces")
     .then((interfaces) => {
       interfaceSelect.innerHTML = interfaces.length
-        ? interfaces.map((i) => `<option value="${escapeHtml(i)}">${escapeHtml(i)}</option>`).join("")
+        ? interfaces
+            .map((i) => {
+              // dumpcap supplies a human description; scapy does not.
+              // Showing it is what makes a Windows \\Device\\NPF_{GUID}
+              // identifiable as a particular NIC.
+              const label = i.description ? `${i.name} (${i.description})` : i.name;
+              return `<option value="${escapeHtml(i.name)}">${escapeHtml(label)}</option>`;
+            })
+            .join("")
         : '<option value="">(none found)</option>';
     })
     .catch((e) => {

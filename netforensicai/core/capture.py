@@ -1,13 +1,29 @@
 """Live packet capture with rotating pcap files, auto-ingested into the
 case's evidence pipeline as each rotation completes.
 
-Requires the [pcap] extra (scapy) AND, unlike file parsing, a working
-packet-capture driver (Npcap on Windows, libpcap on Linux/macOS) plus
-elevated privileges to open a network interface - none of which this
-module installs or grants. If the underlying sniffer can't actually
-capture in the current environment, start() raises CaptureError; that's
-the same "explicit, investigator-run, tool doesn't grant itself
-privileges" posture as the AI assistant needing its own API key.
+Two capture backends, picked the same way the pcap parser picks a
+dissection engine - whichever the machine can actually offer:
+
+  dumpcap   Wireshark's capture engine. Preferred when installed. It does
+            the packet copying and the file rotation itself, in C, with a
+            small privileged footprint - it is the program Wireshark and
+            tshark both shell out to precisely so that the large GUI and
+            the large dissector library never need capture privileges.
+            Rotation is handled by dumpcap's own ring buffer, so no packet
+            is lost at a window boundary the way a Python-side rotation
+            can lose one.
+
+  scapy     The pure-Python fallback, used when Wireshark is not
+            installed. Every packet crosses into Python to be written,
+            which is what limits it on a busy link.
+
+Either way this needs a working packet-capture driver (Npcap on Windows,
+libpcap on Linux/macOS) plus elevated privileges to open a network
+interface - none of which this module installs or grants. If the
+underlying capture can't actually run in the current environment, start()
+raises CaptureError; that's the same "explicit, investigator-run, tool
+doesn't grant itself privileges" posture as the AI assistant needing its
+own API key.
 
 Each rotation window's packets are written to a staging pcap file, then
 ingested through the exact same pipeline `netforensic evidence add` +
@@ -26,6 +42,8 @@ or extra opt-in needed, since detection scanning is already automatic.
 """
 
 import logging
+import re
+import subprocess
 import tempfile
 import threading
 import time
@@ -38,12 +56,56 @@ logger = logging.getLogger(__name__)
 DEFAULT_ROTATE_SECONDS = 30
 MAX_RECENT_EVENTS = 50
 
+ENGINE_AUTO = "auto"
+ENGINE_DUMPCAP = "dumpcap"
+ENGINE_SCAPY = "scapy"
+VALID_CAPTURE_ENGINES = (ENGINE_AUTO, ENGINE_DUMPCAP, ENGINE_SCAPY)
+
+# Overrides the backend without threading an argument through every
+# caller - the same escape hatch NETFORENSIC_PCAP_ENGINE gives the parser,
+# and for the same reason: whether a machine happens to have Wireshark
+# installed must not be able to silently change which code path runs.
+CAPTURE_ENGINE_ENV = "NETFORENSIC_CAPTURE_ENGINE"
+
+# How often the dumpcap backend looks for a finished rotation file. Well
+# under any sane rotate_seconds, so a completed window is picked up
+# promptly, but not so tight that idle polling shows up in a profile.
+DUMPCAP_POLL_SECONDS = 1.0
+
+# How long to let dumpcap run before deciding it started successfully. It
+# fails fast - a bad interface or missing privileges kills it immediately -
+# so this only has to outlast process spawn, and reporting dumpcap's own
+# error beats reporting a generic failure much later.
+DUMPCAP_STARTUP_GRACE_SECONDS = 0.4
+
+# Grace period for dumpcap to flush and close its current file on stop
+# before it is killed. A kill here would truncate the final window.
+DUMPCAP_STOP_TIMEOUT_SECONDS = 10
+
+# dumpcap reports progress on stderr as "Packets captured: N" (and, on
+# some platforms, a bare "Packets: N"). Parsed only to drive the live
+# counter in the UI - the authoritative per-window count comes from the
+# rotation file itself once it is complete.
+_DUMPCAP_PROGRESS = re.compile(r"Packets(?: captured)?:\s*(\d+)")
+
 
 class CaptureError(Exception):
     """Raised for capture setup/control failures: bad interface, no driver, already running."""
 
 
 class CaptureSession:
+    """The scapy capture backend, and the shared session machinery.
+
+    Everything after start()/stop() - staging, per-window ingestion into
+    the case, detection scanning, the status snapshot - is backend-
+    independent, so DumpcapCaptureSession inherits it and replaces only
+    how packets reach a rotation file. Keeping ingestion in one place is
+    what guarantees a window captured by dumpcap becomes exactly the same
+    kind of hashed, traceable evidence as one captured by scapy.
+    """
+
+    engine = ENGINE_SCAPY
+
     def __init__(self, case_id, case_dir, case_manager, interface=None, bpf_filter=None, rotate_seconds=DEFAULT_ROTATE_SECONDS):
         self.case_id = case_id
         self.case_dir = Path(case_dir)
@@ -228,6 +290,7 @@ class CaptureSession:
             window_elapsed = time.time() - self._window_started_at if self._window_started_at else 0
             return {
                 "running": self._running,
+                "engine": self.engine,
                 "interface": self.interface,
                 "filter": self.bpf_filter,
                 "rotate_seconds": self.rotate_seconds,
@@ -240,6 +303,193 @@ class CaptureSession:
                 "window_elapsed_seconds": window_elapsed,
                 "recent_events": list(self.recent_events),
             }
+
+
+class DumpcapCaptureSession(CaptureSession):
+    """Live capture backed by dumpcap, Wireshark's own capture engine.
+
+    dumpcap does the packet copying and the rotation in C: `-b duration:N`
+    tells it to start a new file every N seconds, and it names each one
+    <base>_NNNNN_YYYYMMDDHHMMSS.pcap. This process never touches a packet
+    on the capture path at all - it watches the staging directory and
+    hands each *finished* file to the same ingestion the scapy backend
+    uses.
+
+    That division matters for evidence quality, not just throughput. A
+    Python-side rotation has to stop writing, close the file and reopen a
+    new one while packets keep arriving, so packets can be dropped at
+    every window boundary; dumpcap's ring buffer switches files without
+    that gap. It is also the smaller privileged surface: dumpcap is the
+    one small program Wireshark itself isolates capture privileges into.
+    """
+
+    engine = ENGINE_DUMPCAP
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._process = None
+        self._watcher = None
+        self._stderr_reader = None
+        self._ingested = set()
+
+    def start(self):
+        from netforensicai.integrations import wireshark
+
+        with self._lock:
+            if self._running:
+                raise CaptureError("Capture is already running for this case.")
+            binary = wireshark.dumpcap_path()
+            if binary is None:
+                raise CaptureError(
+                    "dumpcap was not found - install Wireshark, or use the scapy engine."
+                )
+
+            # -w gives the rotation base name; dumpcap appends its own
+            # index and timestamp to each file it actually writes.
+            self._current_file = self._staging_dir / "window.pcap"
+            argv = [
+                binary,
+                "-w",
+                str(self._current_file),
+                "-b",
+                f"duration:{int(self.rotate_seconds)}",
+            ]
+            if self.interface:
+                argv += ["-i", str(self.interface)]
+            if self.bpf_filter:
+                # A capture (BPF) filter, not a display filter: dumpcap has
+                # no dissectors, so this is the same -f syntax the existing
+                # scapy backend already takes.
+                argv += ["-f", self.bpf_filter]
+
+            try:
+                self._process = subprocess.Popen(
+                    argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except OSError as e:
+                raise CaptureError(f"Failed to launch dumpcap: {e}") from e
+
+            # dumpcap exits almost immediately when the interface is bad or
+            # privileges are missing. Give it that moment and surface its
+            # own message, which names the actual problem far better than a
+            # generic "capture failed" would.
+            time.sleep(DUMPCAP_STARTUP_GRACE_SECONDS)
+            if self._process.poll() is not None:
+                detail = (self._process.stderr.read() or "").strip().splitlines()
+                raise CaptureError(
+                    f"dumpcap exited immediately: {detail[-1] if detail else 'no output'}. "
+                    "Live capture needs a packet-capture driver (Npcap on Windows, libpcap "
+                    "on Linux/macOS) and elevated privileges - this tool cannot grant those "
+                    "itself; run it yourself with the driver installed and privileges held."
+                )
+
+            self._window_started_at = time.time()
+            self._started_at = datetime.now(timezone.utc)
+            self._running = True
+
+        self._watcher = threading.Thread(target=self._watch_rotations, daemon=True)
+        self._watcher.start()
+        self._stderr_reader = threading.Thread(target=self._read_progress, daemon=True)
+        self._stderr_reader.start()
+
+    def stop(self):
+        if not self._running:
+            return
+        with self._lock:
+            self._running = False
+        if self._process is not None and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=DUMPCAP_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                logger.warning("dumpcap did not exit on terminate; killing it.")
+                self._process.kill()
+                self._process.wait()
+        if self._watcher is not None:
+            self._watcher.join(timeout=DUMPCAP_POLL_SECONDS * 3)
+        # dumpcap has exited, so every file it left behind is complete -
+        # including the one it was still writing, which the sweep was
+        # deliberately holding back while the capture was live.
+        self._sweep()
+
+    def _rotation_files(self):
+        """Finished rotation files, oldest first.
+
+        While the capture is running the newest file is the one dumpcap is
+        still writing, so it is excluded: ingesting a half-written pcap
+        would put a truncated capture into the case as though it were a
+        complete window.
+        """
+        files = sorted(self._staging_dir.glob("window_*.pcap"))
+        return files if not self._running else files[:-1]
+
+    def _watch_rotations(self):
+        while self._running:
+            time.sleep(DUMPCAP_POLL_SECONDS)
+            try:
+                self._sweep()
+            except Exception as e:
+                logger.warning(f"Error while sweeping dumpcap rotations: {e}")
+
+    def _sweep(self):
+        for path in self._rotation_files():
+            if path in self._ingested:
+                continue
+            self._ingested.add(path)
+            packet_count = self._count_packets(path)
+            if packet_count == 0:
+                # dumpcap writes a header-only file for a window in which
+                # nothing matched the capture filter. That is not evidence
+                # of anything, and ingesting it would fill the case with
+                # empty evidence items.
+                path.unlink(missing_ok=True)
+                continue
+            with self._lock:
+                self._rotation_index += 1
+                self._total_packet_count += packet_count
+                self._window_started_at = time.time()
+                self._window_packet_count = 0
+            # _ingest deletes the file when it is done with it, and runs on
+            # its own thread so a slow parse never stalls the sweep.
+            threading.Thread(target=self._ingest, args=(path, packet_count), daemon=True).start()
+
+    @staticmethod
+    def _count_packets(path):
+        from netforensicai.integrations import wireshark
+
+        try:
+            return wireshark.count_packets(path)
+        except wireshark.WiresharkError as e:
+            logger.warning(f"Could not count packets in '{path}': {e}")
+            return 0
+
+    def _read_progress(self):
+        """Keep the live packet counter fed from dumpcap's own progress
+        output.
+
+        Best-effort only: the authoritative per-window count comes from the
+        finished rotation file, so a platform whose dumpcap reports
+        progress in some other shape loses the live number in the UI, not
+        any evidence.
+        """
+        stream = self._process.stderr if self._process else None
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                match = _DUMPCAP_PROGRESS.search(line)
+                if match:
+                    with self._lock:
+                        self._window_packet_count = int(match.group(1))
+                elif line.strip():
+                    logger.debug(f"dumpcap: {line.strip()}")
+        except Exception:
+            pass
 
 
 def _protocol_name(packet):
@@ -265,18 +515,76 @@ _SESSIONS = {}
 _SESSIONS_LOCK = threading.Lock()
 
 
+def resolve_capture_engine(engine=None):
+    """Return the capture backend to use: "dumpcap" or "scapy".
+
+    Same shape as the pcap parser's engine resolution, and deliberately
+    the same posture: "auto" prefers dumpcap when it is installed, but a
+    specifically requested backend that is missing is an error rather than
+    a silent substitution - an analyst who asked for dumpcap did so for a
+    reason, usually because scapy was dropping packets on a busy link.
+    """
+    import os
+
+    from netforensicai.integrations import wireshark
+
+    requested = (engine or os.environ.get(CAPTURE_ENGINE_ENV) or ENGINE_AUTO).strip().lower()
+    if requested not in VALID_CAPTURE_ENGINES:
+        raise CaptureError(
+            f"Unknown capture engine '{requested}'. Choose one of: {', '.join(VALID_CAPTURE_ENGINES)}."
+        )
+    if requested == ENGINE_DUMPCAP:
+        if wireshark.dumpcap_path() is None:
+            raise CaptureError(
+                "The dumpcap engine was requested but dumpcap was not found. Install Wireshark, "
+                "or set NETFORENSIC_DUMPCAP to its executable."
+            )
+        return ENGINE_DUMPCAP
+    if requested == ENGINE_SCAPY:
+        return ENGINE_SCAPY
+    return ENGINE_DUMPCAP if wireshark.dumpcap_path() is not None else ENGINE_SCAPY
+
+
 def list_interfaces():
+    """Capture interfaces as [{"name", "description"}], newest-capable
+    source first.
+
+    dumpcap is preferred because it reports the same interface identifiers
+    the Wireshark GUI shows *and* a human description. scapy's
+    get_if_list() returns bare \\Device\\NPF_{GUID} strings on Windows,
+    which an analyst cannot match to a physical NIC - so the scapy
+    fallback fills description with an empty string rather than inventing
+    one.
+    """
+    from netforensicai.integrations import wireshark
+
+    if wireshark.dumpcap_path() is not None:
+        try:
+            return wireshark.list_interfaces()
+        except wireshark.WiresharkError as e:
+            logger.warning(f"dumpcap could not list interfaces, falling back to scapy: {e}")
+
     from scapy.all import get_if_list
 
-    return get_if_list()
+    return [{"name": name, "description": ""} for name in get_if_list()]
 
 
-def start_capture(case_id, case_dir, case_manager, interface=None, bpf_filter=None, rotate_seconds=DEFAULT_ROTATE_SECONDS):
+def start_capture(
+    case_id,
+    case_dir,
+    case_manager,
+    interface=None,
+    bpf_filter=None,
+    rotate_seconds=DEFAULT_ROTATE_SECONDS,
+    engine=None,
+):
     with _SESSIONS_LOCK:
         existing = _SESSIONS.get(case_id)
         if existing is not None and existing.snapshot()["running"]:
             raise CaptureError(f"Capture already running for case {case_id}.")
-        session = CaptureSession(case_id, case_dir, case_manager, interface, bpf_filter, rotate_seconds)
+        selected = resolve_capture_engine(engine)
+        session_class = DumpcapCaptureSession if selected == ENGINE_DUMPCAP else CaptureSession
+        session = session_class(case_id, case_dir, case_manager, interface, bpf_filter, rotate_seconds)
         session.start()
         _SESSIONS[case_id] = session
         return session
