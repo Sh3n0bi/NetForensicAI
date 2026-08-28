@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CASES_DIR = "cases"
 
+# Mirrors core.search / core.streams. Duplicated as literals because a
+# Typer option default is evaluated at import time, and importing those
+# modules here would make every `netforensic --help` pay for them.
+SEARCH_DEFAULT_MAX_HITS = 200
+STREAM_DEFAULT_MAX_BYTES = 64 * 1024
+
 app = typer.Typer(
     name="netforensic",
     help="NetForensicAI - local-first DFIR investigation platform.",
@@ -1236,6 +1242,209 @@ def scan(
         dashboard.launch(anomalies)
     else:
         logger.info("Dashboard skipped. Use --no-dashboard to disable or ensure anomalies are detected.")
+
+
+@app.command("search")
+def search_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID to search within"),
+    pattern: str = typer.Argument(..., help="What to look for, e.g. 'flag{' or 'password='"),
+    evidence_id: str = typer.Option(None, "--evidence", help="Search only this capture (default: every capture in the case)"),
+    mode: str = typer.Option("text", "--mode", help="How to interpret the pattern: text, regex, or hex"),
+    case_sensitive: bool = typer.Option(False, "--case-sensitive", help="Match case exactly (text mode)"),
+    display_filter: str = typer.Option(None, "--display-filter", help="Narrow the search first, e.g. 'http && ip.addr == 10.0.0.5'"),
+    max_hits: int = typer.Option(SEARCH_DEFAULT_MAX_HITS, "--max-hits", help="Stop after this many hits"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Search the raw bytes of a case's captures for a string, regex, or hex sequence.
+
+    Answers the question the event pipeline structurally cannot: parsing
+    normalizes packets into events and does not keep payload, so "where
+    does this token appear" has to go back to the capture file. Each hit
+    reports a frame number and stream, which `wireshark open` and
+    `stream follow` both take directly.
+    """
+    from netforensicai.core import search as search_module
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    manager = EvidenceManager(case_dir)
+    items = [item for item in manager.list() if item.evidence_type == "pcap"]
+    if evidence_id:
+        items = [item for item in items if item.evidence_id == evidence_id]
+        if not items:
+            typer.echo(f"Error: no capture evidence {evidence_id} in {case.case_id}.", err=True)
+            raise typer.Exit(code=1)
+    if not items:
+        typer.echo(f"No capture evidence in {case.case_id} to search.")
+        return
+
+    total = 0
+    for evidence in items:
+        try:
+            result = search_module.search_capture(
+                manager.stored_file_path(evidence.evidence_id),
+                pattern,
+                mode=mode,
+                case_sensitive=case_sensitive,
+                max_hits=max_hits,
+                display_filter=display_filter,
+            )
+        except search_module.SearchError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(code=1)
+
+        if not result.hits:
+            continue
+
+        typer.echo(f"\n{evidence.evidence_id} ({evidence.filename}) - {len(result.hits)} hit(s)")
+        typer.echo(f"  filter: {result.display_filter}")
+        for hit in result.hits:
+            total += 1
+            when = hit.timestamp.isoformat() if hit.timestamp else "unknown"
+            stream = f" {hit.protocol.lower()} stream {hit.stream}" if hit.stream is not None else ""
+            typer.echo(f"  frame {hit.frame_number} @ {when}  {hit.src} -> {hit.dst}{stream}")
+            if hit.excerpt:
+                typer.echo(f"    {hit.excerpt}")
+        if result.truncated:
+            typer.echo(f"  (stopped at --max-hits {max_hits}; there may be more)")
+
+    if total == 0:
+        typer.echo(f"No match for {pattern!r} in {len(items)} capture(s).")
+        return
+    typer.echo(f"\n{total} hit(s). Open one in Wireshark with:")
+    typer.echo(f"  netforensic wireshark open --case {case.case_id} --evidence {items[0].evidence_id} --display-filter 'frame.number == N'")
+
+
+stream_app = typer.Typer(help="Reassemble conversations from a capture.", no_args_is_help=True)
+app.add_typer(stream_app, name="stream")
+
+
+def _resolve_capture(cases_dir, case_id, evidence_id):
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceError, EvidenceManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    manager = EvidenceManager(case_dir)
+    if evidence_id:
+        try:
+            evidence = manager.load(evidence_id)
+        except EvidenceError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(code=1)
+    else:
+        captures = [item for item in manager.list() if item.evidence_type == "pcap"]
+        if not captures:
+            typer.echo(f"Error: no capture evidence in {case.case_id}.", err=True)
+            raise typer.Exit(code=1)
+        if len(captures) > 1:
+            typer.echo(
+                f"Error: {case.case_id} has {len(captures)} captures; pass --evidence to say which.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        evidence = captures[0]
+
+    if evidence.evidence_type != "pcap":
+        typer.echo(f"Error: {evidence.evidence_id} is {evidence.evidence_type}, not a capture.", err=True)
+        raise typer.Exit(code=1)
+    return case, evidence, manager.stored_file_path(evidence.evidence_id)
+
+
+@stream_app.command("list")
+def stream_list(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    evidence_id: str = typer.Option(None, "--evidence", help="Capture to list streams from"),
+    protocol: str = typer.Option("tcp", "--protocol", help="tcp or udp"),
+    display_filter: str = typer.Option(None, "--display-filter", help="Only streams matching this filter"),
+    limit: int = typer.Option(25, "--limit", help="How many streams to show"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """List the conversations in a capture, largest first."""
+    from netforensicai.core import streams as streams_module
+
+    _case, evidence, path = _resolve_capture(cases_dir, case_id, evidence_id)
+    try:
+        found = streams_module.list_streams(path, protocol=protocol, display_filter=display_filter, limit=limit)
+    except streams_module.StreamError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    if not found:
+        typer.echo("No matching streams.")
+        return
+
+    typer.echo(f"{evidence.evidence_id} - {len(found)} {protocol} stream(s), largest first")
+    header = f"{'STREAM':<8} {'ENDPOINTS':<46} {'PKTS':>7} {'BYTES':>10}  PROTOCOLS"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for summary in found:
+        endpoints = f"{summary.endpoint_a} -> {summary.endpoint_b}"
+        typer.echo(
+            f"{summary.stream:<8} {endpoints:<46} {summary.packets:>7,} {summary.bytes:>10,}  "
+            f"{', '.join(summary.applications)}"
+        )
+
+
+@stream_app.command("follow")
+def stream_follow(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    index: int = typer.Argument(..., help="Stream index (see `stream list`, or a search hit)"),
+    evidence_id: str = typer.Option(None, "--evidence", help="Capture the stream is in"),
+    protocol: str = typer.Option("tcp", "--protocol", help="tcp or udp"),
+    max_bytes: int = typer.Option(
+        STREAM_DEFAULT_MAX_BYTES, "--max-bytes", help="Truncate the conversation at this many bytes"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Reassemble one conversation and print it as the two sides exchanged it."""
+    from netforensicai.core import streams as streams_module
+
+    _case, _evidence, path = _resolve_capture(cases_dir, case_id, evidence_id)
+    try:
+        followed = streams_module.follow_stream(path, protocol=protocol, index=index, max_bytes=max_bytes)
+    except streams_module.StreamError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"{protocol} stream {followed.stream}")
+    typer.echo(f"  A: {followed.node_a}")
+    typer.echo(f"  B: {followed.node_b}")
+    for turn in followed.turns:
+        node = followed.node_a if turn.sender == "a" else followed.node_b
+        typer.echo(f"\n--- {node} ({turn.byte_count} bytes) ---")
+        typer.echo(turn.text)
+    if followed.truncated:
+        typer.echo(f"\n(truncated at --max-bytes {max_bytes})")
 
 
 wireshark_app = typer.Typer(
