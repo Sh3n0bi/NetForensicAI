@@ -22,6 +22,7 @@ DEFAULT_CASES_DIR = "cases"
 # modules here would make every `netforensic --help` pay for them.
 SEARCH_DEFAULT_MAX_HITS = 200
 STREAM_DEFAULT_MAX_BYTES = 64 * 1024
+CTF_DEFAULT_MAX_HITS = 50
 
 app = typer.Typer(
     name="netforensic",
@@ -1445,6 +1446,138 @@ def stream_follow(
         typer.echo(turn.text)
     if followed.truncated:
         typer.echo(f"\n(truncated at --max-bytes {max_bytes})")
+
+
+ctf_app = typer.Typer(
+    help="Triage presets: the first questions to ask an unfamiliar capture.",
+    no_args_is_help=True,
+)
+app.add_typer(ctf_app, name="ctf")
+
+
+def _print_candidates(candidates, truncated_categories):
+    if not candidates:
+        typer.echo("\nNothing matched the flag, credential or secret patterns.")
+        return
+    typer.echo(f"\nCandidates ({len(candidates)}) - these are strings that matched a pattern, not verdicts:")
+    for category in ("flags", "credentials", "secrets"):
+        rows = [c for c in candidates if c.category == category]
+        if not rows:
+            continue
+        typer.echo(f"\n  {category.upper()}")
+        for row in rows:
+            where = f"frame {row.frame_number}"
+            if row.stream is not None:
+                where += f", {(row.protocol or 'tcp').lower()} stream {row.stream}"
+            typer.echo(f"    [{row.pattern}] {row.value}")
+            typer.echo(f"        {where}  {row.src or '?'} -> {row.dst or '?'}")
+    for category in truncated_categories:
+        typer.echo(f"\n  (stopped early on {category}; raise --max-hits for more)")
+
+
+@ctf_app.command("triage")
+def ctf_triage(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    evidence_id: str = typer.Option(None, "--evidence", help="Capture to triage"),
+    max_hits: int = typer.Option(
+        CTF_DEFAULT_MAX_HITS, "--max-hits", help="Stop each category after this many matching packets"
+    ),
+    extract_to: str = typer.Option(
+        None, "--extract-to", help="Write recovered files here (default: report them without saving)"
+    ),
+    display_filter: str = typer.Option(None, "--display-filter", help="Narrow triage to matching traffic"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Run every preset over a capture: protocols, flags, credentials, secrets, files, conversations.
+
+    Read-only. Nothing here creates a finding - turning a candidate into
+    one stays an explicit investigator action, as everywhere else.
+    """
+    from netforensicai.core import ctf as ctf_module
+
+    _case, evidence, path = _resolve_capture(cases_dir, case_id, evidence_id)
+    try:
+        report = ctf_module.triage(
+            path, max_hits=max_hits, output_dir=extract_to, display_filter=display_filter
+        )
+    except ctf_module.CtfError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Triage of {evidence.evidence_id} ({evidence.filename})")
+
+    typer.echo("\nProtocols:")
+    for protocol in report.protocols:
+        indent = "  " * protocol.depth
+        line = f"  {indent}{protocol.protocol:<16} {protocol.frames:>8,} frames  {protocol.bytes:>11,} bytes"
+        typer.echo(line)
+        if protocol.note:
+            typer.echo(f"  {indent}  -> {protocol.note}")
+
+    _print_candidates(report.candidates, report.truncated_categories)
+
+    if report.files:
+        typer.echo(f"\nRecoverable files ({len(report.files)}):")
+        for item in report.files:
+            typer.echo(f"  {item.protocol}/{item.name}  {item.size:,} bytes  sha256={item.sha256[:16]}...")
+            if item.path:
+                typer.echo(f"      saved to {item.path}")
+        if not extract_to:
+            typer.echo("  (pass --extract-to DIR to save them)")
+
+    if report.top_streams:
+        typer.echo("\nLargest conversations:")
+        for summary in report.top_streams:
+            typer.echo(
+                f"  stream {summary.stream:<6} {summary.endpoint_a} -> {summary.endpoint_b}  "
+                f"{summary.packets:,} pkts, {summary.bytes:,} bytes  {', '.join(summary.applications)}"
+            )
+        typer.echo(f"\nRead one with:\n  netforensic stream follow --case {case_id} {report.top_streams[0].stream}")
+
+
+@ctf_app.command("hunt")
+def ctf_hunt(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    category: str = typer.Option("flags", "--category", help="flags, credentials, or secrets"),
+    evidence_id: str = typer.Option(None, "--evidence", help="Capture to hunt through"),
+    max_hits: int = typer.Option(CTF_DEFAULT_MAX_HITS, "--max-hits", help="Stop after this many matching packets"),
+    display_filter: str = typer.Option(None, "--display-filter", help="Narrow the hunt to matching traffic"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Hunt one category of interesting string: flags, credentials, or secrets."""
+    from netforensicai.core import ctf as ctf_module
+
+    _case, _evidence, path = _resolve_capture(cases_dir, case_id, evidence_id)
+    try:
+        candidates, truncated = ctf_module.hunt(
+            path, category, max_hits=max_hits, display_filter=display_filter
+        )
+    except ctf_module.CtfError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    _print_candidates(candidates, [category] if truncated else [])
+
+
+@ctf_app.command("patterns")
+def ctf_patterns():
+    """Show the patterns each category hunts for."""
+    from netforensicai.core import ctf as ctf_module
+
+    for category, patterns in ctf_module.CATEGORIES.items():
+        typer.echo(f"\n{category}:")
+        for name, expression in patterns.items():
+            typer.echo(f"  {name:<18} {expression}")
 
 
 wireshark_app = typer.Typer(
