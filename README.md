@@ -2,13 +2,14 @@
 
 # NetForensicAI
 
-**A local-first DFIR investigation platform that correlates network and endpoint evidence into one traceable timeline, entity graph, and evidence-cited findings.**
+**Turn packet captures and endpoint logs into one correlated, evidence-cited investigation — entirely on your own machine.**
 
 [![Tests](https://github.com/Sh3n0bi/NetForensicAI/actions/workflows/tests.yml/badge.svg)](https://github.com/Sh3n0bi/NetForensicAI/actions/workflows/tests.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Wireshark: optional](https://img.shields.io/badge/wireshark-optional-informational.svg)](#wireshark-integration)
 
-[Quick Start](#quick-start) · [Worked Example](#a-worked-investigation) · [Architecture](#architecture) · [Capabilities](#capabilities) · [Commands](#command-reference) · [AI Safety](#ai-safety-model) · [Limitations](#limitations)
+[Use cases](#use-cases) · [Install](#installation) · [How it works](#how-it-works) · [Worked example](#a-worked-investigation) · [Commands](#command-reference) · [Limitations](#limitations)
 
 </div>
 
@@ -16,29 +17,64 @@
 
 ## Contents
 
-- [What it is](#what-it-is) · [The problem](#the-problem) · [Design principles](#design-principles)
-- [Installation](#installation) · [Quick start](#quick-start) · [A worked investigation](#a-worked-investigation)
-- [Architecture](#architecture)
+- [Overview](#overview) · [Use cases](#use-cases) · [Why it exists](#why-it-exists) · [Design principles](#design-principles)
+- [Installation](#installation) · [Quick start](#quick-start)
+- [How it works](#how-it-works) · [A worked investigation](#a-worked-investigation)
 - [Capabilities](#capabilities) · [Wireshark integration](#wireshark-integration)
 - [Command reference](#command-reference) · [Configuration](#configuration)
-- [AI safety model](#ai-safety-model) · [Performance](#performance) · [Limitations](#limitations)
-- [Testing](#testing) · [Contributing](#contributing) · [Security policy](#security-policy) · [License](#license)
+- [Architecture](#architecture) · [AI safety model](#ai-safety-model) · [Performance](#performance)
+- [Limitations](#limitations) · [Testing](#testing) · [Contributing](#contributing) · [Security](#security-policy) · [License](#license)
 
 ---
 
-## What it is
+## Overview
 
 NetForensicAI takes raw digital evidence — packet captures, JSON/CSV logs, Windows Event Logs including Sysmon — and turns it into a single correlated investigation: normalized events, extracted entities, a unified timeline, an entity relationship graph, deterministic detections, and investigator-owned findings you can export as a report.
 
-It runs entirely on your machine. No cloud backend, no mandatory external service, and no step that touches the network unless you explicitly opt into one.
+It runs entirely on your machine. **No cloud backend, no daemon, no database server, and no step that touches the network unless you explicitly opt into one.** A case is one DuckDB file plus a directory of JSON manifests and read-only evidence copies.
 
-## The problem
+| | |
+|---|---|
+| **Input** | `.pcap` / `.pcapng` · `.json` · `.csv` · `.evtx` · live network capture |
+| **Output** | Timeline · entity graph · detections · ATT&CK mapping · findings · Markdown / JSON / HTML reports |
+| **Interfaces** | CLI (`netforensic`) and a local web UI — both over the same core |
+| **Requires** | Python 3.9+. Wireshark optional but recommended. |
+
+---
+
+## Use cases
+
+**Triage a suspicious capture from an alert.** Point it at the pcap, run one command, and read the timeline. Protocol-level events — DNS lookups, HTTP requests and their status codes, TLS SNI, recovered file transfers — come out already normalized, so you start at "what happened" rather than at packet 1.
+
+```bash
+netforensic evidence add ./alert-2026-08-28.pcap --case INC-0001 && netforensic analyze --case INC-0001
+```
+
+**Tie network activity to what happened on the host.** Add a pcap *and* a Sysmon EVTX export to the same case. Because entity IDs are derived deterministically from normalized values, the same IP or hostname in both sources resolves to the same ID and joins automatically — which is the whole reason the two are worth having in one case.
+
+**Investigate one indicator across everything you hold.** Given an IP, domain, hash, user, host, process, or file, get its first/last seen, a scoped timeline, ranked related entities, a one-hop relationship graph, and deterministic next-step leads.
+
+```bash
+netforensic investigate --case INC-0001 --domain suspicious.example.com
+```
+
+**Run lightweight live monitoring on a segment.** Rotating capture auto-ingests each finished window through the same pipeline, detection rules included — so a match surfaces as an alert without any separate "watch" mode.
+
+**Analyse a web attack from server-side capture.** Aggregate rules are built for this: they summarize a 41,000-request scan into a handful of findings rather than 41,000 rows, and separately surface *the paths that actually returned success* — what the scan found, not just that it happened.
+
+**Produce a defensible report.** Every claim cites the `evidence_id` and `event_id` it rests on. Evidence is hashed on ingest and never modified; every action is recorded in a hash-chained custody log you can verify. Export the whole case to a zip with a per-file manifest and hand it to someone else.
+
+> **Not a NIDS, not a SIEM.** There is no rule marketplace, no alert queue, no multi-user server, no retention tier. It is an investigator's workbench for evidence you already have.
+
+---
+
+## Why it exists
 
 Real investigations span evidence formats that share no schema, no identifiers, and no notion of which events relate to which. Answering *"is the IP in this pcap the same host as the one in that log line?"* by hand is slow and error-prone, and the reasoning usually lives in someone's head rather than in the case.
 
 NetForensicAI does that stitching mechanically and keeps every resulting claim traceable to the specific evidence file and event it came from.
 
-## Design principles
+### Design principles
 
 | Principle | What it means in practice |
 |---|---|
@@ -47,17 +83,11 @@ NetForensicAI does that stitching mechanically and keeps every resulting claim t
 | **Never overstate certainty** | Correlation says `related` or `possible_relationship`, never "caused". Detections are flags, not verdicts. |
 | **The investigator decides** | Nothing auto-creates a finding. AI proposes; a human confirms. |
 | **Local-first, no infrastructure** | One DuckDB file plus a directory per case. No queue, no graph DB, no daemon. |
-| **Honest about limits** | Known weaknesses are documented here and in code, not hidden. |
+| **Honest about limits** | Known weaknesses are documented [here](#limitations) and in code, not hidden. |
 
 ---
 
 ## Installation
-
-**From PyPI** *(once a release is published — see [CONTRIBUTING.md](CONTRIBUTING.md))*
-
-```bash
-pip install "netforensicai[pcap,intel,web]"
-```
 
 **From source**
 
@@ -69,13 +99,19 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[pcap,intel,web]"
 ```
 
-### Extras
+**From PyPI** *(once a release is published — see [CONTRIBUTING.md](CONTRIBUTING.md))*
+
+```bash
+pip install "netforensicai[pcap,intel,web]"
+```
+
+### Python extras
 
 Everything beyond case management and the CLI core is optional.
 
 | Extra | Pulls in | Needed for |
 |---|---|---|
-| `pcap` | scapy, pandas, scikit-learn | pcap/pcapng parsing, live capture |
+| `pcap` | scapy, pandas, scikit-learn | pcap/pcapng parsing, live capture, anomaly scoring |
 | `evtx` | python-evtx | Windows Event Log / Sysmon parsing |
 | `intel` | requests | VirusTotal lookups |
 | `ai` | anthropic, requests | AI assistant — Anthropic and Ollama providers |
@@ -108,8 +144,6 @@ brew install wireshark           # macOS (CLI tools; add --cask for the GUI)
 
 On a Windows analyst workstation the [standard Wireshark installer](https://www.wireshark.org/download.html) provides all three. It does not add itself to `PATH`, which is fine — NetForensicAI checks `C:\Program Files\Wireshark` directly.
 
-Check what was found and which engines are live:
-
 ```bash
 netforensic wireshark status
 ```
@@ -137,7 +171,6 @@ netforensic evidence add ./capture.pcap --case INC-0001
 netforensic analyze --case INC-0001
 netforensic detections list --case INC-0001
 netforensic investigate --case INC-0001 --ip 192.168.1.10
-netforensic finding create --case INC-0001 --title "..." --event EVT-...
 netforensic report generate --case INC-0001 --format html
 ```
 
@@ -151,6 +184,80 @@ netforensic web --cases-dir cases      # then open http://127.0.0.1:8000
 2. **Cases** — create or open a case, then **Evidence → Choose File → Upload Evidence**.
 3. **Run Analyze** — parses, correlates, and runs detection rules in one step.
 4. Review **Timeline**, **Entities**, **Detections**, **ATT&CK**, **Custody**; record **Findings**; export a **Report**.
+
+---
+
+## How it works
+
+### Starting up
+
+There is no server and nothing runs in the background. `pip install` creates one console script, and every command is a process that starts, works against files on disk, and exits:
+
+```
+netforensic  →  netforensicai.cli:main  →  typer app()
+```
+
+Every heavy import lives **inside** the command function rather than at module top, so `netforensic --help` never pays for scapy, DuckDB, or Flask. All state lives in the case directory — there is nothing else to configure, start, or keep running.
+
+### The pipeline
+
+Every ingest path funnels through one function, `core/pipeline.py::parse_evidence_item`. The CLI, the web upload endpoint, and each live-capture rotation all call it, so there is no second, looser path into a case:
+
+```mermaid
+flowchart TD
+    CLI["netforensic (CLI)"] --> CM
+    WEB["netforensic web (Flask, single-threaded)"] --> CM
+    CAP["netforensic capture (dumpcap / scapy)"] -->|"one finished window at a time"| CM
+
+    CM["Case Manager<br/>INC-#### · hash-chained audit.log"] --> EV
+    EV["Evidence Store<br/>copy in → SHA-256 → chmod read-only → manifest.json"] --> PIPE
+
+    PIPE["parse_evidence_item()"] --> REG
+    REG["parser registry<br/>lookup by evidence_type"] --> PCAP & OTHER
+
+    PCAP["pcap_engine<br/>picks tshark or scapy"] --> STREAM
+    OTHER["generic (JSON/CSV) · evtx"] --> STREAM
+
+    STREAM["iter_parse() streams Events<br/>batched 5,000 at a time"] --> DB
+    STREAM --> ENT
+
+    ENT["entity extraction<br/>deterministic IDs from normalized values"] --> DB
+    DB[("case.duckdb<br/>events · entities · entity_events<br/>correlation_links · detections · attack · threat_intel")]
+
+    DB --> CORR["correlate_case()<br/>shared entity + time window"]
+    DB --> DET["scan_detections()<br/>8 offline rules, no AI, no network"]
+    CORR --> OUT
+    DET --> OUT
+    OUT["Timeline · Entity graph · Investigate<br/>Findings · Reports"]
+```
+
+Three properties of that pipeline carry most of the design:
+
+- **It streams.** `iter_parse` is a generator and the pipeline pulls 5,000 events at a time. A fully-dissected packet measures roughly **18× the file size in RAM**, so a 1 GB capture would need ~18 GB if loaded up front. Peak memory tracks working set, not capture size.
+- **It is all-or-nothing.** Any exception deletes the partially-written events and returns an error. A half-ingested evidence item is worse than none, because correlation, detections, the timeline and the report would all silently reason over half a file with no indication anything was missing.
+- **Entity IDs are the join key.** They derive deterministically from entity type + normalized value, so the same real-world entity resolves to the same ID across every evidence source. **That is the mechanism that makes cross-source correlation work** — the "graph" is a SQL join over `entity_events`.
+
+### Where evidence lives
+
+```
+cases/INC-0001/
+├── case.json            Case metadata and indexes
+├── audit.log            Chain of custody (JSONL, hash-chained)
+├── case.duckdb          Events, entities, correlation, detections, ATT&CK, TI
+├── evidence/EV-0001/
+│   ├── manifest.json    SHA-256, size, provenance
+│   └── original/        Read-only copy of the source file
+├── artifacts/EV-0001/   Files carved out of evidence
+├── slices/              Captures carved by a display filter
+├── findings/            Investigator-owned findings
+└── reports/             Generated reports
+```
+
+`evidence add` copies the file in, hashes **the stored copy** rather than the source, marks it read-only, and writes a manifest. The original is only ever opened for reading. Everything downstream reasons over the copy, so what you analyzed is exactly what was preserved.
+
+### Concurrency
+
+DuckDB is single-writer, and this is a local single-user tool. The web UI runs **single-threaded on purpose**, and writes from the web layer and live-capture threads go through `locked_store()`, which serializes on a process-wide lock. There is no connection pool to size and no race to reason about.
 
 ---
 
@@ -242,144 +349,25 @@ netforensic case audit --case INC-0001 --verify     # chain of custody intact?
 
 ---
 
-## Architecture
-
-```
-                        ┌──────────────┐          ┌──────────────┐
-                        │    Web UI    │          │     CLI      │
-                        └──────┬───────┘          └──────┬───────┘
-                               └────────────┬────────────┘
-                                            │  both call the same core
-                ┌───────────────────────────▼───────────────────────────┐
-                │                     Case Manager                      │
-                │   INC-####  ·  chain of custody  ·  export / import    │
-                └───────────────────────────┬───────────────────────────┘
-                                            │
-                ┌───────────────────────────▼───────────────────────────┐
-                │   Evidence Store    SHA-256 · read-only · provenance   │
-                └───────────────────────────┬───────────────────────────┘
-                                            │
-          ┌──────────────┬──────────────────┼──────────────────┬──────────────┐
-          ▼              ▼                  ▼                  ▼              ▼
-     PCAP/PCAPNG       JSON                CSV            EVTX/Sysmon    Live Capture
-          │              │                  │                  │              │
-          └──────────────┴──────────────────┼──────────────────┴──────────────┘
-                                            │
-                ┌───────────────────────────▼───────────────────────────┐
-                │        Normalization  ·  Common Event Model           │
-                │  flows · DNS · HTTP · TLS · files · processes · logs   │
-                └───────────────────────────┬───────────────────────────┘
-                                            │  streamed in batches
-                ┌───────────────────────────▼───────────────────────────┐
-                │              DuckDB  ·  one file per case             │
-                │ events · entities · links · detections · ATT&CK · TI   │
-                └───────────────────────────┬───────────────────────────┘
-                                            │
-          ┌──────────────┬──────────────────┼──────────────────┬──────────────┐
-          ▼              ▼                  ▼                  ▼              ▼
-      Entities      Correlation          Timeline          Detections    Artifacts
-    (11 types)   related / possible    chronological     deterministic  carved files
-          └──────────────┴──────────────────┼──────────────────┴──────────────┘
-                                            │
-                    ┌───────────────────────▼───────────────────────┐
-                    │   Investigation  ·  1-hop graph  ·  leads      │
-                    └───────────────────────┬───────────────────────┘
-                                            │
-                    ┌───────────────┬───────┴───────┬───────────────┐
-                    ▼               ▼               ▼               ▼
-              Threat Intel      ATT&CK        Optional AI      (all opt-in)
-               VirusTotal       mapping    hedged hypothesis
-                    └───────────────┴───────┬───────┴───────────────┘
-                                            │
-                    ┌───────────────────────▼───────────────────────┐
-                    │       Human Validation  ·  Findings           │
-                    └───────────────────────┬───────────────────────┘
-                                            │
-                    ┌───────────────────────▼───────────────────────┐
-                    │      Report  ·  Markdown / JSON / HTML        │
-                    └───────────────────────────────────────────────┘
-```
-
-**No message queue, no microservices, no graph database.** A case is one DuckDB file plus a directory of JSON manifests and evidence copies. The "graph" is a SQL join.
-
-### Module layout
-
-```
-netforensicai/
-├── core/
-│   ├── case.py          Case lifecycle, INC-#### IDs, on-disk layout
-│   ├── evidence.py      Ingest, SHA-256, read-only copies, provenance
-│   ├── audit.py         Chain of custody (append-only, hash-chained)
-│   ├── event.py         Common Event Model
-│   ├── store.py         DuckDB access, bulk insert, streaming cursors
-│   ├── pipeline.py      Shared evidence → events → entities ingestion
-│   ├── entities.py      Entity extraction and deterministic IDs
-│   ├── correlation.py   Sliding-window pairing, shared-entity links
-│   ├── timeline.py      Chronological view and filters
-│   ├── detections.py    Bundled offline rules (per-event + aggregate)
-│   ├── attack.py        MITRE ATT&CK technique mapping
-│   ├── investigate.py   Entity-scoped investigation and leads
-│   ├── threat_intel.py  Opt-in enrichment with caching
-│   ├── ai_assistant.py  Multi-provider AI with evidence contract
-│   ├── finding.py       Investigator-owned findings
-│   ├── report.py        Markdown / JSON / HTML rendering
-│   ├── capture.py       Live capture with rotating windows (dumpcap · scapy)
-│   ├── export.py        Portable case archives
-│   └── config.py        API keys and preferences (outside cases/)
-├── integrations/
-│   └── wireshark.py     Tool discovery, display filters, slices, GUI pivot
-├── parsers/             base · pcap_engine (dispatch) · pcap (scapy) ·
-│                        pcap_tshark · generic (JSON/CSV) · evtx
-├── web/                 Flask API + dependency-free frontend
-└── cli.py               Typer command surface
-```
-
-### On-disk layout
-
-```
-cases/INC-0001/
-├── case.json            Case metadata and indexes
-├── audit.log            Chain of custody (JSONL, hash-chained)
-├── case.duckdb          Events, entities, correlation, detections, ATT&CK, TI
-├── evidence/EV-0001/
-│   ├── manifest.json    Hash, size, provenance
-│   └── original/        Read-only copy of the source file
-├── artifacts/           Files carved out of evidence
-├── timeline/            Materialized timeline
-├── findings/            One JSON per finding
-└── reports/             Generated reports
-```
-
----
-
 ## Capabilities
 
 ### Case management
-`INC-####` cases with a predictable layout. Every case is self-contained and portable.
+`INC-####` IDs, one directory per case, status lifecycle, and indexes over evidence, findings, and artifacts.
 
 ### Evidence integrity
-On ingest the source file is **copied** (never opened for writing), SHA-256 hashed from that copy, and made read-only. `report generate` re-verifies every hash each time it runs — a report cannot be produced without re-checking that nothing was tampered with, and a mismatch is stated plainly in the report rather than silently ignored.
+Every item is copied in, SHA-256 hashed from the stored copy, set read-only, and recorded in a manifest with its original path and modification time.
 
 ### Chain of custody
-An **append-only, hash-chained** record of every action taken on a case, stored as JSON Lines. Each entry carries actor, UTC timestamp, and the SHA-256 of the previous entry.
+Every action — case created, evidence added, evidence parsed, analysis run, finding created or updated, report generated, capture started or stopped, threat intel checked, AI hypothesis requested, evidence sliced — is appended to a **hash-chained** `audit.log`. `case audit --verify` reports whether the record has been altered since it was written.
 
-Recorded: case created · evidence added *(full hash + original source path)* · evidence parsed · findings created and changed *(with from → to)* · ATT&CK scanned and validated · threat-intel lookups · AI hypotheses *(including failures)* · reports written · capture start/stop · export · import.
-
-```bash
-netforensic case audit --case INC-0001            # full record
-netforensic case audit --case INC-0001 --verify   # exit 0 intact, 1 if altered
-```
-
-Editing or deleting an entry breaks every link after it, and `--verify` names exactly which. The chain **continues across an export/import handover** rather than restarting, so custody spans the transfer.
-
-> **Scope, honestly:** this detects accidental corruption and casual after-the-fact editing. It is *not* a defence against an attacker who controls the machine — they could recompute the whole chain. That is the accurate claim for a local single-investigator tool.
+> This detects accidental corruption and casual after-the-fact editing. It does **not** stop an attacker who controls the machine, who could recompute the whole chain.
 
 ### Evidence parsers
 All parsers normalize into one **Common Event Model**: `event_id`, `evidence_id`, `source`, `event_type`, `timestamp`, plus optional user/host/device, network (src/dst IP + port, protocol), process (name, PID, parent, command line), file (name, path, hash), domain/URL, severity/message, and `raw_event_reference` pointing back to the exact original record.
 
 | Format | Notes |
 |---|---|
-| `.pcap` / `.pcapng` | Two interchangeable engines — **tshark** when Wireshark is installed, **scapy** (pure Python, no external binary) otherwise. Single streaming pass either way. See [Wireshark integration](#wireshark-integration). |
+| `.pcap` / `.pcapng` | Two interchangeable engines — **tshark** when Wireshark is installed, **scapy** (pure Python, no external binary) otherwise. Single streaming pass either way. |
 | `.json` | Array, `{"events": [...]}`-wrapped, or single object. Case/separator-insensitive field aliasing (`src_ip` / `SourceIP` / `source_ip` all match). |
 | `.csv` | Same aliasing, one event per row. |
 | `.evtx` | Sysmon (ProcessCreate, NetworkConnection, ProcessTerminate, FileCreate, DNSQuery) gets rich field mapping; every other provider gets universal System fields plus full raw EventData. Pure Python, so Windows logs can be analyzed from any OS. |
@@ -387,6 +375,7 @@ All parsers normalize into one **Common Event Model**: `event_id`, `evidence_id`
 Adding a fifth format means one `BaseParser` subclass — entity extraction, correlation, timeline, detections, and reporting need no changes.
 
 ### Network protocol analysis
+
 The pcap parser has two engines. Neither is a superset of the other, so neither is hardcoded — `auto` picks tshark when Wireshark is installed and scapy when it is not, and `--engine` pins either one.
 
 **scapy engine** — pure Python, works from a plain `pip install`, and produces **eight event types**, over both **IPv4 and IPv6**:
@@ -416,7 +405,7 @@ Also handled: VLAN (802.1Q) tags, IP fragments, pcapng containers, truncated cap
 Everything else — DNS, HTTP request/response pairing, TLS SNI, flow aggregation, anomaly scoring — is produced by both engines, **under the same event-type names**, so a timeline filter or a detection rule behaves identically whichever engine ran. Every event also records which engine produced it in `raw_event_reference.engine`, because *"which dissector found this"* is a question a report has to answer months later.
 
 ### Entity extraction & correlation
-Eleven entity types — user, hostname, device, IP address, domain, URL, file, hash, process, port, network connection — each linked to the events it appears in. Entity IDs derive deterministically from type + normalized value, so the same real-world entity resolves to the same ID across every evidence source. **That is the mechanism that makes cross-source correlation work.**
+Eleven entity types — `user`, `hostname`, `device`, `ip_address`, `domain`, `url`, `file`, `hash`, `process`, `port`, `network_connection` — each linked to the events it appears in.
 
 Correlation links events within a time window and is explicit about strength:
 
@@ -471,8 +460,6 @@ Overview · Evidence *(upload + analyze)* · Timeline · Entities *(graph + inve
 
 ### Live capture
 Rotating pcap capture that auto-ingests each finished window through the **exact same pipeline** as a manually added file — including detection rules, so a match surfaces as an alert within one poll. That makes it a lightweight live-alerting mode with no separate "watch" step.
-
-Two backends, selected the same way the parser selects an engine:
 
 | Backend | Notes |
 |---|---|
@@ -638,6 +625,42 @@ Saved keys live in `~/.netforensicai/config.json` (owner read/write where the OS
 
 ---
 
+## Architecture
+
+**No message queue, no microservices, no graph database.** A case is one DuckDB file plus a directory of JSON manifests and evidence copies. The "graph" is a SQL join.
+
+```
+netforensicai/
+├── core/
+│   ├── case.py          Case lifecycle, INC-#### IDs, on-disk layout
+│   ├── evidence.py      Ingest, SHA-256, read-only copies, provenance
+│   ├── audit.py         Chain of custody (append-only, hash-chained)
+│   ├── event.py         Common Event Model
+│   ├── store.py         DuckDB access, bulk insert, streaming cursors
+│   ├── pipeline.py      Shared evidence → events → entities ingestion
+│   ├── entities.py      Entity extraction and deterministic IDs
+│   ├── correlation.py   Sliding-window pairing, shared-entity links
+│   ├── timeline.py      Chronological view and filters
+│   ├── detections.py    Bundled offline rules (per-event + aggregate)
+│   ├── attack.py        MITRE ATT&CK technique mapping
+│   ├── investigate.py   Entity-scoped investigation and leads
+│   ├── threat_intel.py  Opt-in enrichment with caching
+│   ├── ai_assistant.py  Multi-provider AI with evidence contract
+│   ├── finding.py       Investigator-owned findings
+│   ├── report.py        Markdown / JSON / HTML rendering
+│   ├── capture.py       Live capture with rotating windows (dumpcap · scapy)
+│   ├── export.py        Portable case archives
+│   └── config.py        API keys and preferences (outside cases/)
+├── integrations/
+│   └── wireshark.py     Tool discovery, display filters, slices, GUI pivot
+├── parsers/             base · pcap_engine (dispatch) · pcap (scapy) ·
+│                        pcap_tshark · generic (JSON/CSV) · evtx
+├── web/                 Flask API + dependency-free frontend
+└── cli.py               Typer command surface
+```
+
+---
+
 ## AI safety model
 
 The AI assistant is the **last, optional** step in the pipeline — never a replacement for any step before it. Providers are interchangeable: Anthropic, OpenAI, a local Ollama server, or Google Gemini.
@@ -686,6 +709,7 @@ Stated plainly, because a forensics tool that hides its weaknesses is worse than
 - **The two pcap engines do not produce identical output.** That is the point — tshark sees protocols the scapy engine cannot — but it means a case re-analyzed under a different engine will not have identical events. Each event records the engine that produced it, and `--engine` pins one when reproducibility matters.
 - **tshark object export runs as a second pass** over the capture. It keeps the streaming parse's memory profile intact, at the cost of reading the file twice when an output directory is given.
 - **Exported objects carry no timestamp.** tshark's object export reports the recovered file but not the frame it completed on, so `file_transfer` events from it sort at the end of the timeline as `unknown` rather than in position. A wrong timestamp on forensic evidence is worse than an absent one, so none is invented — the parent flow's events carry the timing.
+- **The web UI has no authentication.** It is a local single-user tool bound to `127.0.0.1` by default; binding it elsewhere exposes every case on the machine.
 
 ---
 
@@ -706,19 +730,16 @@ Several classes of bug were found only by running against real evidence and real
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). New features should follow the existing shape: one core module does the work, CLI and web are thin callers, and nothing claims more certainty than the evidence supports.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the parser plugin interface, and the release process.
+
+The shape of a good contribution here: a new `BaseParser` subclass for a format, a detection rule with a specific and defensible signal, or a regression test for a bug found against real evidence.
 
 ## Security policy
 
-- Files carved from evidence are **never executed** — they are written as inert bytes.
-- Uploaded filenames are sanitized; evidence copies are read-only after hashing.
-- No API key is ever hardcoded. Saved keys live outside the cases directory and are never returned to the browser.
-- Case and finding IDs are pattern-validated everywhere they are used to build a path, so a crafted ID cannot escape the cases directory.
-- VirusTotal values are validated as a real IP or hash before being sent.
-- The web UI has no authentication and binds to `127.0.0.1`. Every state-changing request requires a custom header, blocking cross-site request forgery from another open tab — which for a chain-of-custody tool matters more than most.
+This is defensive tooling for evidence you are authorized to analyze. It does not exploit, attack, or scan anything.
 
-Found a security issue? Open an issue at [github.com/Sh3n0bi/NetForensicAI/issues](https://github.com/Sh3n0bi/NetForensicAI/issues). This is a community project without a dedicated security contact, so please avoid including real sensitive evidence in a public report.
+Nothing leaves your machine unless you explicitly invoke threat intel or a hosted AI provider. Live capture requires privileges the tool does not grant itself. If you find a security issue in NetForensicAI, please open an issue or contact the maintainer rather than disclosing it publicly first.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE).
