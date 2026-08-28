@@ -331,6 +331,12 @@ class DumpcapCaptureSession(CaptureSession):
         self._watcher = None
         self._stderr_reader = None
         self._ingested = set()
+        # Packets in windows dumpcap has already finished and handed over,
+        # counted from the rotation files themselves. Kept separate from
+        # the live figure because dumpcap's progress output is cumulative
+        # for the whole session, not per-file - see _refresh_counts.
+        self._rotated_packet_count = 0
+        self._live_packet_count = 0
 
     def start(self):
         from netforensicai.integrations import wireshark
@@ -451,9 +457,9 @@ class DumpcapCaptureSession(CaptureSession):
                 continue
             with self._lock:
                 self._rotation_index += 1
-                self._total_packet_count += packet_count
+                self._rotated_packet_count += packet_count
                 self._window_started_at = time.time()
-                self._window_packet_count = 0
+                self._refresh_counts()
             # _ingest deletes the file when it is done with it, and runs on
             # its own thread so a slow parse never stalls the sweep.
             threading.Thread(target=self._ingest, args=(path, packet_count), daemon=True).start()
@@ -468,24 +474,43 @@ class DumpcapCaptureSession(CaptureSession):
             logger.warning(f"Could not count packets in '{path}': {e}")
             return 0
 
-    def _read_progress(self):
-        """Keep the live packet counter fed from dumpcap's own progress
-        output.
+    def _refresh_counts(self):
+        """Recompute the reported counters. Caller must hold self._lock.
 
-        Best-effort only: the authoritative per-window count comes from the
-        finished rotation file, so a platform whose dumpcap reports
-        progress in some other shape loses the live number in the UI, not
-        any evidence.
+        dumpcap's progress output counts packets for the WHOLE capture
+        session, not for the file it currently has open, so it cannot be
+        used as the window count directly - doing so reports the running
+        total in the window field and makes the window appear never to
+        reset. The window is the difference between what dumpcap has seen
+        and what has already been rotated away.
+
+        The rotated sum is authoritative for the total, so if progress
+        parsing yields nothing (a platform whose dumpcap reports
+        differently) the totals stay correct and only the live in-window
+        number goes missing.
+        """
+        self._total_packet_count = max(self._live_packet_count, self._rotated_packet_count)
+        self._window_packet_count = max(0, self._live_packet_count - self._rotated_packet_count)
+
+    def _read_progress(self):
+        """Feed the live counter from dumpcap's own progress output.
+
+        Best-effort: every count that reaches the case comes from the
+        rotation files themselves, so a parsing miss costs the live number
+        in the UI, never any evidence.
         """
         stream = self._process.stderr if self._process else None
         if stream is None:
             return
         try:
+            # Text mode uses universal newlines, so dumpcap's carriage-
+            # return progress updates each arrive as their own line here.
             for line in stream:
                 match = _DUMPCAP_PROGRESS.search(line)
                 if match:
                     with self._lock:
-                        self._window_packet_count = int(match.group(1))
+                        self._live_packet_count = int(match.group(1))
+                        self._refresh_counts()
                 elif line.strip():
                     logger.debug(f"dumpcap: {line.strip()}")
         except Exception:

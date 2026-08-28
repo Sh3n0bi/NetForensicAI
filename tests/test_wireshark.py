@@ -481,6 +481,42 @@ def test_dumpcap_progress_output_feeds_the_live_packet_counter():
     assert capture_module._DUMPCAP_PROGRESS.search("Packets: 7").group(1) == "7"
 
 
+def test_the_window_counter_excludes_packets_already_rotated_away(tmp_path):
+    """dumpcap's progress output counts the whole session, not the file it
+    currently has open. Reporting it as the window count would show the
+    running total in the window field and make the window appear never to
+    reset - which is exactly what a live run against a real NIC showed.
+    """
+    session = capture_module.DumpcapCaptureSession("INC-0001", tmp_path, case_manager=None)
+
+    session._live_packet_count = 300
+    session._refresh_counts()
+    assert session.snapshot()["window_packet_count"] == 300
+    assert session.snapshot()["total_packet_count"] == 300
+
+    # A 253-packet window rotates away; the window restarts from what is
+    # left, and the total keeps climbing.
+    session._rotated_packet_count = 253
+    session._live_packet_count = 280
+    session._refresh_counts()
+    snapshot = session.snapshot()
+    assert snapshot["window_packet_count"] == 27
+    assert snapshot["total_packet_count"] == 280
+
+
+def test_totals_stay_correct_when_progress_output_cannot_be_parsed(tmp_path):
+    """The rotated sum is authoritative, so a platform whose dumpcap
+    reports progress differently loses the live in-window number and
+    nothing else."""
+    session = capture_module.DumpcapCaptureSession("INC-0001", tmp_path, case_manager=None)
+
+    session._rotated_packet_count = 500
+    session._refresh_counts()
+
+    assert session.snapshot()["total_packet_count"] == 500
+    assert session.snapshot()["window_packet_count"] == 0
+
+
 def test_list_interfaces_always_returns_name_description_pairs():
     """The web UI and the CLI both render these; a bare string from one
     backend and a dict from the other would break one of them."""
