@@ -162,29 +162,41 @@ def available():
     return tshark_path() is not None
 
 
-def _run(argv, timeout, check=True):
+def _run(argv, timeout, check=True, text=True):
     """Run a Wireshark binary and return the CompletedProcess.
 
     Output is decoded leniently: tshark emits interface names and packet
     summaries in the host locale's encoding, which is routinely not UTF-8
     on Windows, and a mis-decoded byte in an interface description must
     not take down an investigation.
+
+    text=False returns raw bytes instead. That matters for any output
+    carrying reassembled payload: text mode applies universal-newline
+    translation, which rewrites a lone CR as a newline - so a payload with
+    CRLF line endings comes back with a blank line inserted after every
+    real one, and the caller cannot tell the difference between bytes that
+    were on the wire and bytes Python invented.
     """
     try:
         completed = subprocess.run(
             argv,
             capture_output=True,
             timeout=timeout,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            **(
+                {"text": True, "encoding": "utf-8", "errors": "replace"}
+                if text
+                else {}
+            ),
         )
     except subprocess.TimeoutExpired as e:
         raise WiresharkError(f"{Path(argv[0]).name} timed out after {timeout}s") from e
     except OSError as e:
         raise WiresharkError(f"Failed to run {argv[0]}: {e}") from e
     if check and completed.returncode != 0:
-        message = (completed.stderr or completed.stdout or "").strip().splitlines()
+        raw = completed.stderr or completed.stdout or ("" if text else b"")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        message = raw.strip().splitlines()
         detail = message[0] if message else f"exit code {completed.returncode}"
         raise WiresharkError(f"{Path(argv[0]).name} failed: {detail}")
     return completed
