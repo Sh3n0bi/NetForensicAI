@@ -40,7 +40,7 @@ a:hover { text-decoration: underline; }
 
 .brand a { color: var(--text); font-weight: 700; font-size: 16px; text-decoration: none; }
 
-.settings-link { margin-left: auto; color: var(--text-dim); font-size: 13px; }
+.settings-link { margin-left: auto; color: var(--text-dim); font-size: 13px; flex-shrink: 0; }
 .settings-link:hover { color: var(--text); }
 
 .setting-row { display: grid; grid-template-columns: 210px 1fr auto; gap: 10px; align-items: center; margin-bottom: 10px; }
@@ -62,7 +62,7 @@ a:hover { text-decoration: underline; }
   .setting-note { margin-left: 0; }
 }
 
-.case-nav { display: flex; align-items: center; gap: 16px; }
+.case-nav { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; row-gap: 4px; }
 /* `display: flex` above outranks the browser default [hidden]{display:none},
    so setting nav.hidden in JS had no visible effect - the case tabs stayed
    on screen on the case list and settings pages, linking nowhere. */
@@ -202,3 +202,97 @@ button.secondary { background: var(--panel-2); }
   font-size: 13px;
 }
 .toast.error { border-color: var(--bad); color: var(--bad); }
+
+
+/* --- grouped nav ------------------------------------------------------ */
+.nav-group {
+  color: #6b7288;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+  margin-left: 4px;
+}
+/* Not margin-left:auto - in a wrapping nav that pushes Ask onto a line
+   of its own. It is simply the last item, tinted so it reads as the one
+   action rather than another destination. */
+.case-nav a.nav-ask { color: var(--accent); font-weight: 600; }
+.topbar { flex-wrap: wrap; }
+
+/* --- dashboard -------------------------------------------------------- */
+.case-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.case-head-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.case-head-actions select {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 6px 10px; font-size: 13px;
+}
+button.danger { background: rgba(224,90,78,0.15); border-color: rgba(224,90,78,0.4); color: var(--bad); }
+button.danger:hover { background: var(--bad); color: #fff; }
+button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--bad); }
+
+.kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; border-top: 2px solid var(--border); }
+.kpi-l { color: var(--text-dim); font-size: 12px; }
+.kpi-n { font-size: 24px; font-weight: 700; margin: 4px 0 2px; }
+.kpi-s { color: #6b7288; font-size: 11px; }
+.kpi.k-blue { border-top-color: var(--accent); }
+.kpi.k-violet { border-top-color: #b07cff; }
+.kpi.k-red { border-top-color: var(--bad); }
+.kpi.k-amber { border-top-color: var(--warn); }
+.kpi.k-green { border-top-color: var(--ok); }
+
+.panel-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .panel-grid { grid-template-columns: 1fr; } }
+
+.result-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.result-head h3 { margin: 0; }
+.right { margin-left: auto; }
+.dim { color: var(--text-dim); font-size: 12px; }
+
+.run-state { font-size: 12px; border-radius: 10px; padding: 1px 8px; font-weight: 600; text-transform: uppercase; }
+.run-state.idle { background: rgba(154,160,180,0.15); color: var(--text-dim); }
+.run-state.running { background: rgba(91,157,255,0.15); color: var(--accent); }
+.run-state.ok { background: rgba(76,175,80,0.15); color: var(--ok); }
+.run-state.bad { background: rgba(224,90,78,0.15); color: var(--bad); }
+
+/* --- dig surfaces ----------------------------------------------------- */
+.pivot { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 12px; }
+.pivot .sep { color: var(--border); }
+.hit { background: rgba(224,160,48,0.22); color: var(--warn); border-radius: 3px; padding: 0 3px; }
+.hit-text { color: var(--warn); }
+
+.two-col.reverse { grid-template-columns: 1fr 420px; }
+@media (max-width: 900px) { .two-col.reverse { grid-template-columns: 1fr; } }
+
+.turn { border-left: 2px solid var(--accent); background: var(--panel-2); border-radius: 0 6px 6px 0; padding: 8px 12px; margin-top: 10px; }
+.turn-b { border-left-color: var(--ok); }
+.turn-head { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+.turn-b .turn-head { color: var(--ok); }
+.turn pre { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+
+.proto-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
+.proto-note { color: #6b7288; font-size: 11px; padding-bottom: 4px; }
+.file-row { background: var(--panel-2); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
+
+/* --- assistant -------------------------------------------------------- */
+.chat-log { max-height: 60vh; overflow: auto; margin-bottom: 12px; }
+.bubble-me { background: var(--accent-dim); border-radius: 8px 8px 2px 8px; padding: 8px 12px; margin: 12px 0 12px auto; max-width: 70%; width: fit-content; font-size: 13px; }
+.answer { font-size: 13px; line-height: 1.6; margin: 10px 0; }
+.steps { padding: 10px 14px; }
+.steps h3 { margin-top: 0; }
+.step { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; }
+.cites { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.cite { background: rgba(91,157,255,0.12); border: 1px solid var(--accent-dim); color: var(--accent); border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: 600; font-family: var(--mono); }
+.refused { border: 1px solid rgba(224,90,78,0.4); background: rgba(224,90,78,0.07); color: var(--text); border-radius: 6px; padding: 12px; font-size: 13px; margin: 10px 0; }
+
+/* --- delete confirmation --------------------------------------------- */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; width: 460px; max-width: 92vw; }
+.modal-card h3 { margin-top: 0; color: var(--text); text-transform: none; letter-spacing: 0; font-size: 16px; }
+.modal-card input { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 10px; font-size: 13px; margin-top: 12px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.warn-note { background: rgba(224,90,78,0.08); border: 1px solid rgba(224,90,78,0.3); border-radius: 6px; padding: 10px 12px; font-size: 12px; color: var(--text-dim); line-height: 1.5; margin-top: 12px; }

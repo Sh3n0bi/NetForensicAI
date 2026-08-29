@@ -32,6 +32,17 @@ async function apiPost(path, body) {
   return data;
 }
 
+async function apiDelete(path, body) {
+  const res = await fetch(API + path, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json", ...CSRF_HEADERS },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
 async function apiUpload(path, formData) {
   // No Content-Type header: the browser sets multipart/form-data with the
   // correct boundary itself when the body is a FormData instance.
@@ -310,6 +321,10 @@ async function renderCaseTab(app, c, tab, rest) {
   if (tab === "attack") return renderAttack(app, c);
   if (tab === "reports") return renderReports(app, c);
   if (tab === "capture") return renderCapture(app, c);
+  if (tab === "search") return renderSearch(app, c);
+  if (tab === "streams") return renderStreams(app, c, rest[0]);
+  if (tab === "triage") return renderTriage(app, c);
+  if (tab === "chat") return renderChat(app, c);
   return renderOverview(app, c);
 }
 
@@ -350,34 +365,282 @@ async function renderCaseList(app) {
 
 // --- Overview ---
 
-function renderOverview(app, c) {
-  app.appendChild(el("h1", { text: c.name }));
-  app.appendChild(el("div", { class: "subtitle", text: c.description || "No description." }));
+async function renderOverview(app, c) {
+  const head = el("div", { class: "case-head" });
+  head.appendChild(
+    el("div", {}, [
+      el("h1", { text: c.name }),
+      el("div", { class: "subtitle", text: c.description || "No description." }),
+    ])
+  );
 
-  const stats = el("div", { class: "grid-stats" });
-  const statDefs = [
-    ["Status", c.status],
-    ["Investigator", c.investigator],
-    ["Evidence", c.evidence_count],
-    ["Events", c.event_count],
-    ["Entities", c.entity_count],
-    ["Findings", c.finding_count],
-    ["Detections", c.detection_count],
-  ];
-  for (const [l, n] of statDefs) {
-    stats.appendChild(el("div", { class: "stat" }, [el("div", { class: "n", text: n }), el("div", { class: "l", text: l })]));
+  // Case status is the investigation's own state, so it is editable here
+  // rather than being a read-only badge somewhere else.
+  const statusWrap = el("div", { class: "case-head-actions" });
+  const statusSel = el("select", { title: "Case status" });
+  for (const s of ["open", "investigating", "closed"]) {
+    const opt = el("option", { value: s, text: s });
+    if (s === c.status) opt.selected = true;
+    statusSel.appendChild(opt);
   }
-  app.appendChild(el("div", { class: "panel" }, [stats]));
+  statusSel.onchange = async () => {
+    try {
+      await apiPost(`/cases/${c.case_id}/status`, { status: statusSel.value });
+      toast(`${c.case_id} is now ${statusSel.value}`);
+    } catch (e) {
+      toast("Could not change status: " + e.message, true);
+      statusSel.value = c.status;
+    }
+  };
+  statusWrap.appendChild(statusSel);
+  statusWrap.appendChild(el("button", { class: "danger", text: "Delete case", onclick: () => confirmDelete(c) }));
+  head.appendChild(statusWrap);
+  app.appendChild(head);
+
+  // --- stat row ---
+  const stats = el("div", { class: "kpis" });
+  const corr = c.correlation_by_type || {};
+  const kpis = [
+    ["Events", c.event_count, `across ${c.evidence_count} evidence item${c.evidence_count === 1 ? "" : "s"}`, "k-blue"],
+    ["Entities", c.entity_count, "deterministic IDs across sources", "k-violet"],
+    ["Detections", c.detection_count, "offline rules, no AI", "k-red"],
+    [
+      "Correlations",
+      c.correlation_count ?? 0,
+      `${corr.related || 0} related · ${corr.possible_relationship || 0} possible`,
+      "k-amber",
+    ],
+    ["Files carved", c.artifact_count ?? 0, "hashed into artifacts/", "k-green"],
+    ["Findings", c.finding_count, "investigator-owned", "k-blue"],
+  ];
+  for (const [label, n, sub, cls] of kpis) {
+    stats.appendChild(
+      el("div", { class: "kpi " + cls }, [
+        el("div", { class: "kpi-l", text: label }),
+        el("div", { class: "kpi-n", text: n }),
+        el("div", { class: "kpi-s", text: sub }),
+      ])
+    );
+  }
+  app.appendChild(stats);
+
+  // --- analysis runner: the in-progress / complete / error state ---
+  const runPanel = el("div", { class: "panel" });
+  const runBar = el("div", { class: "result-head" });
+  runBar.appendChild(el("h3", { text: "Analysis" }));
+  const runState = el("span", { class: "run-state", text: c.event_count ? "complete" : "not run yet" });
+  runState.classList.add(c.event_count ? "ok" : "idle");
+  runBar.appendChild(runState);
+  const runBtn = el("button", { text: c.event_count ? "Re-run analyze" : "Run analyze" });
+  runBar.appendChild(el("span", { class: "right" }, [runBtn]));
+  runPanel.appendChild(runBar);
+  const runOut = el("div");
+  runPanel.appendChild(runOut);
+  app.appendChild(runPanel);
+
+  runBtn.onclick = async () => {
+    runBtn.disabled = true;
+    runState.className = "run-state running";
+    runState.textContent = "in progress…";
+    runOut.innerHTML = "";
+    runOut.appendChild(el("div", { class: "loading", text: "Parsing evidence, correlating, scanning rules…" }));
+    try {
+      const r = await apiPost(`/cases/${c.case_id}/analyze`, {});
+      runOut.innerHTML = "";
+      // Per-evidence errors are reported by the pipeline even when the
+      // request itself succeeded - a partially-failed analyze is not a
+      // success, so it must not read as one.
+      const failed = (r.results || []).filter((x) => x.error);
+      if (failed.length) {
+        runState.className = "run-state bad";
+        runState.textContent = `completed with ${failed.length} error${failed.length === 1 ? "" : "s"}`;
+        for (const f of failed) {
+          runOut.appendChild(el("div", { class: "error-box", text: `${f.evidence_id}: ${f.error}` }));
+        }
+      } else {
+        runState.className = "run-state ok";
+        runState.textContent = "complete";
+      }
+      runOut.appendChild(
+        el("div", {
+          class: "dim",
+          text: `${r.total_events} events · ${r.total_entities} entities · ${r.detection_count} detection(s)`,
+        })
+      );
+      setTimeout(route, 600);
+    } catch (e) {
+      runOut.innerHTML = "";
+      runState.className = "run-state bad";
+      runState.textContent = "error";
+      runOut.appendChild(el("div", { class: "error-box", text: e.message }));
+    } finally {
+      runBtn.disabled = false;
+    }
+  };
+
+  // --- three panels fed by the dig routes ---
+  const grid = el("div", { class: "panel-grid" });
+  app.appendChild(grid);
+
+  const detPanel = el("div", { class: "panel" });
+  detPanel.appendChild(el("h3", { text: "Recent detections" }));
+  grid.appendChild(detPanel);
+
+  const entPanel = el("div", { class: "panel" });
+  entPanel.appendChild(el("h3", { text: "Top entities" }));
+  grid.appendChild(entPanel);
+
+  const triPanel = el("div", { class: "panel" });
+  triPanel.appendChild(
+    el("div", { class: "result-head" }, [
+      el("h3", { text: "Triage candidates" }),
+      el("span", { class: "dim", text: "leads, not verdicts" }),
+    ])
+  );
+  grid.appendChild(triPanel);
+
+  loadInto(detPanel, () => apiGet(`/cases/${c.case_id}/detections`), (rows) => {
+    if (!rows.length) return el("div", { class: "empty", text: "No rule matched." });
+    const t = el("table");
+    const tb = el("tbody");
+    for (const d of rows.slice(0, 6)) {
+      tb.appendChild(
+        el("tr", {}, [
+          el("td", { class: "mono", text: d.rule_id }),
+          el("td", {}, [el("span", { class: "badge badge-" + d.severity, text: d.severity })]),
+        ])
+      );
+    }
+    t.appendChild(tb);
+    return t;
+  });
+
+  loadInto(entPanel, () => apiGet(`/cases/${c.case_id}/entities?sort=events`), (rows) => {
+    if (!rows.length) return el("div", { class: "empty", text: "No entities extracted." });
+    const t = el("table");
+    t.innerHTML = "<thead><tr><th>Value</th><th>Type</th><th>Events</th><th>Links</th></tr></thead>";
+    const tb = el("tbody");
+    for (const e of rows.slice(0, 6)) {
+      tb.appendChild(
+        el("tr", { class: "clickable" }, [
+          el("td", {}, [el("a", { href: `#/case/${c.case_id}/entities/${e.entity_id}`, class: "mono", text: e.value })]),
+          el("td", { class: "dim", text: e.entity_type }),
+          el("td", { class: "mono", text: e.event_count }),
+          el("td", { class: "mono dim", text: e.link_count }),
+        ])
+      );
+    }
+    t.appendChild(tb);
+    return t;
+  });
+
+  loadInto(
+    triPanel,
+    () => apiGet(`/cases/${c.case_id}/triage`),
+    (r) => {
+      if (!r.candidates.length) return el("div", { class: "empty", text: "Nothing matched the patterns." });
+      const t = el("table");
+      const tb = el("tbody");
+      for (const x of r.candidates.slice(0, 6)) {
+        tb.appendChild(
+          el("tr", {}, [
+            el("td", {}, [el("span", { class: "badge badge-low mono", text: x.pattern })]),
+            el("td", { class: "mono hit-text", text: x.value }),
+            el("td", { class: "mono dim", text: x.frame_number }),
+          ])
+        );
+      }
+      t.appendChild(tb);
+      return t;
+    },
+    // Triage needs tshark. Absent, this is a setup step, not a failure.
+    "Needs Wireshark - install tshark to enable triage."
+  );
 
   const meta = el("div", { class: "panel" });
-  meta.innerHTML = `
-    <h3>Case Details</h3>
-    <table>
-      <tr><th>Case ID</th><td class="mono">${escapeHtml(c.case_id)}</td></tr>
-      <tr><th>Created</th><td>${escapeHtml(c.created_at)}</td></tr>
-      <tr><th>Updated</th><td>${escapeHtml(c.updated_at)}</td></tr>
-    </table>`;
+  meta.appendChild(el("h3", { text: "Case details" }));
+  const mt = el("table");
+  const mtb = el("tbody");
+  for (const [k, v] of [
+    ["Case ID", c.case_id],
+    ["Investigator", c.investigator],
+    ["Created", c.created_at],
+    ["Updated", c.updated_at],
+  ]) {
+    mtb.appendChild(el("tr", {}, [el("th", { text: k }), el("td", { class: "mono", text: v })]));
+  }
+  mt.appendChild(mtb);
+  meta.appendChild(mt);
   app.appendChild(meta);
+}
+
+// Fill a panel from an endpoint, showing loading / empty / a degraded
+// note rather than an error box for the surfaces that need Wireshark: a
+// missing optional dependency is a setup step, not a fault.
+async function loadInto(panel, fetcher, build, degradedNote) {
+  const slot = el("div", { class: "loading", text: "Loading…" });
+  panel.appendChild(slot);
+  try {
+    const data = await fetcher();
+    slot.replaceWith(build(data));
+  } catch (e) {
+    const needsTshark = /tshark|wireshark/i.test(e.message);
+    slot.replaceWith(
+      el("div", {
+        class: needsTshark ? "dim" : "error-box",
+        text: needsTshark && degradedNote ? degradedNote : (needsTshark ? e.message : "Error: " + e.message),
+      })
+    );
+  }
+}
+
+// Deleting a case destroys the evidence AND the chain of custody, so the
+// confirmation makes the caller type the ID rather than click through a
+// yes/no - the same bar the CLI sets.
+function confirmDelete(c) {
+  const box = el("div", { class: "modal" });
+  const card = el("div", { class: "modal-card" });
+  card.appendChild(el("h3", { text: `Delete ${c.case_id}?` }));
+  card.appendChild(
+    el("div", { text: `"${c.name}" — ${c.evidence_count} evidence item(s), ${c.finding_count} finding(s).` })
+  );
+  card.appendChild(
+    el("div", {
+      class: "warn-note",
+      text:
+        "This is irreversible. It removes the evidence copies, the event store, carved artifacts, findings, reports and the chain of custody. There is no trash to recover it from.",
+    })
+  );
+  const input = el("input", { placeholder: `Type ${c.case_id} to confirm`, style: "width:100%" });
+  card.appendChild(input);
+  const actions = el("div", { class: "modal-actions" });
+  const cancel = el("button", { class: "secondary", text: "Cancel" });
+  const del = el("button", { class: "danger", text: "Delete permanently" });
+  del.disabled = true;
+  input.oninput = () => {
+    del.disabled = input.value.trim() !== c.case_id;
+  };
+  cancel.onclick = () => box.remove();
+  del.onclick = async () => {
+    del.disabled = true;
+    del.textContent = "Deleting…";
+    try {
+      const s = await apiDelete(`/cases/${c.case_id}`, { confirm: c.case_id });
+      box.remove();
+      toast(`Deleted ${s.case_id} — ${s.evidence_count} evidence item(s), ${(s.size_bytes / 1e6).toFixed(1)} MB.`);
+      location.hash = "#/";
+    } catch (e) {
+      del.disabled = false;
+      del.textContent = "Delete permanently";
+      card.appendChild(el("div", { class: "error-box", text: e.message }));
+    }
+  };
+  actions.appendChild(cancel);
+  actions.appendChild(del);
+  card.appendChild(actions);
+  box.appendChild(card);
+  document.body.appendChild(box);
+  input.focus();
 }
 
 // --- Evidence ---
@@ -1496,4 +1759,388 @@ async function renderCapture(app, c) {
   await poll();
   stopCapturePolling();
   _capturePollTimer = setInterval(poll, 1500);
+}
+
+// --- Search (content search over a capture's raw bytes) ---
+//
+// The event pipeline keeps no payload, so this asks the capture file
+// directly through POST /search. Every hit names a frame and a stream,
+// which is what makes a result a starting point rather than a dead end.
+
+function pivotBar(c, hit) {
+  const bar = el("span", { class: "pivot" });
+  if (hit.stream !== null && hit.stream !== undefined) {
+    bar.appendChild(
+      el("a", {
+        href: `#/case/${c.case_id}/streams/${hit.stream}`,
+        text: `stream ${hit.stream}`,
+      })
+    );
+    bar.appendChild(el("span", { class: "sep", text: "|" }));
+  }
+  const filter = `frame.number == ${hit.frame_number}`;
+  bar.appendChild(
+    el("span", {
+      class: "clickable dim",
+      text: "copy filter",
+      title: filter,
+      onclick: () => {
+        navigator.clipboard?.writeText(filter);
+        toast(`Copied: ${filter}`);
+      },
+    })
+  );
+  return bar;
+}
+
+async function renderSearch(app, c) {
+  app.appendChild(el("h1", { text: "Search" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Match raw packet bytes across this case's captures. Parsing keeps no payload, so this reads the capture file directly.",
+    })
+  );
+
+  const bar = el("div", { class: "filter-bar" });
+  const term = el("input", { placeholder: "flag{ , password=, 4d5a9000 ...", style: "min-width:260px" });
+  const mode = el("select", {});
+  for (const m of ["text", "regex", "hex"]) mode.appendChild(el("option", { value: m, text: m }));
+  const dfilter = el("input", { placeholder: "display filter (optional)", class: "mono", style: "min-width:240px" });
+  const go = el("button", { text: "Search" });
+  bar.appendChild(term);
+  bar.appendChild(mode);
+  bar.appendChild(dfilter);
+  bar.appendChild(go);
+  app.appendChild(bar);
+
+  const out = el("div");
+  app.appendChild(out);
+
+  async function run() {
+    const pattern = term.value.trim();
+    if (!pattern) return;
+    out.innerHTML = "";
+    out.appendChild(el("div", { class: "loading", text: "Searching the capture..." }));
+    go.disabled = true;
+    try {
+      const res = await apiPost(`/cases/${c.case_id}/search`, {
+        pattern,
+        mode: mode.value,
+        display_filter: dfilter.value.trim() || undefined,
+      });
+      out.innerHTML = "";
+      out.appendChild(
+        el("div", { class: "result-head" }, [
+          el("h3", { text: `${res.hits.length} hit${res.hits.length === 1 ? "" : "s"}` }),
+          el("span", { class: "mono dim", text: res.display_filter }),
+        ])
+      );
+      if (!res.hits.length) {
+        out.appendChild(el("div", { class: "empty", text: "No packet in this capture contains that." }));
+        return;
+      }
+      const panel = el("div", { class: "panel" });
+      const table = el("table");
+      table.innerHTML =
+        "<thead><tr><th>Frame</th><th>Proto</th><th>Flow</th><th>Match in context</th><th>Pivot</th></tr></thead>";
+      const tbody = el("tbody");
+      for (const h of res.hits) {
+        const excerpt = el("td", { class: "mono" });
+        // Highlight the matched run without innerHTML: the excerpt is
+        // evidence bytes, and evidence must never be parsed as markup.
+        const text = h.excerpt || "";
+        const at = h.matched ? text.indexOf(h.matched) : -1;
+        if (at >= 0) {
+          excerpt.appendChild(document.createTextNode(text.slice(0, at)));
+          excerpt.appendChild(el("span", { class: "hit", text: h.matched }));
+          excerpt.appendChild(document.createTextNode(text.slice(at + h.matched.length)));
+        } else {
+          excerpt.textContent = text;
+        }
+        const row = el("tr", {}, [
+          el("td", { class: "mono dim", text: h.frame_number }),
+          el("td", {}, [el("span", { class: "badge badge-investigating", text: h.protocol || "?" })]),
+          el("td", { class: "mono dim", text: `${h.src || "?"} → ${h.dst || "?"}` }),
+          excerpt,
+          el("td", {}, [pivotBar(c, h)]),
+        ]);
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      panel.appendChild(table);
+      out.appendChild(panel);
+      if (res.truncated) {
+        out.appendChild(el("div", { class: "dim", text: "Stopped at the hit limit - there may be more." }));
+      }
+    } catch (e) {
+      out.innerHTML = "";
+      out.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    } finally {
+      go.disabled = false;
+    }
+  }
+
+  go.onclick = run;
+  term.onkeydown = (ev) => {
+    if (ev.key === "Enter") run();
+  };
+}
+
+// --- Streams ---
+
+async function renderStreams(app, c, focus) {
+  app.appendChild(el("h1", { text: "Streams" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text: "Conversations reassembled by Wireshark. A credential or a flag rarely lives in one packet.",
+    })
+  );
+
+  const layout = el("div", { class: "two-col reverse" });
+  const list = el("div", { class: "panel" });
+  const reader = el("div", { class: "panel" });
+  layout.appendChild(list);
+  layout.appendChild(reader);
+  app.appendChild(layout);
+
+  reader.appendChild(el("div", { class: "empty", text: "Select a conversation to read it." }));
+
+  async function follow(index) {
+    reader.innerHTML = "";
+    reader.appendChild(el("div", { class: "loading", text: "Reassembling..." }));
+    try {
+      const s = await apiGet(`/cases/${c.case_id}/streams/${index}`);
+      reader.innerHTML = "";
+      reader.appendChild(el("h3", { text: `tcp stream ${s.stream}` }));
+      reader.appendChild(el("div", { class: "mono dim", text: `${s.node_a} ↔ ${s.node_b}` }));
+      for (const turn of s.turns) {
+        const fromA = turn.sender === "a";
+        const box = el("div", { class: "turn " + (fromA ? "turn-a" : "turn-b") });
+        box.appendChild(
+          el("div", {
+            class: "turn-head",
+            text: `${fromA ? s.node_a + " →" : "← " + s.node_b} · ${turn.byte_count} bytes`,
+          })
+        );
+        box.appendChild(el("pre", { text: turn.text }));
+        reader.appendChild(box);
+      }
+      if (s.truncated) reader.appendChild(el("div", { class: "dim", text: "Truncated." }));
+    } catch (e) {
+      reader.innerHTML = "";
+      reader.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    }
+  }
+
+  list.appendChild(el("div", { class: "loading", text: "Loading conversations..." }));
+  try {
+    const res = await apiGet(`/cases/${c.case_id}/streams`);
+    list.innerHTML = "";
+    if (!res.streams.length) {
+      list.appendChild(el("div", { class: "empty", text: "No TCP conversations in this capture." }));
+      return;
+    }
+    const table = el("table");
+    table.innerHTML = "<thead><tr><th>Stream</th><th>Endpoints</th><th>Volume</th><th>Proto</th></tr></thead>";
+    const tbody = el("tbody");
+    for (const s of res.streams) {
+      const row = el("tr", { class: "clickable" }, [
+        el("td", { class: "mono", text: s.stream }),
+        el("td", { class: "mono dim", text: `${s.endpoint_a} → ${s.endpoint_b}` }),
+        el("td", { class: "dim", text: `${s.packets} pkts · ${s.bytes} B` }),
+        el("td", { text: (s.applications || []).join(", ") }),
+      ]);
+      row.onclick = () => follow(s.stream);
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+    list.appendChild(table);
+    if (focus !== undefined && focus !== null && focus !== "") follow(focus);
+  } catch (e) {
+    list.innerHTML = "";
+    list.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+  }
+}
+
+// --- Triage ---
+
+async function renderTriage(app, c) {
+  app.appendChild(el("h1", { text: "Triage" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "The first questions worth asking an unfamiliar capture. Read-only - nothing here becomes a finding until you say so.",
+    })
+  );
+
+  const out = el("div");
+  app.appendChild(out);
+  out.appendChild(el("div", { class: "loading", text: "Running triage..." }));
+
+  try {
+    const r = await apiGet(`/cases/${c.case_id}/triage`);
+    out.innerHTML = "";
+
+    const cols = el("div", { class: "two-col reverse" });
+
+    // protocols
+    const protoPanel = el("div", { class: "panel" });
+    protoPanel.appendChild(el("h3", { text: "Protocols" }));
+    for (const p of r.protocols) {
+      const row = el("div", { class: "proto-row", style: `padding-left:${p.depth * 14}px` });
+      row.appendChild(el("span", { class: "mono", text: p.protocol }));
+      if (p.note) row.appendChild(el("span", { class: "badge badge-medium", text: "cleartext" }));
+      row.appendChild(el("span", { class: "dim right", text: p.frames }));
+      protoPanel.appendChild(row);
+      if (p.note) protoPanel.appendChild(el("div", { class: "proto-note", style: `padding-left:${p.depth * 14}px`, text: p.note }));
+    }
+
+    const filePanel = el("div", { class: "panel" });
+    filePanel.appendChild(el("h3", { text: "Recoverable files" }));
+    if (!r.files.length) filePanel.appendChild(el("div", { class: "empty", text: "None recovered." }));
+    for (const f of r.files) {
+      filePanel.appendChild(
+        el("div", { class: "file-row" }, [
+          el("div", { text: f.name }),
+          el("div", { class: "mono dim", text: `${f.protocol} · ${f.size} B · ${f.sha256.slice(0, 12)}…` }),
+        ])
+      );
+    }
+    if (r.files.length) {
+      filePanel.appendChild(
+        el("div", { class: "dim", text: "Reported, not written. Save them with `netforensic ctf triage --extract-to`." })
+      );
+    }
+
+    const left = el("div");
+    left.appendChild(protoPanel);
+    left.appendChild(filePanel);
+
+    // candidates
+    const candPanel = el("div", { class: "panel" });
+    candPanel.appendChild(
+      el("div", { class: "result-head" }, [
+        el("h3", { text: `Candidates (${r.candidates.length})` }),
+        el("span", { class: "dim", text: "strings that matched a pattern - leads to judge, not verdicts" }),
+      ])
+    );
+    if (!r.candidates.length) {
+      candPanel.appendChild(el("div", { class: "empty", text: "Nothing matched." }));
+    }
+    for (const cat of ["flags", "credentials", "secrets"]) {
+      const rows = r.candidates.filter((x) => x.category === cat);
+      if (!rows.length) continue;
+      candPanel.appendChild(el("h3", { text: cat }));
+      const table = el("table");
+      const tbody = el("tbody");
+      for (const x of rows) {
+        tbody.appendChild(
+          el("tr", {}, [
+            el("td", {}, [el("span", { class: "badge badge-low mono", text: x.pattern })]),
+            el("td", { class: "mono hit-text", text: x.value }),
+            el("td", { class: "mono dim", text: `frame ${x.frame_number}` }),
+            el("td", {}, [pivotBar(c, x)]),
+          ])
+        );
+      }
+      table.appendChild(tbody);
+      candPanel.appendChild(table);
+    }
+
+    cols.appendChild(candPanel);
+    cols.appendChild(left);
+    out.appendChild(cols);
+  } catch (e) {
+    out.innerHTML = "";
+    out.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+  }
+}
+
+// --- Assistant ---
+
+async function renderChat(app, c) {
+  app.appendChild(el("h1", { text: "Assistant" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Ask about this case. The assistant retrieves evidence itself, and every claim is checked against what it retrieved - an answer citing anything else is refused rather than shown.",
+    })
+  );
+
+  const log = el("div", { class: "chat-log" });
+  app.appendChild(log);
+
+  const bar = el("div", { class: "filter-bar" });
+  const q = el("input", { placeholder: "Was anything downloaded from an external host?", style: "flex-grow:1;min-width:320px" });
+  const send = el("button", { text: "Ask" });
+  bar.appendChild(q);
+  bar.appendChild(send);
+  app.appendChild(bar);
+
+  async function ask() {
+    const question = q.value.trim();
+    if (!question) return;
+    q.value = "";
+    log.appendChild(el("div", { class: "bubble-me", text: question }));
+
+    const pending = el("div", { class: "loading", text: "Retrieving evidence…" });
+    log.appendChild(pending);
+    send.disabled = true;
+    try {
+      const r = await apiPost(`/cases/${c.case_id}/chat`, { question });
+      pending.remove();
+
+      if (r.steps && r.steps.length) {
+        const steps = el("div", { class: "panel steps" });
+        steps.appendChild(el("h3", { text: "Retrieved" }));
+        for (const s of r.steps) {
+          steps.appendChild(
+            el("div", { class: "step" }, [
+              el("span", { class: "mono", text: s.tool }),
+              el("span", { class: "dim right", text: s.error || s.summary }),
+            ])
+          );
+        }
+        log.appendChild(steps);
+      }
+
+      log.appendChild(el("div", { class: "answer", text: r.answer }));
+      if (!r.evidence_sufficient) {
+        log.appendChild(el("div", { class: "badge badge-medium", text: "evidence judged insufficient" }));
+      }
+      if (r.citations && r.citations.length) {
+        const cites = el("div", { class: "cites" });
+        cites.appendChild(el("span", { class: "dim", text: "Cited evidence:" }));
+        for (const cit of r.citations) {
+          const label = `${cit.kind} ${cit.reference}`;
+          if (cit.kind === "stream") {
+            cites.appendChild(el("a", { class: "cite", href: `#/case/${c.case_id}/streams/${cit.reference}`, text: label }));
+          } else {
+            cites.appendChild(el("span", { class: "cite", text: label }));
+          }
+        }
+        log.appendChild(cites);
+      }
+    } catch (e) {
+      pending.remove();
+      // A refusal is not a crash - it is the contract working. Say so.
+      const refused = /refused/i.test(e.message);
+      log.appendChild(
+        el("div", { class: refused ? "refused" : "error-box", text: (refused ? "Answer refused. " : "Error: ") + e.message })
+      );
+    } finally {
+      send.disabled = false;
+      log.scrollTop = log.scrollHeight;
+    }
+  }
+
+  send.onclick = ask;
+  q.onkeydown = (ev) => {
+    if (ev.key === "Enter") ask();
+  };
 }

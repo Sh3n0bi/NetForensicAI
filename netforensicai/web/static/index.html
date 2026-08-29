@@ -9,20 +9,34 @@
 <body>
   <header class="topbar">
     <div class="brand"><a href="#/">NetForensicAI</a></div>
-    <a class="settings-link" href="#/settings">Settings</a>
+    <!-- The nav sits BEFORE the right-hand links and is allowed to wrap.
+         Previously `settings-link` took margin-left:auto and the nav
+         followed it, so once the tabs outgrew the viewport they ran off
+         the right edge - taking the last one with them. -->
     <nav id="case-nav" class="case-nav" hidden>
       <span id="case-nav-name" class="case-nav-name"></span>
       <a href="#" data-tab="overview">Overview</a>
-      <a href="#" data-tab="evidence">Evidence</a>
+      <!-- Grouped by the stage of an investigation rather than listed flat:
+           fourteen equal tabs say nothing about what belongs together. -->
+      <span class="nav-group">Evidence</span>
+      <a href="#" data-tab="evidence">Items</a>
+      <a href="#" data-tab="capture">Capture</a>
+      <span class="nav-group">Dig</span>
+      <a href="#" data-tab="search">Search</a>
+      <a href="#" data-tab="streams">Streams</a>
+      <a href="#" data-tab="triage">Triage</a>
+      <span class="nav-group">Analyze</span>
       <a href="#" data-tab="timeline">Timeline</a>
       <a href="#" data-tab="entities">Entities</a>
-      <a href="#" data-tab="findings">Findings</a>
       <a href="#" data-tab="detections">Detections</a>
       <a href="#" data-tab="attack">ATT&amp;CK</a>
+      <span class="nav-group">Conclude</span>
+      <a href="#" data-tab="findings">Findings</a>
       <a href="#" data-tab="reports">Reports</a>
       <a href="#" data-tab="audit">Custody</a>
-      <a href="#" data-tab="capture">Live Capture</a>
+      <a href="#" data-tab="chat" class="nav-ask">Ask</a>
     </nav>
+    <a class="settings-link" href="#/settings">Settings</a>
   </header>
 
   <main id="app"></main>

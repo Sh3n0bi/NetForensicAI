@@ -96,6 +96,84 @@ def case_list_cmd(
         typer.echo(f"{case.case_id:<10} {case.status:<14} {case.investigator:<16} {created:<20} {case.name}")
 
 
+@case_app.command("status")
+def case_status_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    status: str = typer.Argument(..., help="open, investigating, or closed"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Move a case between open, investigating and closed."""
+    from netforensicai.core.case import CaseError, CaseManager
+
+    try:
+        case = CaseManager(cases_dir).update_status(case_id, status)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"{case.case_id} is now {case.status}")
+
+
+@case_app.command("delete")
+def case_delete_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID to delete"),
+    yes: bool = typer.Option(False, "--yes", help="Skip the interactive confirmation"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Delete a case and everything in it. Irreversible.
+
+    This removes the evidence copies, the event store, carved artifacts,
+    findings, reports AND the chain of custody - the audit log lives
+    inside the case directory. There is no trash to recover it from.
+    """
+    from netforensicai.core.case import CaseError, CaseManager
+
+    manager = CaseManager(cases_dir)
+    try:
+        case = manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    size = sum(f.stat().st_size for f in case_dir.rglob("*") if f.is_file())
+
+    typer.echo(f"About to permanently delete {case.case_id}: {case.name}")
+    typer.echo(f"  Evidence items : {len(case.evidence)}")
+    typer.echo(f"  Findings       : {len(case.findings)}")
+    typer.echo(f"  Artifacts      : {len(case.artifacts)}")
+    typer.echo(f"  On disk        : {size / 1e6:.1f} MB")
+    typer.echo("  The chain of custody is inside the case directory and goes with it.")
+
+    if not yes:
+        # Typing the ID, not answering y/n: the point is to make deleting
+        # the wrong case take a deliberate act rather than one keystroke.
+        typed = typer.prompt(f"\nType {case.case_id} to confirm", default="", show_default=False)
+        if typed.strip() != case.case_id:
+            typer.echo("Not deleted.")
+            raise typer.Exit(code=1)
+
+    try:
+        summary = manager.delete(case.case_id, confirm_case_id=case.case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"Deleted {summary['case_id']} - {summary['evidence_count']} evidence item(s), "
+        f"{summary['size_bytes'] / 1e6:.1f} MB removed."
+    )
+
+
 @case_app.command("export")
 def case_export_cmd(
     case_id: str = typer.Option(..., "--case", help="Case ID to export"),
