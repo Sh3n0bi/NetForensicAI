@@ -156,26 +156,23 @@ def _event_summary(event):
     return f"[{event.evidence_id}/{event.event_id}] " + " ".join(fields)
 
 
-def generate_hypothesis(events, provider="anthropic", api_key=None, model=None, base_url=None):
-    """Ask an AI provider for one hedged hypothesis about `events`.
+def call_model(system_prompt, user_prompt, provider="anthropic", api_key=None, model=None, base_url=None):
+    """Send one prompt to a provider and return its parsed JSON response.
 
-    provider: one of SUPPORTED_PROVIDERS. api_key is optional for every
-    provider except Ollama (which needs none) - if omitted, each
-    provider's own SDK resolves credentials itself from its usual
-    environment variable (or, for Anthropic, an `ant auth login` profile)
-    rather than this module assuming no key means no credentials.
-    model overrides that provider's default (DEFAULT_MODELS). base_url
-    only applies to Ollama (default DEFAULT_OLLAMA_BASE_URL).
+    Extracted so every AI-backed feature - the single-shot hypothesis here
+    and the tool-calling chat in core/chat.py - shares one path for
+    provider selection, credential resolution and transient-failure
+    retry. Duplicating that per feature is how a credential fallback ends
+    up working in one place and not the other.
 
-    Raises AssistantError on any failure - unknown provider, missing
-    credentials, a request/network error, or a response citing evidence
-    not present in `events`. That last check runs identically regardless
-    of which provider answered - see the module docstring.
+    This function deliberately enforces NO contract on the content of the
+    response. Every caller validates what it got against its own schema
+    and its own evidence, because what counts as a citable fact differs
+    between features - and that check is the safety property, so it stays
+    with the caller that can actually perform it.
     """
     if provider not in SUPPORTED_PROVIDERS:
         raise AssistantError(f"Unknown AI provider '{provider}'. Choose from: {', '.join(SUPPORTED_PROVIDERS)}")
-    if not events:
-        raise AssistantError("No events provided.")
 
     # Fall back to a key saved via the web UI's Settings tab when neither
     # an explicit key nor the provider's env var is present. Passing None
@@ -194,8 +191,40 @@ def generate_hypothesis(events, provider="anthropic", api_key=None, model=None, 
     if provider == "ollama":
         base_url = base_url or config.get_plain("ollama_base_url") or None
 
-    events = events[:MAX_EVENTS]
     model = model or DEFAULT_MODELS[provider]
+
+    def call_provider():
+        if provider == "anthropic":
+            return _call_anthropic(system_prompt, user_prompt, api_key, model)
+        if provider == "openai":
+            return _call_openai(system_prompt, user_prompt, api_key, model)
+        if provider == "ollama":
+            return _call_ollama(system_prompt, user_prompt, model, base_url or DEFAULT_OLLAMA_BASE_URL)
+        return _call_gemini(system_prompt, user_prompt, api_key, model)
+
+    return _with_transient_retry(call_provider, provider)
+
+
+def generate_hypothesis(events, provider="anthropic", api_key=None, model=None, base_url=None):
+    """Ask an AI provider for one hedged hypothesis about `events`.
+
+    provider: one of SUPPORTED_PROVIDERS. api_key is optional for every
+    provider except Ollama (which needs none) - if omitted, each
+    provider's own SDK resolves credentials itself from its usual
+    environment variable (or, for Anthropic, an `ant auth login` profile)
+    rather than this module assuming no key means no credentials.
+    model overrides that provider's default (DEFAULT_MODELS). base_url
+    only applies to Ollama (default DEFAULT_OLLAMA_BASE_URL).
+
+    Raises AssistantError on any failure - unknown provider, missing
+    credentials, a request/network error, or a response citing evidence
+    not present in `events`. That last check runs identically regardless
+    of which provider answered - see the module docstring.
+    """
+    if not events:
+        raise AssistantError("No events provided.")
+
+    events = events[:MAX_EVENTS]
 
     event_lines = "\n".join(_event_summary(e) for e in events)
     prompt = (
@@ -203,16 +232,9 @@ def generate_hypothesis(events, provider="anthropic", api_key=None, model=None, 
         "[evidence_id/event_id]. Cite only these evidence_id/event_id pairs.\n\n" + event_lines
     )
 
-    def call_provider():
-        if provider == "anthropic":
-            return _call_anthropic(SYSTEM_PROMPT, prompt, api_key, model)
-        if provider == "openai":
-            return _call_openai(SYSTEM_PROMPT, prompt, api_key, model)
-        if provider == "ollama":
-            return _call_ollama(SYSTEM_PROMPT, prompt, model, base_url or DEFAULT_OLLAMA_BASE_URL)
-        return _call_gemini(SYSTEM_PROMPT, prompt, api_key, model)
-
-    raw = _with_transient_retry(call_provider, provider)
+    raw = call_model(
+        SYSTEM_PROMPT, prompt, provider=provider, api_key=api_key, model=model, base_url=base_url
+    )
 
     try:
         hypothesis = Hypothesis.model_validate(raw)

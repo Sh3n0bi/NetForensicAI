@@ -161,6 +161,35 @@ def test_following_a_stream_that_does_not_exist_says_so():
         streams._parse_follow_output("", "tcp", 99, 1024)
 
 
+def test_tsharks_placeholder_endpoints_are_not_mistaken_for_a_real_stream():
+    """For an index that does not exist tshark still prints the header,
+    with `Node 0: :0`. Treating that as a found stream returns an empty
+    conversation and a success - which reads as "this stream is empty"
+    rather than "there is no such stream"."""
+    output = (
+        "===================================================================\n"
+        "Follow: tcp,ascii\n"
+        "Filter: tcp.stream eq 9999\n"
+        "Node 0: :0\n"
+        "Node 1: :0\n"
+        "===================================================================\n"
+    )
+
+    with pytest.raises(streams.StreamError, match="No tcp stream 9999"):
+        streams._parse_follow_output(output, "tcp", 9999, 1024)
+
+
+def test_a_real_endpoint_is_still_accepted_with_no_payload():
+    """A stream that exists but carried no application data is a real
+    answer - it must not be rejected alongside the placeholders."""
+    output = "Node 0: 10.0.0.5:44000\nNode 1: 93.184.216.34:80\n"
+
+    followed = streams._parse_follow_output(output, "tcp", 0, 1024)
+
+    assert followed.node_a == "10.0.0.5:44000"
+    assert followed.turns == []
+
+
 def test_a_followed_stream_is_truncated_rather_than_returned_whole():
     body = "\n".join(f"line-{i}" for i in range(500))
     output = f"Node 0: a\nNode 1: b\n10\n{body}\n"

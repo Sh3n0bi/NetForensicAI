@@ -46,6 +46,11 @@ SEARCH_MODES = (TEXT, REGEX, HEX)
 DEFAULT_MAX_HITS = 200
 DEFAULT_CONTEXT_BYTES = 48
 
+# Cap on the payload text carried back per hit. Bounds memory when a
+# search matches thousands of large packets, while staying comfortably
+# bigger than any header block or token a caller wants to extract.
+MAX_PAYLOAD_CHARS = 8192
+
 # Fields fetched per hit. The payload fields are requested as hex so the
 # match can be located and excerpted here rather than trusting tshark's
 # text rendering, which drops non-printable bytes - exactly the bytes a
@@ -86,6 +91,12 @@ class SearchHit:
     info: Optional[str]
     excerpt: Optional[str]
     matched: Optional[str]
+    # The packet's payload as text, capped. Carried so a caller can find
+    # EVERY match in the packet rather than only the one the excerpt was
+    # centred on: a single HTTP request routinely holds an Authorization
+    # header and a Cookie, and a response can hold a private key and a
+    # token. Reporting one and dropping the other is a silent miss.
+    payload: Optional[str] = None
 
     def to_dict(self):
         return {
@@ -188,7 +199,18 @@ def _hex_to_bytes(value):
 
 
 def _printable(raw):
-    return "".join(chr(b) if 32 <= b < 127 else "." for b in raw)
+    r"""Render payload bytes as text for matching and display.
+
+    CR, LF and TAB are kept as themselves rather than replaced with a dot.
+    They are structure, not noise: protocols are line-oriented, and a
+    pattern anchored to a line boundary - "PASS at the start of a line",
+    "a header value up to the end of its line" - silently matches across
+    the whole payload if the line endings have been flattened away. Every
+    other non-printable byte still becomes a dot so the result stays
+    readable.
+    """
+    keep = (9, 10, 13)
+    return "".join(chr(b) if 32 <= b < 127 or b in keep else "." for b in raw)
 
 
 def _excerpt(payload, pattern, mode, case_sensitive, context):
@@ -296,6 +318,7 @@ def search_capture(
                 break
 
         excerpt, matched = _excerpt(payload, pattern, mode, case_sensitive, context)
+        payload_text = _printable(payload)[:MAX_PAYLOAD_CHARS] if payload else None
 
         epoch = _first(layers, "frame.time_epoch")
         try:
@@ -320,6 +343,7 @@ def search_capture(
                 info=_first(layers, "_ws.col.info"),
                 excerpt=excerpt,
                 matched=matched,
+                payload=payload_text,
             )
         )
 

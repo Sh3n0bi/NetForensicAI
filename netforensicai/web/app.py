@@ -135,6 +135,8 @@ def create_app(cases_dir="cases"):
             event_count = store.count_events()
             entity_count = store.count_entities()
             detection_count = store.count_detections()
+            correlation_count = store.count_correlation_links()
+            correlation_by_type = store.count_correlation_links_by_type()
         finding_count = len(FindingManager(_case_dir(case)).list())
 
         data = case.to_dict()
@@ -144,6 +146,13 @@ def create_app(cases_dir="cases"):
             entity_count=entity_count,
             finding_count=finding_count,
             detection_count=detection_count,
+            correlation_count=correlation_count,
+            # Split as well as totalled: `related` (shared entity plus time
+            # proximity) and `possible_relationship` (proximity alone) are
+            # different strengths of claim, and a single number reads as
+            # though they were the same.
+            correlation_by_type=correlation_by_type,
+            artifact_count=len(case.artifacts),
         )
         return jsonify(data)
 
@@ -278,8 +287,18 @@ def create_app(cases_dir="cases"):
         query = request.args.get("q", "").strip().lower()
         with locked_store(_case_dir(case)) as store:
             items = store.list_entities(entity_type=entity_type)
+            # Two aggregates for the whole case rather than a query per
+            # entity: ranking entities needs a count on every row, and the
+            # per-row alternative is thousands of round trips.
+            event_counts = store.entity_event_counts()
+            link_counts = store.entity_link_counts()
         if query:
             items = [e for e in items if query in e["value"].lower()]
+        for item in items:
+            item["event_count"] = event_counts.get(item["entity_id"], 0)
+            item["link_count"] = link_counts.get(item["entity_id"], 0)
+        if request.args.get("sort") == "events":
+            items.sort(key=lambda e: (e["event_count"], e["link_count"]), reverse=True)
         return jsonify(items)
 
     @app.route("/api/cases/<case_id>/entities/<entity_id>/graph")
@@ -441,6 +460,39 @@ def create_app(cases_dir="cases"):
         except AssistantError as e:
             raise ApiError(str(e), 502)
         return jsonify(hypothesis.model_dump())
+
+    @app.route("/api/cases/<case_id>/chat", methods=["POST"])
+    def ai_chat(case_id):
+        """Ask a question about the case, with the assistant retrieving
+        evidence through read-only tools.
+
+        Every claim is checked against what those tools actually returned;
+        an answer citing anything else is refused by core/chat.py and
+        surfaced here as an error rather than as an answer with a caveat.
+        A 502 is the right shape for that: the provider produced something
+        unusable, and there is no partial result worth showing.
+        """
+        case = _load_case(case_id)
+        payload = request.get_json(force=True, silent=True) or {}
+        question = (payload.get("question") or "").strip()
+        if not question:
+            raise ApiError("question is required")
+
+        from netforensicai.core import chat as chat_module
+
+        try:
+            result = chat_module.ask(
+                question,
+                _case_dir(case),
+                provider=payload.get("provider") or "anthropic",
+                api_key=payload.get("api_key"),
+                model=payload.get("model") or None,
+                base_url=payload.get("base_url") or None,
+                max_steps=int(payload.get("max_steps") or chat_module.MAX_STEPS),
+            )
+        except chat_module.ChatError as e:
+            raise ApiError(str(e), 502)
+        return jsonify(result.to_dict())
 
     # --- findings ---
     # Creating/updating a finding remains an explicit, investigator-owned
@@ -615,6 +667,151 @@ def create_app(cases_dir="cases"):
         except capture_module.CaptureError as e:
             raise ApiError(str(e), 404)
         return jsonify({"stopped": True})
+
+    # --- dig: content search, stream reassembly, triage ---
+    #
+    # These wrap core/search.py, core/streams.py and core/ctf.py, which
+    # until now were reachable only from the CLI. All three are READ-ONLY
+    # questions asked of a capture file: none of them touches the store,
+    # writes an artifact, or creates a finding. That is why they are plain
+    # GET/POST reads with no audit entry - recording that someone looked
+    # at evidence is not what the chain of custody is for.
+
+    def _capture_path(case, evidence_id):
+        """Resolve a pcap evidence item to its stored copy.
+
+        Always the stored copy, never the path it was added from: that is
+        the one that was hashed into the chain of custody.
+        """
+        manager = EvidenceManager(_case_dir(case))
+        captures = [item for item in manager.list() if item.evidence_type == "pcap"]
+        if not captures:
+            raise ApiError("This case has no capture evidence.", 404)
+        if evidence_id:
+            for item in captures:
+                if item.evidence_id == evidence_id:
+                    return item, manager.stored_file_path(item.evidence_id)
+            raise ApiError(f"No capture evidence {evidence_id} in this case.", 404)
+        return captures[0], manager.stored_file_path(captures[0].evidence_id)
+
+    @app.route("/api/cases/<case_id>/search", methods=["POST"])
+    def search_case(case_id):
+        """Content search over a capture's raw bytes."""
+        case = _load_case(case_id)
+        from netforensicai.core import search as search_module
+
+        payload = request.get_json(force=True, silent=True) or {}
+        pattern = (payload.get("pattern") or "").strip()
+        if not pattern:
+            raise ApiError("pattern is required")
+
+        evidence, path = _capture_path(case, payload.get("evidence_id"))
+        try:
+            result = search_module.search_capture(
+                path,
+                pattern,
+                mode=payload.get("mode") or search_module.TEXT,
+                case_sensitive=bool(payload.get("case_sensitive")),
+                max_hits=int(payload.get("max_hits") or search_module.DEFAULT_MAX_HITS),
+                display_filter=payload.get("display_filter") or None,
+            )
+        except search_module.SearchError as e:
+            # A bad pattern or a missing tshark is the caller's problem to
+            # fix, not a server fault - 400 rather than 500.
+            raise ApiError(str(e))
+
+        data = result.to_dict()
+        data["evidence_id"] = evidence.evidence_id
+        return jsonify(data)
+
+    @app.route("/api/cases/<case_id>/streams")
+    def list_case_streams(case_id):
+        case = _load_case(case_id)
+        from netforensicai.core import streams as streams_module
+
+        evidence, path = _capture_path(case, request.args.get("evidence"))
+        try:
+            found = streams_module.list_streams(
+                path,
+                protocol=request.args.get("protocol") or streams_module.TCP,
+                display_filter=request.args.get("filter") or None,
+                limit=int(request.args.get("limit") or streams_module.DEFAULT_STREAM_LIMIT),
+            )
+        except streams_module.StreamError as e:
+            raise ApiError(str(e))
+        return jsonify({"evidence_id": evidence.evidence_id, "streams": [s.to_dict() for s in found]})
+
+    @app.route("/api/cases/<case_id>/streams/<int:index>")
+    def follow_case_stream(case_id, index):
+        case = _load_case(case_id)
+        from netforensicai.core import streams as streams_module
+
+        evidence, path = _capture_path(case, request.args.get("evidence"))
+        try:
+            followed = streams_module.follow_stream(
+                path,
+                protocol=request.args.get("protocol") or streams_module.TCP,
+                index=index,
+                max_bytes=int(request.args.get("max_bytes") or streams_module.DEFAULT_MAX_BYTES),
+            )
+        except streams_module.StreamError as e:
+            raise ApiError(str(e), 404)
+        data = followed.to_dict()
+        data["evidence_id"] = evidence.evidence_id
+        return jsonify(data)
+
+    @app.route("/api/cases/<case_id>/triage")
+    def triage_case(case_id):
+        """Run the triage presets over a capture.
+
+        Deliberately does NOT extract files: object export writes to disk,
+        and a GET that a dashboard polls must not have that side effect.
+        Recovered files are still reported (name, size, hash) - saving
+        them stays the explicit `--extract-to` action on the CLI.
+        """
+        case = _load_case(case_id)
+        from netforensicai.core import ctf as ctf_module
+
+        evidence, path = _capture_path(case, request.args.get("evidence"))
+        try:
+            report = ctf_module.triage(
+                path,
+                max_hits=int(request.args.get("max_hits") or ctf_module.DEFAULT_MAX_HITS_PER_CATEGORY),
+                display_filter=request.args.get("filter") or None,
+                output_dir=None,
+            )
+        except ctf_module.CtfError as e:
+            raise ApiError(str(e))
+        data = report.to_dict()
+        data["evidence_id"] = evidence.evidence_id
+        return jsonify(data)
+
+    @app.route("/api/cases/<case_id>/artifacts")
+    def list_artifacts(case_id):
+        """Files carved out of evidence, with the sizes the dashboard shows.
+
+        case.artifacts holds paths relative to the case directory; the
+        names and sizes have to come from the files themselves. A path
+        registered for a file that has since been removed is reported with
+        a null size rather than skipped - a missing artifact is something
+        an investigator needs to see, not something to hide.
+        """
+        case = _load_case(case_id)
+        case_dir = _case_dir(case)
+
+        rows = []
+        for relative in case.artifacts:
+            path = case_dir / relative
+            rows.append(
+                {
+                    "path": relative,
+                    "name": Path(relative).name,
+                    "protocol": Path(relative).parent.name,
+                    "size_bytes": path.stat().st_size if path.is_file() else None,
+                    "missing": not path.is_file(),
+                }
+            )
+        return jsonify(rows)
 
     # --- Wireshark integration ---
     #
