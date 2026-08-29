@@ -281,9 +281,24 @@ def _parse_follow_output(output, protocol, index, max_bytes):
         total += len(stripped) + 1
 
     flush()
-    if not followed.turns and not followed.node_a:
+    if not followed.turns and not _is_real_endpoint(followed.node_a):
+        # For a stream index that does not exist, tshark still prints the
+        # header block - with PLACEHOLDER endpoints, "Node 0: :0". So the
+        # absence of node lines is not the signal; an endpoint naming no
+        # address is. Without this the caller gets an empty conversation
+        # and a success, which reads as "this stream is empty" rather than
+        # "there is no such stream".
         raise StreamError(
             f"No {protocol} stream {index} in this capture. "
             f"Use `netforensic stream list` to see which streams exist."
         )
     return followed
+
+
+def _is_real_endpoint(node):
+    """True when a follow header names an actual host:port rather than
+    tshark's `:0` placeholder for a stream that was never there."""
+    if not node:
+        return False
+    node = node.strip()
+    return bool(node) and not node.startswith(":") and node != "0"

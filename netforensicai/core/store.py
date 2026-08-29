@@ -452,6 +452,32 @@ class CaseStore:
             ).fetchall()
         return [{"entity_id": r[0], "entity_type": r[1], "value": r[2]} for r in rows]
 
+    def entity_event_counts(self):
+        """{entity_id: distinct events it appears in}, for the whole case.
+
+        One aggregate rather than a count per entity: the alternative is a
+        query per row, which on a case with thousands of entities is the
+        difference between one round trip and thousands. DISTINCT because
+        entity_events is keyed on (entity, event, FIELD) - an IP that is
+        both source and destination of the same event has two rows there
+        and is still one event.
+        """
+        rows = self.conn.execute(
+            "SELECT entity_id, count(DISTINCT event_id) FROM entity_events GROUP BY entity_id"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def entity_link_counts(self):
+        """{entity_id: correlation links resting on it}. Only `related`
+        links name a shared entity; `possible_relationship` rows carry no
+        entity, so they are absent here by construction rather than by a
+        filter."""
+        rows = self.conn.execute(
+            "SELECT shared_entity_id, count(*) FROM correlation_links "
+            "WHERE shared_entity_id IS NOT NULL GROUP BY shared_entity_id"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
     def events_for_entity(self, entity_id):
         columns_sql = ", ".join(f"e.{_column(f)}" for f in EVENT_FIELDS)
         rows = self.conn.execute(
@@ -548,6 +574,16 @@ class CaseStore:
 
     def count_correlation_links(self):
         return self.conn.execute("SELECT count(*) FROM correlation_links").fetchone()[0]
+
+    def count_correlation_links_by_type(self):
+        """{relationship_type: count}. The two tiers mean different things -
+        a shared entity plus time proximity, versus time proximity alone -
+        so a single total hides the part of the number that carries the
+        signal."""
+        rows = self.conn.execute(
+            "SELECT relationship_type, count(*) FROM correlation_links GROUP BY relationship_type"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
 
     # --- threat intel cache ---
 
