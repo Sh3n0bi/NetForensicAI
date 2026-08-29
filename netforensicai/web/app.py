@@ -156,6 +156,35 @@ def create_app(cases_dir="cases"):
         )
         return jsonify(data)
 
+    @app.route("/api/cases/<case_id>", methods=["DELETE"])
+    def delete_case(case_id):
+        """Delete a case and everything in it.
+
+        Requires the case ID echoed back in the body. That is not
+        ceremony: this removes the evidence copies, the store, the carved
+        artifacts AND the chain of custody, and a confirmation the caller
+        has to reproduce is what separates the case they meant from the
+        one that happened to be selected.
+        """
+        case = _load_case(case_id)
+        payload = request.get_json(force=True, silent=True) or {}
+        try:
+            summary = case_manager.delete(case.case_id, confirm_case_id=payload.get("confirm"))
+        except CaseError as e:
+            raise ApiError(str(e))
+        return jsonify(summary)
+
+    @app.route("/api/cases/<case_id>/status", methods=["POST"])
+    def set_case_status(case_id):
+        case = _load_case(case_id)
+        payload = request.get_json(force=True, silent=True) or {}
+        status = (payload.get("status") or "").strip()
+        try:
+            updated = case_manager.update_status(case.case_id, status)
+        except CaseError as e:
+            raise ApiError(str(e))
+        return jsonify(updated.to_dict())
+
     # --- evidence ---
 
     @app.route("/api/cases/<case_id>/evidence")

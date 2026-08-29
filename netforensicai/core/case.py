@@ -20,7 +20,10 @@ rather than something callers append to directly.
 import dataclasses
 import json
 import logging
+import os
 import re
+import shutil
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -146,6 +149,73 @@ class CaseManager:
                 except CaseError as e:
                     logger.warning(f"Skipping unreadable case directory {entry.name}: {e}")
         return cases
+
+    def delete(self, case_id, confirm_case_id=None):
+        """Delete a case and everything under it. Returns what was destroyed.
+
+        THIS IS IRREVERSIBLE AND IT DESTROYS THE CHAIN OF CUSTODY. The
+        audit log lives inside the case directory, so deleting a case
+        removes the record of what was done to it along with the evidence
+        copies, the store, and any carved artifacts. There is no soft
+        delete and no trash: a forensics tool that pretends to delete
+        evidence while keeping a copy is worse than one that deletes it,
+        because the copy is then unaccounted for.
+
+        confirm_case_id must equal case_id. A confirmation the caller has
+        to type out is what separates deleting the case they meant from
+        the one that happened to be selected - a boolean flag defaults to
+        something, and the something is wrong at least once.
+
+        Returns a summary of what was removed, so the caller can report it
+        rather than saying "done" about work nobody can check afterwards.
+        """
+        case = self.load(case_id)
+        if confirm_case_id != case_id:
+            raise CaseError(
+                f"Deleting {case_id} needs the case ID as confirmation - it is irreversible "
+                "and takes the evidence and the chain of custody with it."
+            )
+
+        case_dir = self._case_path(case_id)
+        # _case_path already refuses a traversing id, but this is a
+        # RECURSIVE delete: re-derive the resolved path and prove it sits
+        # under cases_dir before removing anything. The cost of being
+        # wrong here is somebody else's data.
+        resolved = case_dir.resolve()
+        root = self.cases_dir.resolve()
+        if resolved == root or root not in resolved.parents:
+            raise CaseError(f"Refusing to delete a path outside the cases directory: {resolved}")
+
+        evidence_dir = case_dir / "evidence"
+        evidence_count = (
+            sum(1 for child in evidence_dir.iterdir() if child.is_dir()) if evidence_dir.is_dir() else 0
+        )
+        size_bytes = sum(f.stat().st_size for f in case_dir.rglob("*") if f.is_file())
+
+        # Evidence copies are deliberately chmod'd read-only on ingest so
+        # nothing can modify them in place. On Windows that also stops
+        # them being DELETED, so a plain rmtree fails with EACCES on
+        # exactly the files this tool was careful about. Clear the bit
+        # first rather than pass an onerror hook: that argument is
+        # deprecated in 3.12 and spelled differently in 3.9, and walking
+        # the tree once is simpler than branching on the version.
+        for path in case_dir.rglob("*"):
+            if path.is_file():
+                try:
+                    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                except OSError as e:
+                    logger.warning(f"Could not clear the read-only bit on {path}: {e}")
+        shutil.rmtree(case_dir)
+        logger.info(f"Deleted case {case_id} ({evidence_count} evidence item(s), {size_bytes} bytes)")
+
+        return {
+            "case_id": case_id,
+            "name": case.name,
+            "evidence_count": evidence_count,
+            "finding_count": len(case.findings),
+            "artifact_count": len(case.artifacts),
+            "size_bytes": size_bytes,
+        }
 
     def update_status(self, case_id, status):
         if status not in VALID_STATUSES:
