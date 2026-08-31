@@ -521,7 +521,11 @@ def analyze_case(
         total_entities = store.count_entities()
 
     typer.echo(f"Analysis complete for {case.case_id}: {total_events} events, {total_entities} distinct entities")
-    typer.echo(f"Correlation: {related_count} related, {possible_count} possible_relationship (time-proximity only)")
+    capped = " (budget reached - this is a ceiling, not a total)" if len(links) >= 50_000 else ""
+    typer.echo(
+        f"Correlation: {related_count} related, {possible_count} possible_relationship "
+        f"(time-proximity only){capped}"
+    )
     if detections:
         by_severity = {}
         for d in detections:

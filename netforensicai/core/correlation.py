@@ -46,6 +46,19 @@ DEFAULT_MAX_PAIRS = 50_000
 # pathologically dense case from pairing forever.
 DEFAULT_MAX_SCANNED_PAIRS = 2_000_000
 
+# No single entity may take more than this share of the link budget.
+#
+# Correlation is pairwise, so a HIGH-DEGREE entity produces links
+# quadratically: a DNS resolver that appears in three thousand events can
+# generate millions of "these two events both involve 8.8.8.8" pairs and
+# fill the budget by itself. Measured on a 3,000-packet capture, one
+# address took 49,536 of 50,000 links, leaving 100 for every domain in
+# the case combined. Capping per entity is what keeps a hub from crowding
+# out the rest - the budget then covers at least 1/share distinct
+# entities, which is the difference between a picture of the case and a
+# picture of its busiest node.
+MAX_LINKS_PER_ENTITY_SHARE = 0.1
+
 RELATED = "related"
 POSSIBLE_RELATIONSHIP = "possible_relationship"
 
@@ -106,10 +119,24 @@ def _find_time_window_pairs(sorted_events, window_seconds, max_scanned_pairs=DEF
 
 
 def _shared_entity(event_id_a, event_id_b, entities_by_event):
+    """The strongest entity two events genuinely have in common, or None.
+
+    Types listed in NON_CORRELATING_ENTITY_TYPES are skipped: a shared
+    port is not a relationship. Measured on a 3,000-packet capture before
+    this skip, 38,782 of 50,000 links were shared-port links and 29,333 of
+    those were "both events touched port 80" - which on an HTTP capture is
+    true of nearly every pair. They consumed the budget that shared-domain
+    and shared-host links needed, so the entity that ended up on a link
+    was whichever happened to be checked first.
+    """
+    from netforensicai.core.entities import NON_CORRELATING_ENTITY_TYPES
+
     entities_a = entities_by_event.get(event_id_a, [])
     entities_b = entities_by_event.get(event_id_b, [])
     ids_b = {entity_id for entity_id, _entity_type, _value, _field in entities_b}
     for entity_id, entity_type, value, _field in entities_a:
+        if entity_type in NON_CORRELATING_ENTITY_TYPES:
+            continue
         if entity_id in ids_b:
             return entity_id, entity_type, value
     return None
@@ -153,6 +180,9 @@ def correlate_case(
     links = []
     possible_links = []
     dropped_possible = 0
+    per_entity = {}
+    crowded_out = 0
+    entity_ceiling = max(1, int(max_pairs * MAX_LINKS_PER_ENTITY_SHARE))
     for a, b, delta in _find_time_window_pairs(events, time_window_seconds):
         shared = _shared_entity(a.event_id, b.event_id, entities_by_event)
         if shared:
@@ -173,6 +203,15 @@ def correlate_case(
             )
 
         if relationship_type == RELATED:
+            # One hub must not consume the budget - see
+            # MAX_LINKS_PER_ENTITY_SHARE. Counted rather than silently
+            # skipped so the caller can say how much was held back.
+            seen = per_entity.get(entity_id, 0)
+            if seen >= entity_ceiling:
+                crowded_out += 1
+                continue
+            per_entity[entity_id] = seen + 1
+
             if len(links) >= max_pairs:
                 # Strong links alone have filled the budget. Stopping here
                 # still truncates chronologically, but only once there is
@@ -216,6 +255,12 @@ def correlate_case(
             }
         )
 
+    if crowded_out:
+        logger.info(
+            f"{crowded_out:,} shared-entity pair(s) were held back so no single entity could take "
+            f"more than {entity_ceiling:,} of the {max_pairs:,} link budget. Correlation covers "
+            f"{len(per_entity):,} distinct entities."
+        )
     if dropped_possible:
         logger.info(
             f"Kept {len(links):,} shared-entity link(s) and {len(possible_links):,} "

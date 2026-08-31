@@ -54,7 +54,15 @@ def test_extract_entities_pulls_expected_fields():
     assert by_type["hash"] == "deadbeef"
     assert by_type["domain"] == "example.com"
     assert "network_connection" in by_type
-    assert by_type["network_connection"] == "10.0.0.5:51000->8.8.8.8:443"
+    # The HOST PAIR, not the flow tuple. Including the ports made this
+    # entity unique per flow, so it could never be shared between two
+    # events - an entity that by construction correlates with nothing.
+    assert by_type["network_connection"] == "10.0.0.5->8.8.8.8"
+
+    # dst_port identifies a service and is indexed; src_port is ephemeral
+    # and is not. Both remain fields on the event either way.
+    ports = [v for _, t, v, _ in found if t == "port"]
+    assert ports == ["443"]
 
     # ip_address appears twice (src_ip and dst_ip) - both extracted.
     ip_entries = [v for _, t, v, _ in found if t == "ip_address"]
@@ -109,3 +117,49 @@ def test_extract_and_store_is_idempotent_on_rerun(tmp_path):
         entities = store.list_entities()
         assert len(entities) == 1
         assert len(store.events_for_entity(entities[0]["entity_id"])) == 1
+
+
+def test_a_shared_port_is_not_treated_as_a_correlation(tmp_path):
+    """A port is worth indexing but not worth correlating on.
+
+    "Show me everything touching port 4444" is a good use of an entity;
+    "these two events are related because both involved port 80" is not a
+    relationship - on an HTTP capture it is true of nearly every pair.
+    Measured before this rule, 38,782 of 50,000 links on a 3,000-packet
+    capture were shared-port links, 29,333 of them port 80 alone.
+    """
+    from netforensicai.core.correlation import correlate_case
+    from netforensicai.core.store import CaseStore
+
+    events = [
+        _event("EVT-0001", src_ip="10.0.0.5", dst_ip="93.184.216.34", dst_port=80),
+        # Same service port, entirely different hosts - not a relationship.
+        _event("EVT-0002", src_ip="172.16.0.9", dst_ip="203.0.113.7", dst_port=80),
+    ]
+    with CaseStore(tmp_path) as store:
+        store.replace_events_for_evidence("EV-0001", events)
+        extract_and_store(store, events)
+        links = correlate_case(store, time_window_seconds=300, include_possible=False)
+
+    assert links == [], "two events sharing only a port must not be `related`"
+
+
+def test_two_events_between_the_same_hosts_still_correlate(tmp_path):
+    """The other half of the same change: keying the connection entity on
+    the host pair is what makes it shareable at all."""
+    from netforensicai.core.correlation import RELATED, correlate_case
+    from netforensicai.core.store import CaseStore
+
+    events = [
+        _event("EVT-0001", src_ip="10.0.0.5", dst_ip="93.184.216.34", src_port=44001, dst_port=80),
+        # A different flow - different source port - between the same pair.
+        _event("EVT-0002", src_ip="10.0.0.5", dst_ip="93.184.216.34", src_port=44002, dst_port=80),
+    ]
+    with CaseStore(tmp_path) as store:
+        store.replace_events_for_evidence("EV-0001", events)
+        extract_and_store(store, events)
+        links = correlate_case(store, time_window_seconds=300, include_possible=False)
+
+    assert len(links) == 1
+    assert links[0]["relationship_type"] == RELATED
+    assert links[0]["shared_entity_type"] in ("ip_address", "network_connection")
