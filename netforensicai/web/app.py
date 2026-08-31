@@ -713,6 +713,16 @@ def create_app(cases_dir="cases"):
             raise ApiError(str(e), 404)
         return jsonify({"stopped": True})
 
+    @app.route("/api/cases/<case_id>/narrative")
+    def case_narrative(case_id):
+        """The case as an account of what happened, not a count of objects."""
+        case = _load_case(case_id)
+        from netforensicai.core import narrative as narrative_module
+
+        with locked_store(_case_dir(case)) as store:
+            narrative = narrative_module.build(store)
+        return jsonify(narrative.to_dict())
+
     # --- dig: content search, stream reassembly, triage ---
     #
     # These wrap core/search.py, core/streams.py and core/ctf.py, which

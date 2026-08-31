@@ -46,6 +46,8 @@ Event types produced:
   - authentication: Kerberos and NTLM authentication attempts - the class
     of evidence the scapy engine cannot see at all, and the one lateral
     movement is usually found in.
+  - credential_exposure: one per credential crossing the network in the
+    clear, carrying a HASH of the secret rather than the secret.
   - file_access: SMB file opens/reads/writes, naming the share path that
     was touched.
   - file_transfer: files recovered by tshark's object export (HTTP, SMB,
@@ -126,7 +128,19 @@ FIELDS = (
     "ftp.request.command",
     "ftp.request.arg",
     "smtp.req.parameter",
+    # Credential material, as DISSECTED FIELDS rather than raw payload.
+    # Asking tshark for the parsed form values and FTP arguments is both
+    # cheaper and more precise than pulling every packet's bytes across
+    # and pattern-matching here - and it keeps the parser from handling
+    # payload it has no reason to hold.
+    "urlencoded-form.key",
+    "urlencoded-form.value",
+    "http.authorization",
 )
+
+# Form field names that carry a secret rather than an identity.
+_SECRET_FIELDS = {"password", "passwd", "pwd", "pass", "secret", "token", "api_key", "apikey"}
+_IDENTITY_FIELDS = {"username", "user", "login", "email", "userid", "uid"}
 
 # tshark's object-export dissectors. Each recovers complete transferred
 # files from reassembled streams - which is categorically better evidence
@@ -144,6 +158,10 @@ DEFAULT_ANOMALY_CONTAMINATION = 0.05
 MAX_PACKETS_FOR_ANOMALY_DETECTION = 20_000
 
 PROGRESS_LOG_EVERY_PACKETS = 25_000
+
+# Ports whose protocols authenticate without encrypting. A credential
+# seen on one of these is disclosed, not merely at risk.
+_CLEARTEXT_PROTOCOLS = {21: "FTP", 23: "Telnet", 25: "SMTP", 80: "HTTP", 110: "POP3", 143: "IMAP"}
 
 _TLS_CLIENT_HELLO = "1"
 _DNS_RESPONSE = "True"
@@ -268,6 +286,7 @@ class _TsharkCollector:
         events.extend(self._tls_events(layers, packet_number, common))
         events.extend(self._authentication_events(layers, packet_number, common))
         events.extend(self._smb_events(layers, packet_number, common))
+        events.extend(self._credential_events(layers, packet_number, common))
         return events
 
     # --- per-packet analyses ---
@@ -476,6 +495,69 @@ class _TsharkCollector:
                 }
             )
         ]
+
+    def _credential_events(self, layers, packet_number, common):
+        """One event per credential seen crossing the network in the clear.
+
+        THE SECRET ITSELF IS NEVER STORED. The event carries a SHA-256 of
+        it instead, which is enough for the one question that matters
+        across events - "is this the same credential that was used
+        somewhere else" - without putting a working password into the case
+        database, where it would then ride along in every export, report
+        and backup of that case. The plaintext stays in the evidence file,
+        which is already hashed, read-only and reachable through search.
+        """
+        events = []
+
+        keys = _all(layers, "urlencoded-form.key")
+        values = _all(layers, "urlencoded-form.value")
+        pairs = list(zip(keys, values))
+
+        command = (_first(layers, "ftp.request.command") or "").upper()
+        argument = _first(layers, "ftp.request.arg")
+        if command in ("PASS", "USER") and argument:
+            pairs.append(("password" if command == "PASS" else "username", argument))
+
+        authorization = _first(layers, "http.authorization")
+        if authorization:
+            pairs.append(("authorization", authorization))
+
+        user = None
+        for name, value in pairs:
+            if str(name).lower() in _IDENTITY_FIELDS:
+                user = value
+
+        for name, value in pairs:
+            lowered = str(name).lower()
+            if lowered not in _SECRET_FIELDS and lowered != "authorization":
+                continue
+            if not value:
+                continue
+            protocol = _CLEARTEXT_PROTOCOLS.get(common.get("dst_port")) or (common.get("protocol") or "?").upper()
+            events.append(
+                self._event(
+                    {
+                        **common,
+                        "event_type": "credential_exposure",
+                        "user": user,
+                        "severity": "high",
+                        "message": (
+                            f"A {lowered} field was transmitted over {protocol} without encryption"
+                            + (f" for user '{user}'" if user else "")
+                        ),
+                        "raw_event_reference": {
+                            "packet_number": packet_number,
+                            "field": lowered,
+                            "protocol": protocol,
+                            # Identifies the secret across events without
+                            # being the secret.
+                            "secret_sha256": hashlib.sha256(str(value).encode("utf-8")).hexdigest(),
+                            "engine": "tshark",
+                        },
+                    }
+                )
+            )
+        return events
 
     # --- running state for end-of-capture summaries ---
 

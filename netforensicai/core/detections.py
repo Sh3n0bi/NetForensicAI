@@ -30,7 +30,9 @@ investigator's attention on its own. Adding more follows the same
 pattern - see CONTRIBUTING.md.
 """
 
+import itertools
 import logging
+import re
 from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
@@ -376,6 +378,317 @@ class _AggregateState:
             )
 
 
+# --- network rules ----------------------------------------------------
+#
+# The rules above this point grew from endpoint and web-scan evidence.
+# They fire on process names, disguised filenames and request floods -
+# and on a capture containing a malware download, credentials in the
+# clear, a stolen private key, a bulk upload to an external host and
+# eight beacons, they matched NOTHING. These cover that surface.
+
+# TLDs that are cheap, bulk-registrable and heavily abused. Presence is
+# not proof - plenty of legitimate sites use them - so this is `low` and
+# worded as something to check, not something to act on.
+_SUSPICIOUS_TLDS = {
+    "top", "xyz", "tk", "ml", "ga", "cf", "gq", "buzz", "click", "work",
+    "surf", "rest", "cyou", "monster", "quest", "sbs", "cfd", "lol",
+}
+
+# Extensions that execute, or that carry something that does.
+_EXECUTABLE_SUFFIXES = (
+    ".exe", ".dll", ".scr", ".msi", ".bat", ".cmd", ".ps1", ".vbs", ".jar",
+    ".hta", ".apk", ".elf", ".so", ".dylib", ".pyc",
+)
+
+# Field names that carry a secret when they appear in a cleartext body.
+_CREDENTIAL_MARKERS = re.compile(
+    r"(?:^|[?&\s])(?:password|passwd|pwd|pass|secret|token|api[_-]?key)=", re.IGNORECASE
+)
+
+# Filenames that are private key material by convention. Checked as well
+# as content, because object export names a recovered file even when its
+# bytes are not carried on any event.
+_KEY_FILENAMES = (
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".pem", ".pfx", ".p12", ".jks", ".keystore",
+)
+
+# Material that is a compromise on sight, wherever it appears.
+_KEY_MATERIAL = (
+    ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")),
+    ("aws-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
+)
+
+# Protocols that authenticate without encrypting. A credential seen here
+# is disclosed, not merely at risk.
+_CLEARTEXT_AUTH_PORTS = {21: "FTP", 23: "Telnet", 110: "POP3", 143: "IMAP", 80: "HTTP"}
+
+# Bytes to one external destination before an upload is worth a look.
+BULK_TRANSFER_BYTES = 4_096
+
+# A beacon is regular. These bound what counts as regular: enough repeats
+# to be a pattern, and intervals that agree closely enough not to be a
+# person clicking.
+BEACON_MIN_CONNECTIONS = 5
+BEACON_MAX_JITTER_RATIO = 0.25
+
+# Below this, "periodic" is the wrong word. Flows a fraction of a second
+# apart are one burst - a file transfer opening parallel connections, say
+# - and reporting a "near-constant 0s interval" as a beacon is a false
+# positive that teaches an analyst to distrust the rule.
+BEACON_MIN_INTERVAL_SECONDS = 1.0
+
+# A beacon is a small, regular CHECK-IN. A chunked upload is also regular
+# - six file parts two seconds apart fit "periodic" perfectly - but it is
+# an exfiltration, not an implant calling home, and the two want different
+# responses. Volume is what separates them.
+BEACON_MAX_MEAN_BYTES = 2_048
+
+
+def _is_private(address):
+    """RFC1918 / loopback / link-local. Used to tell "left the network"
+    from "stayed inside it" - the difference between an upload and a file
+    copy."""
+    if not address:
+        return False
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(str(address)).is_private or ipaddress.ip_address(str(address)).is_loopback
+    except ValueError:
+        return False
+
+
+def _suspicious_tld(domain):
+    if not domain or "." not in domain:
+        return None
+    tld = domain.rsplit(".", 1)[-1].lower()
+    return tld if tld in _SUSPICIOUS_TLDS else None
+
+
+def _network_rules_for_event(event):
+    """Per-event network rules. Same contract as _rules_for_event."""
+
+    # A domain on a bulk-registrable TLD.
+    tld = _suspicious_tld(event.domain)
+    if tld and event.event_type in ("dns_query", "dns_response", "http_request", "tls_handshake"):
+        yield (
+            "SUSPICIOUS-TLD",
+            "Domain on a commonly abused top-level domain",
+            "low",
+            f"'{event.domain}' is registered under .{tld}, a TLD cheap enough to be used in bulk "
+            f"by phishing and malware infrastructure. Common in legitimate use too - worth checking, "
+            f"not evidence on its own.",
+        )
+
+    # An executable arriving over an UNENCRYPTED channel.
+    #
+    # Not merely "an executable": fetching setup.exe over HTTPS from a
+    # vendor is ordinary, and flagging it would train people to ignore
+    # this rule. What makes it a finding is the cleartext - anyone on the
+    # path can substitute the binary before it lands.
+    target = event.url or event.file_name or ""
+    over_cleartext = event.dst_port in _CLEARTEXT_AUTH_PORTS or (event.url or "").startswith("http://")
+    if event.event_type in ("http_request", "http_response") and target and over_cleartext:
+        lowered = target.split("?", 1)[0].lower()
+        if lowered.endswith(_EXECUTABLE_SUFFIXES):
+            yield (
+                "EXECUTABLE-DOWNLOAD",
+                "Executable retrieved over the network",
+                "high",
+                f"'{_clip(target)}' has an executable extension. Retrieving one over cleartext HTTP "
+                f"gives anyone on the path the ability to substitute it.",
+            )
+
+    # Credentials submitted where anyone on the path can read them.
+    #
+    # Driven by the parser's credential_exposure event rather than by
+    # pattern-matching a message string. Normalized events carry no
+    # payload by design, so a credential is simply not visible from here -
+    # only the parser, holding the dissected packet, ever saw it. That
+    # event carries a HASH of the secret, never the secret.
+    if event.event_type == "credential_exposure":
+        reference = event.raw_event_reference or {}
+        protocol = reference.get("protocol", "an unencrypted protocol")
+        field_name = reference.get("field", "credential")
+        yield (
+            "CLEARTEXT-CREDENTIALS",
+            "Credentials submitted without encryption",
+            "high",
+            f"A {field_name} field"
+            + (f" for user '{event.user}'" if event.user else "")
+            + f" crossed the network over {protocol} to {event.dst_ip or 'an external host'}. "
+            f"Anyone on the path could read it: treat the credential as disclosed rather than at "
+            f"risk, and rotate it.",
+        )
+
+    # Key material in transit. A private key that crossed the network
+    # shows up two ways: named in a URL or a carved filename, or matched
+    # in content. Both are checked - a key served as `/backup/id_rsa` and
+    # one recovered by object export are the same incident.
+    named = f"{event.file_name or ''} {event.url or ''}".lower()
+    if any(marker in named for marker in _KEY_FILENAMES):
+        yield (
+            "KEY-MATERIAL-IN-TRANSIT",
+            "Private key material crossed the network",
+            "high",
+            f"'{_clip(event.file_name or event.url)}' names private key material. If this was not "
+            f"encrypted end to end, the key should be treated as compromised and rotated.",
+        )
+    elif event.message:
+        for label, pattern in _KEY_MATERIAL:
+            if pattern.search(event.message):
+                yield (
+                    "KEY-MATERIAL-IN-TRANSIT",
+                    "Secret material observed on the wire",
+                    "high",
+                    f"Content matching {label} crossed the network. If this was not encrypted end "
+                    f"to end, the secret should be treated as compromised and rotated.",
+                )
+                break
+
+
+class _NetworkAggregateState:
+    """Cross-event network rules: exfiltration, beaconing, credential reuse.
+
+    These are the ones that cannot be seen one packet at a time. A single
+    upload chunk is unremarkable; six of them to an external host is an
+    exfiltration. One TLS connection means nothing; eight at thirty-second
+    intervals is a beacon. And a password is just a string until it turns
+    up a second time on a different protocol - THAT is the finding, and it
+    is invisible to any rule that looks at one event.
+    """
+
+    def __init__(self):
+        self.outbound = {}     # (src, dst) -> [bytes, events, first_event]
+        self.beacons = {}      # (src, dst, port) -> [timestamps, first_event]
+        self.secrets = {}      # secret -> [(event, protocol)]
+
+    def feed(self, event):
+        self._feed_transfer(event)
+        self._feed_beacon(event)
+        self._feed_secret(event)
+
+    def _feed_transfer(self, event):
+        if event.event_type != "network_connection":
+            return
+        if not event.src_ip or not event.dst_ip:
+            return
+        # Outbound only: a copy between two internal hosts is not
+        # exfiltration, and flagging it would bury the case that is.
+        if not _is_private(event.src_ip) or _is_private(event.dst_ip):
+            return
+        size = (event.raw_event_reference or {}).get("byte_count") or 0
+        key = (event.src_ip, event.dst_ip)
+        entry = self.outbound.setdefault(key, [0, 0, event])
+        entry[0] += size
+        entry[1] += 1
+
+    def _feed_beacon(self, event):
+        if event.event_type != "network_connection" or not event.timestamp:
+            return
+        if not event.src_ip or not event.dst_ip or _is_private(event.dst_ip):
+            return
+        key = (event.src_ip, event.dst_ip, event.dst_port)
+        entry = self.beacons.setdefault(key, [[], event, 0])
+        entry[0].append(event.timestamp)
+        entry[2] += (event.raw_event_reference or {}).get("byte_count") or 0
+
+    def _feed_secret(self, event):
+        """Remember where each credential was seen, keyed on its HASH.
+
+        The hash is what makes this rule possible without the store ever
+        holding a password: two credential_exposure events carrying the
+        same secret_sha256 are the same secret, and that is the only fact
+        this rule needs. The plaintext never leaves the evidence file.
+        """
+        if event.event_type != "credential_exposure":
+            return
+        reference = event.raw_event_reference or {}
+        digest = reference.get("secret_sha256")
+        if not digest:
+            return
+        self.secrets.setdefault(digest, []).append((event, reference.get("protocol", "unknown")))
+
+    def results(self):
+        out = []
+        bulk_pairs = set()
+
+        for (src, dst), (size, count, event) in self.outbound.items():
+            if size < BULK_TRANSFER_BYTES:
+                continue
+            bulk_pairs.add((src, dst))
+            out.append(
+                (
+                    "OUTBOUND-BULK-TRANSFER",
+                    "Bulk transfer to an external host",
+                    "high" if size >= BULK_TRANSFER_BYTES * 4 else "medium",
+                    f"{src} sent {size:,} bytes to {dst} across {count} flow(s). Volume alone is "
+                    f"not exfiltration - check what was transferred and whether the destination "
+                    f"is expected.",
+                    event,
+                )
+            )
+
+        for (src, dst, port), (times, event, total_bytes) in self.beacons.items():
+            if len(times) < BEACON_MIN_CONNECTIONS:
+                continue
+            if total_bytes / max(len(times), 1) > BEACON_MAX_MEAN_BYTES:
+                # Regular, but carrying too much to be a check-in.
+                continue
+            if (src, dst) in bulk_pairs:
+                # This pair is already reported as a bulk transfer. A
+                # chunked upload is regular by nature, so it satisfies
+                # "periodic" too - but it is ONE activity, and naming it
+                # twice makes an analyst chase two leads to one place.
+                # The more specific rule keeps it.
+                continue
+            ordered = sorted(times)
+            gaps = [
+                (b - a).total_seconds() for a, b in zip(ordered, ordered[1:]) if (b - a).total_seconds() > 0
+            ]
+            if len(gaps) < BEACON_MIN_CONNECTIONS - 1:
+                continue
+            mean = sum(gaps) / len(gaps)
+            if mean < BEACON_MIN_INTERVAL_SECONDS:
+                continue
+            # Regularity, not frequency: a human browsing produces wildly
+            # uneven gaps, an implant on a timer does not.
+            jitter = max(abs(gap - mean) for gap in gaps) / mean
+            if jitter > BEACON_MAX_JITTER_RATIO:
+                continue
+            out.append(
+                (
+                    "PERIODIC-BEACON",
+                    "Regular repeated contact with one external host",
+                    "high",
+                    f"{src} contacted {dst}:{port} {len(ordered)} times at a near-constant "
+                    f"{mean:.0f}s interval (jitter {jitter:.0%}). Machine-regular timing is "
+                    f"characteristic of an implant checking in.",
+                    event,
+                )
+            )
+
+        for _digest, seen in self.secrets.items():
+            protocols = {protocol for _event, protocol in seen}
+            if len(protocols) < 2:
+                continue
+            first_event = seen[0][0]
+            out.append(
+                (
+                    "CREDENTIAL-REUSE",
+                    "One credential used across several protocols",
+                    "high",
+                    f"The same password was observed on {', '.join(sorted(protocols))}. Reuse turns "
+                    f"a single cleartext disclosure into access everywhere that credential is "
+                    f"accepted.",
+                    first_event,
+                )
+            )
+
+        return out
+
+
 def _aggregate_rules(events):
     """Convenience wrapper over _AggregateState for callers that already have
     every event in hand (tests, mostly)."""
@@ -397,10 +710,14 @@ def scan_case(store):
     # random access - the per-event rules are stateless and the aggregate
     # ones keep their own small accumulators.
     aggregate = _AggregateState()
+    network = _NetworkAggregateState()
     detections = []
     for event in store.iter_events():
         aggregate.feed(event)
-        for rule_id, rule_name, severity, description in _rules_for_event(event):
+        network.feed(event)
+        for rule_id, rule_name, severity, description in itertools.chain(
+            _rules_for_event(event), _network_rules_for_event(event)
+        ):
             detections.append(
                 {
                     "detection_id": f"DET-{rule_id}-{event.event_id}",
@@ -414,7 +731,9 @@ def scan_case(store):
                 }
             )
 
-    for rule_id, rule_name, severity, description, event in aggregate.results():
+    for rule_id, rule_name, severity, description, event in itertools.chain(
+        aggregate.results(), network.results()
+    ):
         detections.append(
             {
                 # Keyed by the representative event so re-running analyze on

@@ -1531,6 +1531,40 @@ def stream_follow(
         typer.echo(f"\n(truncated at --max-bytes {max_bytes})")
 
 
+@app.command("story")
+def story_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """What happened, in order, assembled from the case's own detections.
+
+    Deterministic: no model, no network. Every line traces back to an
+    event id, so the account can be checked rather than trusted.
+    """
+    from netforensicai.core import narrative as narrative_module
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.store import CaseStore
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    with CaseStore(Path(cases_dir) / case.case_id) as store:
+        narrative = narrative_module.build(store)
+
+    typer.echo(f"{case.case_id} - {case.name}")
+    typer.echo("")
+    typer.echo(narrative_module.render_text(narrative))
+
+
 @app.command("chat")
 def chat_cmd(
     case_id: str = typer.Option(..., "--case", help="Case ID to ask about"),
