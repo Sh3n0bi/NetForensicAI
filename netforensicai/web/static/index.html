@@ -7,39 +7,50 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand"><a href="#/">NetForensicAI</a></div>
-    <!-- The nav sits BEFORE the right-hand links and is allowed to wrap.
-         Previously `settings-link` took margin-left:auto and the nav
-         followed it, so once the tabs outgrew the viewport they ran off
-         the right edge - taking the last one with them. -->
-    <nav id="case-nav" class="case-nav" hidden>
-      <span id="case-nav-name" class="case-nav-name"></span>
-      <a href="#" data-tab="overview">Overview</a>
-      <!-- Grouped by the stage of an investigation rather than listed flat:
-           fourteen equal tabs say nothing about what belongs together. -->
-      <span class="nav-group">Evidence</span>
-      <a href="#" data-tab="evidence">Items</a>
-      <a href="#" data-tab="capture">Capture</a>
-      <span class="nav-group">Dig</span>
-      <a href="#" data-tab="search">Search</a>
-      <a href="#" data-tab="streams">Streams</a>
-      <a href="#" data-tab="triage">Triage</a>
-      <span class="nav-group">Analyze</span>
-      <a href="#" data-tab="timeline">Timeline</a>
-      <a href="#" data-tab="entities">Entities</a>
-      <a href="#" data-tab="detections">Detections</a>
-      <a href="#" data-tab="attack">ATT&amp;CK</a>
-      <span class="nav-group">Conclude</span>
-      <a href="#" data-tab="findings">Findings</a>
-      <a href="#" data-tab="reports">Reports</a>
-      <a href="#" data-tab="audit">Custody</a>
-      <a href="#" data-tab="chat" class="nav-ask">Ask</a>
-    </nav>
-    <a class="settings-link" href="#/settings">Settings</a>
-  </header>
+  <div class="shell">
 
-  <main id="app"></main>
+    <!-- Left rail. Grouped by the stage of an investigation rather than
+         listed flat: fourteen equal destinations say nothing about what
+         belongs together, and a vertical rail has the room to say it -
+         which a horizontal bar did not, having pushed its last tab off
+         the right edge at 1440px. -->
+    <aside class="sidebar">
+      <a class="brand" href="#/">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#5b9dff" stroke-width="1.6" stroke-linejoin="round">
+          <path d="M12 2l8 3.5v6c0 4.6-3.2 8.5-8 10.5-4.8-2-8-5.9-8-10.5v-6z"/>
+          <path d="M9 12l2 2 4-4" stroke-linecap="round"/>
+        </svg>
+        <span class="brand-text">
+          <span class="brand-name">NetForensic<em>AI</em></span>
+          <span class="brand-sub">Local-first DFIR platform</span>
+        </span>
+      </a>
+
+      <nav id="case-nav" class="rail" hidden></nav>
+
+      <div class="rail-foot">
+        <div id="capture-card"></div>
+        <div class="local-mode">
+          <span class="dot ok"></span>
+          <div>
+            <div>Local mode</div>
+            <div class="muted">No data leaves your machine</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div id="case-switch" class="case-switch"></div>
+        <a class="settings-link" href="#/settings">Settings</a>
+      </header>
+
+      <main id="app"></main>
+
+      <footer class="statusbar" id="statusbar"></footer>
+    </div>
+  </div>
 
   <div id="toast" class="toast" hidden></div>
 
