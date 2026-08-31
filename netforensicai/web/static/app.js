@@ -101,18 +101,21 @@ async function route() {
   const nav = document.getElementById("case-nav");
   const app = document.getElementById("app");
 
+  const switcher = document.getElementById("case-switch");
+  const captureCard = document.getElementById("capture-card");
+
   if (parts[0] === "case" && parts[1]) {
     const caseId = parts[1];
     const tab = parts[2] || "overview";
-    nav.hidden = false;
-    nav.querySelectorAll("a[data-tab]").forEach((a) => {
-      a.classList.toggle("active", a.dataset.tab === tab);
-      a.href = `#/case/${caseId}/${a.dataset.tab}`;
-    });
     app.innerHTML = "";
     try {
       const c = await apiGet(`/cases/${caseId}`);
-      document.getElementById("case-nav-name").textContent = `${c.case_id} · ${c.name}`;
+      // The rail is drawn from the tshark status so the surfaces that
+      // need it can be disabled with a reason rather than hidden.
+      renderRail(caseId, tab, await wiresharkStatus());
+      await renderCaseSwitch(c);
+      renderStatusBar(c);
+      renderCaptureCard(caseId);
       await renderCaseTab(app, c, tab, parts.slice(3));
     } catch (e) {
       nav.hidden = true;
@@ -121,12 +124,16 @@ async function route() {
   } else if (parts[0] === "settings") {
     stopCapturePolling();
     nav.hidden = true;
-    document.getElementById("case-nav-name").textContent = "";
+    switcher.innerHTML = "";
+    captureCard.innerHTML = "";
     app.innerHTML = "";
+    renderStatusBar(null);
     await renderSettings(app);
   } else {
     nav.hidden = true;
-    document.getElementById("case-nav-name").textContent = "";
+    switcher.innerHTML = "";
+    captureCard.innerHTML = "";
+    renderStatusBar(null);
     await renderCaseList(app);
   }
 }
@@ -366,17 +373,12 @@ async function renderCaseList(app) {
 // --- Overview ---
 
 async function renderOverview(app, c) {
+  // --- header -------------------------------------------------------
   const head = el("div", { class: "case-head" });
   head.appendChild(
-    el("div", {}, [
-      el("h1", { text: c.name }),
-      el("div", { class: "subtitle", text: c.description || "No description." }),
-    ])
+    el("div", {}, [el("h1", { text: c.name }), el("div", { class: "subtitle", text: c.description || "No description." })])
   );
-
-  // Case status is the investigation's own state, so it is editable here
-  // rather than being a read-only badge somewhere else.
-  const statusWrap = el("div", { class: "case-head-actions" });
+  const actions = el("div", { class: "case-head-actions" });
   const statusSel = el("select", { title: "Case status" });
   for (const s of ["open", "investigating", "closed"]) {
     const opt = el("option", { value: s, text: s });
@@ -392,48 +394,45 @@ async function renderOverview(app, c) {
       statusSel.value = c.status;
     }
   };
-  statusWrap.appendChild(statusSel);
-  statusWrap.appendChild(el("button", { class: "danger", text: "Delete case", onclick: () => confirmDelete(c) }));
-  head.appendChild(statusWrap);
+  actions.appendChild(statusSel);
+  actions.appendChild(el("button", { class: "danger", text: "Delete case", onclick: () => confirmDelete(c) }));
+  head.appendChild(actions);
   app.appendChild(head);
 
-  // --- stat row ---
-  const stats = el("div", { class: "kpis" });
+  // --- KPI row ------------------------------------------------------
   const corr = c.correlation_by_type || {};
   const kpis = [
-    ["Events", c.event_count, `across ${c.evidence_count} evidence item${c.evidence_count === 1 ? "" : "s"}`, "k-blue"],
-    ["Entities", c.entity_count, "deterministic IDs across sources", "k-violet"],
-    ["Detections", c.detection_count, "offline rules, no AI", "k-red"],
-    [
-      "Correlations",
-      c.correlation_count ?? 0,
-      `${corr.related || 0} related · ${corr.possible_relationship || 0} possible`,
-      "k-amber",
-    ],
-    ["Files carved", c.artifact_count ?? 0, "hashed into artifacts/", "k-green"],
-    ["Findings", c.finding_count, "investigator-owned", "k-blue"],
+    ["Events", c.event_count, `across ${c.evidence_count} evidence item${c.evidence_count === 1 ? "" : "s"}`, "k-blue", ICONS.event, "#5b9dff"],
+    ["Entities", c.entity_count, "deterministic IDs across sources", "k-violet", ICONS.entities, "#b07cff"],
+    ["Detections", c.detection_count, "offline rules, no AI", "k-red", ICONS.detections, "#e05a4e"],
+    ["Correlations", c.correlation_count ?? 0, `${corr.related || 0} related · ${corr.possible_relationship || 0} possible`, "k-amber", ICONS.attack, "#e0a030"],
+    ["Files carved", c.artifact_count ?? 0, "hashed into artifacts/", "k-green", ICONS.file, "#4caf50"],
+    ["Findings", c.finding_count, "investigator-owned", "k-blue", ICONS.findings, "#5b9dff"],
   ];
-  for (const [label, n, sub, cls] of kpis) {
-    stats.appendChild(
-      el("div", { class: "kpi " + cls }, [
-        el("div", { class: "kpi-l", text: label }),
-        el("div", { class: "kpi-n", text: n }),
-        el("div", { class: "kpi-s", text: sub }),
-      ])
-    );
+  const row = el("div", { class: "kpis" });
+  for (const [label, n, sub, cls, iconPath, stroke] of kpis) {
+    const tile = el("div", { class: "kpi " + cls });
+    const h = el("div", { class: "kpi-head" });
+    const box = el("div", { class: "kpi-icon" });
+    box.appendChild(icon(iconPath, { size: 15, stroke, width: 1.9 }));
+    h.appendChild(box);
+    h.appendChild(el("div", { class: "kpi-l", text: label }));
+    tile.appendChild(h);
+    tile.appendChild(el("div", { class: "kpi-n", text: Number(n || 0).toLocaleString() }));
+    tile.appendChild(el("div", { class: "kpi-s", text: sub }));
+    row.appendChild(tile);
   }
-  app.appendChild(stats);
+  app.appendChild(row);
 
-  // --- analysis runner: the in-progress / complete / error state ---
-  const runPanel = el("div", { class: "panel" });
-  const runBar = el("div", { class: "result-head" });
-  runBar.appendChild(el("h3", { text: "Analysis" }));
-  const runState = el("span", { class: "run-state", text: c.event_count ? "complete" : "not run yet" });
-  runState.classList.add(c.event_count ? "ok" : "idle");
-  runBar.appendChild(runState);
+  // --- analysis runner ---------------------------------------------
+  const runPanel = el("div", { class: "card", style: "margin-bottom:14px" });
+  const runHead = el("div", { class: "card-head" });
+  runHead.appendChild(el("h3", { text: "Analysis" }));
+  const runState = el("span", { class: "run-state " + (c.event_count ? "ok" : "idle"), text: c.event_count ? "complete" : "not run yet" });
+  runHead.appendChild(runState);
   const runBtn = el("button", { text: c.event_count ? "Re-run analyze" : "Run analyze" });
-  runBar.appendChild(el("span", { class: "right" }, [runBtn]));
-  runPanel.appendChild(runBar);
+  runHead.appendChild(el("span", { class: "right" }, [runBtn]));
+  runPanel.appendChild(runHead);
   const runOut = el("div");
   runPanel.appendChild(runOut);
   app.appendChild(runPanel);
@@ -447,27 +446,21 @@ async function renderOverview(app, c) {
     try {
       const r = await apiPost(`/cases/${c.case_id}/analyze`, {});
       runOut.innerHTML = "";
-      // Per-evidence errors are reported by the pipeline even when the
-      // request itself succeeded - a partially-failed analyze is not a
-      // success, so it must not read as one.
+      // Per-evidence failures are reported even when the request itself
+      // succeeded: a partially-failed analyze is not a success.
       const failed = (r.results || []).filter((x) => x.error);
       if (failed.length) {
         runState.className = "run-state bad";
         runState.textContent = `completed with ${failed.length} error${failed.length === 1 ? "" : "s"}`;
-        for (const f of failed) {
-          runOut.appendChild(el("div", { class: "error-box", text: `${f.evidence_id}: ${f.error}` }));
-        }
+        for (const f of failed) runOut.appendChild(el("div", { class: "error-box", text: `${f.evidence_id}: ${f.error}` }));
       } else {
         runState.className = "run-state ok";
         runState.textContent = "complete";
       }
       runOut.appendChild(
-        el("div", {
-          class: "dim",
-          text: `${r.total_events} events · ${r.total_entities} entities · ${r.detection_count} detection(s)`,
-        })
+        el("div", { class: "dim", text: `${r.total_events} events · ${r.total_entities} entities · ${r.detection_count} detection(s)` })
       );
-      setTimeout(route, 600);
+      setTimeout(route, 700);
     } catch (e) {
       runOut.innerHTML = "";
       runState.className = "run-state bad";
@@ -478,51 +471,64 @@ async function renderOverview(app, c) {
     }
   };
 
-  // --- three panels fed by the dig routes ---
-  const grid = el("div", { class: "panel-grid" });
-  app.appendChild(grid);
+  // --- charts row ---------------------------------------------------
+  const charts = el("div", { class: "dash-row dash-chart" });
+  const timelineCard = el("div", { class: "card" });
+  timelineCard.appendChild(
+    el("div", { class: "card-head" }, [el("h3", { text: "Timeline" }), el("span", { class: "dim", text: "event density" })])
+  );
+  const entityCard = el("div", { class: "card" });
+  entityCard.appendChild(
+    el("div", { class: "card-head" }, [el("h3", { text: "Top entities" }), el("span", { class: "dim", text: "by events" })])
+  );
+  const graphCard = el("div", { class: "card" });
+  graphCard.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Entity graph" })]));
+  charts.appendChild(timelineCard);
+  charts.appendChild(entityCard);
+  charts.appendChild(graphCard);
+  app.appendChild(charts);
 
-  const detPanel = el("div", { class: "panel" });
-  detPanel.appendChild(el("h3", { text: "Recent detections" }));
-  grid.appendChild(detPanel);
+  // --- three tables -------------------------------------------------
+  const tables = el("div", { class: "dash-row dash-3" });
+  const detCard = el("div", { class: "card" });
+  detCard.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Recent detections" })]));
+  const fileCard = el("div", { class: "card" });
+  fileCard.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Files carved" })]));
+  const triCard = el("div", { class: "card" });
+  triCard.appendChild(
+    el("div", { class: "card-head" }, [el("h3", { text: "Triage matches" }), el("span", { class: "dim", text: "leads, not verdicts" })])
+  );
+  tables.appendChild(detCard);
+  tables.appendChild(fileCard);
+  tables.appendChild(triCard);
+  app.appendChild(tables);
 
-  const entPanel = el("div", { class: "panel" });
-  entPanel.appendChild(el("h3", { text: "Top entities" }));
-  grid.appendChild(entPanel);
-
-  const triPanel = el("div", { class: "panel" });
-  triPanel.appendChild(
-    el("div", { class: "result-head" }, [
-      el("h3", { text: "Triage candidates" }),
-      el("span", { class: "dim", text: "leads, not verdicts" }),
+  // --- assistant + custody ------------------------------------------
+  const bottom = el("div", { class: "dash-row dash-2" });
+  const askCard = el("div", { class: "card" });
+  askCard.appendChild(
+    el("div", { class: "card-head" }, [
+      el("h3", { text: "Assistant" }),
+      el("span", { class: "dim", text: "retrieves evidence, cites what it found" }),
     ])
   );
-  grid.appendChild(triPanel);
+  const auditCard = el("div", { class: "card" });
+  auditCard.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Chain of custody" })]));
+  bottom.appendChild(askCard);
+  bottom.appendChild(auditCard);
+  app.appendChild(bottom);
 
-  loadInto(detPanel, () => apiGet(`/cases/${c.case_id}/detections`), (rows) => {
-    if (!rows.length) return el("div", { class: "empty", text: "No rule matched." });
-    const t = el("table");
-    const tb = el("tbody");
-    for (const d of rows.slice(0, 6)) {
-      tb.appendChild(
-        el("tr", {}, [
-          el("td", { class: "mono", text: d.rule_id }),
-          el("td", {}, [el("span", { class: "badge badge-" + d.severity, text: d.severity })]),
-        ])
-      );
-    }
-    t.appendChild(tb);
-    return t;
-  });
+  // --- fill everything ----------------------------------------------
+  loadInto(timelineCard, () => apiGet(`/cases/${c.case_id}/timeline`), (entries) => densityChart(entries));
 
-  loadInto(entPanel, () => apiGet(`/cases/${c.case_id}/entities?sort=events`), (rows) => {
+  loadInto(entityCard, () => apiGet(`/cases/${c.case_id}/entities?sort=events&limit=8`), (rows) => {
     if (!rows.length) return el("div", { class: "empty", text: "No entities extracted." });
-    const t = el("table");
+    const t = el("table", { class: "mini" });
     t.innerHTML = "<thead><tr><th>Value</th><th>Type</th><th>Events</th><th>Links</th></tr></thead>";
     const tb = el("tbody");
     for (const e of rows.slice(0, 6)) {
       tb.appendChild(
-        el("tr", { class: "clickable" }, [
+        el("tr", {}, [
           el("td", {}, [el("a", { href: `#/case/${c.case_id}/entities/${e.entity_id}`, class: "mono", text: e.value })]),
           el("td", { class: "dim", text: e.entity_type }),
           el("td", { class: "mono", text: e.event_count }),
@@ -535,17 +541,68 @@ async function renderOverview(app, c) {
   });
 
   loadInto(
-    triPanel,
+    graphCard,
+    async () => {
+      const entities = await apiGet(`/cases/${c.case_id}/entities?sort=events&limit=40`);
+      if (!entities.length) return null;
+      // Centre on something that identifies a host, not whichever entity
+      // simply appears most. By raw event count the winner is invariably
+      // a port - "1 hop from port 80" tells an investigator nothing.
+      const hub =
+        entities.find((e) => e.entity_type === "ip_address") ||
+        entities.find((e) => e.entity_type === "domain") ||
+        entities[0];
+      return { hub, graph: await apiGet(`/cases/${c.case_id}/entities/${hub.entity_id}/graph`) };
+    },
+    (data) => (data ? entityGraph(data.hub, data.graph) : el("div", { class: "empty", text: "No entities to graph." }))
+  );
+
+  loadInto(detCard, () => apiGet(`/cases/${c.case_id}/detections`), (rows) => {
+    if (!rows.length) return el("div", { class: "empty", text: "No rule matched." });
+    const t = el("table", { class: "mini" });
+    const tb = el("tbody");
+    for (const d of rows.slice(0, 6)) {
+      tb.appendChild(
+        el("tr", {}, [
+          el("td", { class: "mono", text: d.rule_id }),
+          el("td", {}, [el("span", { class: "badge badge-" + cssClass(d.severity), text: d.severity })]),
+          el("td", { class: "mono dim", text: d.evidence_id }),
+        ])
+      );
+    }
+    t.appendChild(tb);
+    return t;
+  });
+
+  loadInto(fileCard, () => apiGet(`/cases/${c.case_id}/artifacts`), (rows) => {
+    if (!rows.length) return el("div", { class: "empty", text: "No files carved." });
+    const t = el("table", { class: "mini" });
+    const tb = el("tbody");
+    for (const f of rows.slice(0, 6)) {
+      tb.appendChild(
+        el("tr", {}, [
+          el("td", { class: "mono", text: f.name }),
+          el("td", { class: "dim", text: f.protocol }),
+          el("td", { class: "mono dim", text: f.missing ? "missing" : `${f.size_bytes} B` }),
+        ])
+      );
+    }
+    t.appendChild(tb);
+    return t;
+  });
+
+  loadInto(
+    triCard,
     () => apiGet(`/cases/${c.case_id}/triage`),
     (r) => {
       if (!r.candidates.length) return el("div", { class: "empty", text: "Nothing matched the patterns." });
-      const t = el("table");
+      const t = el("table", { class: "mini" });
       const tb = el("tbody");
       for (const x of r.candidates.slice(0, 6)) {
         tb.appendChild(
           el("tr", {}, [
             el("td", {}, [el("span", { class: "badge badge-low mono", text: x.pattern })]),
-            el("td", { class: "mono hit-text", text: x.value }),
+            el("td", { class: "mono hit-text", text: x.value.slice(0, 34) }),
             el("td", { class: "mono dim", text: x.frame_number }),
           ])
         );
@@ -553,25 +610,192 @@ async function renderOverview(app, c) {
       t.appendChild(tb);
       return t;
     },
-    // Triage needs tshark. Absent, this is a setup step, not a failure.
     "Needs Wireshark - install tshark to enable triage."
   );
 
-  const meta = el("div", { class: "panel" });
-  meta.appendChild(el("h3", { text: "Case details" }));
-  const mt = el("table");
-  const mtb = el("tbody");
-  for (const [k, v] of [
-    ["Case ID", c.case_id],
-    ["Investigator", c.investigator],
-    ["Created", c.created_at],
-    ["Updated", c.updated_at],
-  ]) {
-    mtb.appendChild(el("tr", {}, [el("th", { text: k }), el("td", { class: "mono", text: v })]));
+  loadInto(auditCard, () => apiGet(`/cases/${c.case_id}/audit`), (data) => {
+    const entries = data.entries || data;
+    const wrap = el("div");
+    if (data.intact !== undefined) {
+      wrap.appendChild(
+        el("div", { class: "dim", style: `color:${data.intact ? "var(--ok)" : "var(--bad)"};margin-bottom:8px` }, [
+          el("span", { text: data.intact ? "hash chain intact" : "CHAIN BROKEN" }),
+        ])
+      );
+    }
+    const t = el("table", { class: "mini" });
+    const tb = el("tbody");
+    for (const e of entries.slice(-6).reverse()) {
+      tb.appendChild(
+        el("tr", {}, [
+          el("td", { class: "mono dim", text: e.action }),
+          el("td", { text: e.actor }),
+          el("td", { class: "mono dim", text: (e.timestamp || "").slice(11, 19) }),
+        ])
+      );
+    }
+    t.appendChild(tb);
+    wrap.appendChild(t);
+    return wrap;
+  });
+
+  askCard.appendChild(miniAsk(c));
+}
+
+// A one-shot ask box on the dashboard. The full conversation lives on the
+// Ask surface; this is for the question you have while looking at totals.
+function miniAsk(c) {
+  const wrap = el("div");
+  const out = el("div");
+  wrap.appendChild(out);
+
+  const bar = el("div", { class: "filter-bar", style: "margin-top:10px;margin-bottom:0" });
+  const q = el("input", { placeholder: "Ask about this case…", style: "flex-grow:1;min-width:200px" });
+  const send = el("button", { text: "Ask" });
+  bar.appendChild(q);
+  bar.appendChild(send);
+  wrap.appendChild(bar);
+
+  async function ask() {
+    const question = q.value.trim();
+    if (!question) return;
+    out.innerHTML = "";
+    out.appendChild(el("div", { class: "bubble-me", text: question }));
+    const pending = el("div", { class: "loading", text: "Retrieving evidence…" });
+    out.appendChild(pending);
+    send.disabled = true;
+    try {
+      const r = await apiPost(`/cases/${c.case_id}/chat`, { question });
+      pending.remove();
+      out.appendChild(el("div", { class: "answer", text: r.answer }));
+      if (r.citations && r.citations.length) {
+        const cites = el("div", { class: "cites" });
+        for (const cit of r.citations) cites.appendChild(el("span", { class: "cite", text: `${cit.kind} ${cit.reference}` }));
+        out.appendChild(cites);
+      }
+      out.appendChild(
+        el("div", { class: "dim", style: "margin-top:8px", text: "Claims citing anything the tools did not return are refused, not shown." })
+      );
+    } catch (e) {
+      pending.remove();
+      const refused = /refused/i.test(e.message);
+      out.appendChild(el("div", { class: refused ? "refused" : "error-box", text: (refused ? "Answer refused. " : "Error: ") + e.message }));
+    } finally {
+      send.disabled = false;
+    }
   }
-  mt.appendChild(mtb);
-  meta.appendChild(mt);
-  app.appendChild(meta);
+  send.onclick = ask;
+  q.onkeydown = (ev) => {
+    if (ev.key === "Enter") ask();
+  };
+  return wrap;
+}
+
+// --- charts ----------------------------------------------------------
+//
+// Drawn as inline SVG rather than pulled from a chart library: the UI
+// ships with no build step and no CDN, and a stacked bar chart is a
+// hundred lines of rectangles.
+
+function densityChart(entries) {
+  const stamped = entries.filter((e) => e.timestamp);
+  if (!stamped.length) return el("div", { class: "empty", text: "No timestamped events." });
+
+  const times = stamped.map((e) => new Date(e.timestamp).getTime());
+  const first = Math.min(...times);
+  const last = Math.max(...times);
+  const BUCKETS = 36;
+  const span = Math.max(last - first, 1);
+  const width = Math.max(span / BUCKETS, 1);
+
+  const buckets = Array.from({ length: BUCKETS }, () => ({ all: 0, detection: 0 }));
+  for (const e of stamped) {
+    const idx = Math.min(BUCKETS - 1, Math.floor((new Date(e.timestamp).getTime() - first) / width));
+    buckets[idx].all += 1;
+    if (e.event_type === "anomaly" || (e.severity && e.severity !== "info")) buckets[idx].detection += 1;
+  }
+  const peak = Math.max(...buckets.map((b) => b.all), 1);
+
+  const W = 560;
+  const H = 168;
+  const pad = 26;
+  const barW = (W - pad) / BUCKETS - 3;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("style", "width:100%;height:168px;display:block");
+
+  let markup = "";
+  for (let g = 0; g <= 3; g++) {
+    const y = 10 + ((H - 40) / 3) * g;
+    markup += `<line x1="${pad}" y1="${y}" x2="${W}" y2="${y}" stroke="#2a2f3f" stroke-width="1"/>`;
+    const value = Math.round((peak / 3) * (3 - g));
+    markup += `<text x="${pad - 5}" y="${y + 3}" fill="#6b7288" font-size="9" text-anchor="end">${value}</text>`;
+  }
+  buckets.forEach((b, i) => {
+    const x = pad + i * ((W - pad) / BUCKETS);
+    const full = ((H - 40) * b.all) / peak;
+    const flagged = ((H - 40) * b.detection) / peak;
+    markup += `<rect x="${x}" y="${H - 30 - full}" width="${barW}" height="${Math.max(full, 0.5)}" fill="#5b9dff" rx="1.5"/>`;
+    if (flagged > 0) {
+      markup += `<rect x="${x}" y="${H - 30 - flagged}" width="${barW}" height="${flagged}" fill="#e0a030" rx="1.5"/>`;
+    }
+  });
+  const fmt = (ms) => new Date(ms).toISOString().slice(11, 16);
+  markup += `<text x="${pad}" y="${H - 8}" fill="#6b7288" font-size="9">${fmt(first)}</text>`;
+  markup += `<text x="${W}" y="${H - 8}" fill="#6b7288" font-size="9" text-anchor="end">${fmt(last)}</text>`;
+  svg.innerHTML = markup;
+
+  const wrap = el("div");
+  wrap.appendChild(
+    el("div", { class: "legend" }, [
+      el("span", {}, [el("span", { class: "swatch", style: "background:#5b9dff" }), el("span", { text: "all events" })]),
+      el("span", {}, [el("span", { class: "swatch", style: "background:#e0a030" }), el("span", { text: "flagged" })]),
+    ])
+  );
+  wrap.appendChild(svg);
+  wrap.appendChild(el("div", { class: "dim", style: "margin-top:6px", text: `${stamped.length.toLocaleString()} timestamped events` }));
+  return wrap;
+}
+
+function entityGraph(hub, data) {
+  const related = (data.related || []).slice(0, 14);
+  if (!related.length) return el("div", { class: "empty", text: "No related entities." });
+
+  const W = 340;
+  const H = 200;
+  const cx = W / 2;
+  const cy = H / 2 - 6;
+  const colour = { ip_address: "#5b9dff", domain: "#b07cff", url: "#e0a030", port: "#4caf50" };
+
+  let markup = "";
+  const points = related.map((r, i) => {
+    const angle = (i / related.length) * Math.PI * 2 - Math.PI / 2;
+    return { x: cx + Math.cos(angle) * 80, y: cy + Math.sin(angle) * 66, r };
+  });
+  for (const p of points) markup += `<line x1="${cx}" y1="${cy}" x2="${p.x}" y2="${p.y}" stroke="#2a3350" stroke-width="1"/>`;
+  for (const p of points) {
+    markup += `<circle cx="${p.x}" cy="${p.y}" r="5" fill="${colour[p.r.entity_type] || "#9aa0b4"}"><title>${escapeHtml(
+      p.r.entity_type + " " + p.r.value
+    )}</title></circle>`;
+  }
+  markup += `<circle cx="${cx}" cy="${cy}" r="13" fill="#5b9dff" opacity="0.25"/>`;
+  markup += `<circle cx="${cx}" cy="${cy}" r="8.5" fill="#5b9dff"/>`;
+  markup += `<text x="${cx}" y="${cy + 26}" fill="#9aa0b4" font-size="10" text-anchor="middle" font-family="SF Mono, Consolas, monospace">${escapeHtml(
+    hub.value
+  )}</text>`;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("style", "width:100%;height:200px;display:block");
+  svg.innerHTML = markup;
+
+  const wrap = el("div");
+  wrap.appendChild(svg);
+  wrap.appendChild(
+    el("div", { class: "dim", text: `1 hop from ${hub.value} · ${related.length} of ${(data.related || []).length} shown` })
+  );
+  return wrap;
 }
 
 // Fill a panel from an endpoint, showing loading / empty / a degraded
@@ -2143,4 +2367,209 @@ async function renderChat(app, c) {
   q.onkeydown = (ev) => {
     if (ev.key === "Enter") ask();
   };
+}
+
+// --- Application shell: rail, case switcher, status bar --------------
+//
+// The rail, the switcher and the status bar are chrome: they persist
+// across routes and are re-rendered from the case the router already
+// fetched, rather than each re-fetching it.
+
+function icon(path, opts) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", (opts && opts.size) || 16);
+  svg.setAttribute("height", (opts && opts.size) || 16);
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", (opts && opts.stroke) || "currentColor");
+  svg.setAttribute("stroke-width", (opts && opts.width) || 1.8);
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.innerHTML = path;
+  return svg;
+}
+
+const ICONS = {
+  overview: '<path d="M3 10.5L12 3l9 7.5"/><path d="M5.5 9.5V21h13V9.5"/>',
+  evidence: '<rect x="3" y="6" width="18" height="14" rx="2"/><path d="M3 10h18"/>',
+  capture: '<circle cx="12" cy="12" r="3"/><path d="M5 8a9 9 0 0 0 0 8M19 8a9 9 0 0 1 0 8"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/>',
+  streams: '<path d="M4 8h10M4 16h16"/><circle cx="17" cy="8" r="2.2"/><circle cx="7" cy="16" r="2.2"/>',
+  triage: '<path d="M5 4h11l4 4v12H5z"/><path d="M9 13l2 2 4-4"/>',
+  timeline: '<circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/>',
+  entities: '<circle cx="9" cy="9" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="8" r="2.4"/>',
+  detections: '<path d="M12 3l8 3.5v6c0 4.6-3.2 8.5-8 10.5-4.8-2-8-5.9-8-10.5v-6z"/><path d="M12 9v4"/>',
+  attack: '<circle cx="6" cy="12" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="18" cy="18" r="2.4"/><path d="M8.2 10.9l7.6-3.8M8.2 13.1l7.6 3.8"/>',
+  findings: '<path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h5"/>',
+  reports: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  audit: '<path d="M6 3h12v18l-6-3-6 3z"/>',
+  chat: '<path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z"/>',
+  check: '<path d="M5 12l5 5L20 7"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  event: '<path d="M3 13h4l3-8 4 16 3-8h4"/>',
+  arrow: '<path d="M5 12h13M13 6l6 6-6 6"/>',
+};
+
+// tab -> [group, label, icon]. The group headings are the four stages of
+// an investigation; `null` means the item stands alone.
+const RAIL = [
+  [null, "overview", "Overview", "overview"],
+  ["Evidence", "evidence", "Evidence", "evidence"],
+  [null, "capture", "Live capture", "capture"],
+  ["Dig", "search", "Search", "search"],
+  [null, "streams", "Streams", "streams"],
+  [null, "triage", "Triage", "triage"],
+  ["Analysis", "timeline", "Timeline", "timeline"],
+  [null, "entities", "Entities", "entities"],
+  [null, "detections", "Detections", "detections"],
+  [null, "attack", "ATT&CK", "attack"],
+  ["Conclude", "findings", "Findings", "findings"],
+  [null, "reports", "Reports", "reports"],
+  [null, "audit", "Chain of custody", "audit"],
+  ["Assistant", "chat", "Ask (cited)", "chat"],
+];
+
+// Surfaces that cannot work without tshark. Disabled with a reason
+// rather than hidden - see the CSS note on .rail a.locked.
+const NEEDS_TSHARK = new Set(["search", "streams", "triage"]);
+
+let _wiresharkStatus = null;
+
+async function wiresharkStatus() {
+  if (_wiresharkStatus === null) {
+    try {
+      _wiresharkStatus = await apiGet("/wireshark/status");
+    } catch (e) {
+      _wiresharkStatus = { available: false, error: e.message };
+    }
+  }
+  return _wiresharkStatus;
+}
+
+function renderRail(caseId, tab, tshark) {
+  const nav = document.getElementById("case-nav");
+  nav.innerHTML = "";
+  nav.hidden = false;
+  for (const [group, key, label, iconKey] of RAIL) {
+    if (group) nav.appendChild(el("div", { class: "rail-group", text: group }));
+    const locked = NEEDS_TSHARK.has(key) && tshark && !tshark.available;
+    const link = el("a", {
+      href: locked ? "#" : `#/case/${caseId}/${key}`,
+      class: "rail-link" + (key === tab ? " active" : "") + (locked ? " locked" : ""),
+      title: locked ? "Needs tshark - install Wireshark to enable this" : "",
+    });
+    link.appendChild(icon(ICONS[iconKey]));
+    link.appendChild(document.createTextNode(label));
+    if (key === tab) link.appendChild(icon(ICONS.arrow, { size: 13 })).classList.add("chev");
+    if (locked) link.onclick = (ev) => ev.preventDefault();
+    nav.appendChild(link);
+  }
+}
+
+async function renderCaseSwitch(c) {
+  const box = document.getElementById("case-switch");
+  box.innerHTML = "";
+  box.appendChild(el("span", { class: "dim", text: "Case" }));
+
+  const select = el("select", { title: "Switch case" });
+  select.appendChild(el("option", { value: c.case_id, text: `${c.case_id} · ${c.name}` }));
+  select.onchange = () => {
+    location.hash = `#/case/${select.value}/overview`;
+  };
+  box.appendChild(select);
+
+  const analysed = c.event_count > 0;
+  box.appendChild(
+    el("div", { class: "case-meta" }, [
+      el("span", { class: "dot " + (analysed ? "ok" : "idle") }),
+      el("span", { text: analysed ? "Analyzed" : "Not analyzed" }),
+      el("span", { class: "badge badge-" + cssClass(c.status), text: c.status }),
+      el("span", {
+        class: "dim",
+        text: `${c.evidence_count} evidence item${c.evidence_count === 1 ? "" : "s"}`,
+      }),
+    ])
+  );
+
+  // Populated after the first paint: the switcher must not wait on a
+  // second request before the case it already has can be shown.
+  try {
+    const cases = await apiGet("/cases");
+    select.innerHTML = "";
+    for (const other of cases) {
+      const opt = el("option", { value: other.case_id, text: `${other.case_id} · ${other.name}` });
+      if (other.case_id === c.case_id) opt.selected = true;
+      select.appendChild(opt);
+    }
+  } catch (e) {
+    /* one case in the switcher is still a usable switcher */
+  }
+}
+
+async function renderCaptureCard(caseId) {
+  const box = document.getElementById("capture-card");
+  box.innerHTML = "";
+  let snap;
+  try {
+    snap = await apiGet(`/cases/${caseId}/capture/status`);
+  } catch (e) {
+    return;
+  }
+  if (!snap.running) return;
+
+  const card = el("div", { class: "capture-card" });
+  card.appendChild(el("div", { class: "rail-group", style: "padding:0 0 8px", text: "Capture status" }));
+  card.appendChild(
+    el("div", { style: "display:flex;align-items:center;gap:7px;margin-bottom:8px" }, [
+      el("span", { class: "dot ok" }),
+      el("span", { style: "color:var(--ok);font-size:13px", text: "Running" }),
+      el("span", { class: "badge badge-low", style: "margin-left:auto", text: snap.engine || "" }),
+    ])
+  );
+  const rows = [
+    ["Interface", snap.capturing_on || snap.interface || "(default)"],
+    ["Window", (snap.window_packet_count || 0).toLocaleString()],
+    ["Total", (snap.total_packet_count || 0).toLocaleString()],
+    ["Elapsed", formatDuration(snap.elapsed_seconds || 0)],
+  ];
+  for (const [k, v] of rows) {
+    card.appendChild(el("div", { class: "row" }, [el("span", { class: "dim", text: k }), el("span", { text: String(v) })]));
+  }
+  if (snap.consecutive_empty_windows >= 3) {
+    card.appendChild(
+      el("div", {
+        class: "dim",
+        style: "color:var(--warn);margin-top:8px;line-height:1.4",
+        text: `${snap.consecutive_empty_windows} empty windows - wrong interface?`,
+      })
+    );
+  }
+  box.appendChild(card);
+}
+
+function formatDuration(seconds) {
+  const s = Math.floor(seconds % 60);
+  const m = Math.floor((seconds / 60) % 60);
+  const h = Math.floor(seconds / 3600);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+async function renderStatusBar(c) {
+  const bar = document.getElementById("statusbar");
+  bar.innerHTML = "";
+  bar.appendChild(el("span", { text: "NetForensicAI" }));
+
+  const tshark = await wiresharkStatus();
+  bar.appendChild(
+    el("span", { class: "item" }, [
+      el("span", { class: "dot " + (tshark.available ? "ok" : "bad") }),
+      el("span", { text: tshark.available ? `tshark ${tshark.version || ""}`.trim() : "tshark not found" }),
+    ])
+  );
+  if (tshark.dumpcap) {
+    bar.appendChild(el("span", { class: "item" }, [el("span", { class: "dot ok" }), el("span", { text: "dumpcap" })]));
+  }
+  if (c) {
+    bar.appendChild(el("span", { class: "right", text: `cases/${c.case_id}` }));
+  }
 }

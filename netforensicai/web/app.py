@@ -328,6 +328,15 @@ def create_app(cases_dir="cases"):
             item["link_count"] = link_counts.get(item["entity_id"], 0)
         if request.args.get("sort") == "events":
             items.sort(key=lambda e: (e["event_count"], e["link_count"]), reverse=True)
+        # A dashboard panel showing six rows should not be sent eighteen
+        # thousand. Applied after sorting so `limit` means "the top N",
+        # not "an arbitrary N".
+        limit = request.args.get("limit")
+        if limit:
+            try:
+                items = items[: max(int(limit), 0)]
+            except ValueError:
+                raise ApiError("limit must be a number")
         return jsonify(items)
 
     @app.route("/api/cases/<case_id>/entities/<entity_id>/graph")
