@@ -21,7 +21,7 @@
 - [Installation](#installation) · [Quick start](#quick-start)
 - [How it works](#how-it-works) · [A worked investigation](#a-worked-investigation)
 - [Capabilities](#capabilities) · [Wireshark integration](#wireshark-integration)
-- [Command reference](#command-reference) · [Configuration](#configuration)
+- [Command reference](#command-reference) · [HTTP API](#http-api) · [Configuration](#configuration)
 - [Architecture](#architecture) · [AI safety model](#ai-safety-model) · [Performance](#performance)
 - [Limitations](#limitations) · [Testing](#testing) · [Contributing](#contributing) · [Security](#security-policy) · [License](#license)
 
@@ -352,7 +352,7 @@ netforensic case audit --case INC-0001 --verify     # chain of custody intact?
 ## Capabilities
 
 ### Case management
-`INC-####` IDs, one directory per case, status lifecycle, and indexes over evidence, findings, and artifacts.
+`INC-####` IDs, one directory per case, a status lifecycle (`open` / `investigating` / `closed`, settable from the CLI or the dashboard), indexes over evidence, findings and artifacts, and irreversible deletion behind a typed confirmation.
 
 ### Evidence integrity
 Every item is copied in, SHA-256 hashed from the stored copy, set read-only, and recorded in a manifest with its original path and modification time.
@@ -404,8 +404,50 @@ Also handled: VLAN (802.1Q) tags, IP fragments, pcapng containers, truncated cap
 
 Everything else — DNS, HTTP request/response pairing, TLS SNI, flow aggregation, anomaly scoring — is produced by both engines, **under the same event-type names**, so a timeline filter or a detection rule behaves identically whichever engine ran. Every event also records which engine produced it in `raw_event_reference.engine`, because *"which dissector found this"* is a question a report has to answer months later.
 
+### Content search
+Parsing normalizes packets into events and **deliberately keeps no payload** — storing the bytes of every packet would defeat the streaming design. So *"where does this token appear"* has to go back to the capture file, which is what `netforensic search` does, via tshark. Text, regex, or hex:
+
+```bash
+netforensic search --case INC-0001 'flag{'
+netforensic search --case INC-0001 'flag\{[^}]+\}' --mode regex
+netforensic search --case INC-0001 '4d5a9000' --mode hex          # MZ header
+netforensic search --case INC-0001 'password' --display-filter 'http'
+```
+
+**Measured on a 1,000,000-packet / 132 MB capture: about six seconds.** Every hit reports a frame number *and* a stream index, so a result leads straight to the packets — `wireshark open` takes the frame, `stream follow` takes the stream.
+
+Case-insensitive search compiles to `matches` over an escaped literal rather than to `contains`, because `contains` is a case-sensitive byte match. The alternative — lowercasing the evidence — is not something a forensics tool should do to the bytes it reports on.
+
+### Stream reassembly
+A credential or a flag rarely lives in one packet; it lives in a conversation the network split across dozens of them.
+
+```bash
+netforensic stream list   --case INC-0001          # ranked by volume
+netforensic stream follow --case INC-0001 42
+```
+
+Reassembly is delegated to Wireshark rather than reimplemented: retransmissions, overlap and reordering are genuinely hard, and a hand-rolled version would be a subtly wrong copy of something you can check against the GUI.
+
+### Triage presets
+The first questions worth asking an unfamiliar capture, in one command — protocol hierarchy (flagging every protocol that carries credentials in the clear), candidate flags, credentials and secrets, recoverable files with hashes, and the largest conversations.
+
+```bash
+netforensic ctf triage --case INC-0001
+netforensic ctf hunt   --case INC-0001 --category secrets
+netforensic ctf patterns
+```
+
+Named for the case it serves best — a CTF network challenge — but the questions are the ones that open a real intrusion investigation too.
+
+Two rules it keeps. It **never writes to the case**: nothing here creates a finding, and object export is reported rather than saved unless you pass `--extract-to`. And it reports **candidates, not verdicts** — a regex matching something password-shaped has found a string, so every result names the pattern that matched and the frame it came from, and the judging happens against the packets.
+
 ### Entity extraction & correlation
 Eleven entity types — `user`, `hostname`, `device`, `ip_address`, `domain`, `url`, `file`, `hash`, `process`, `port`, `network_connection` — each linked to the events it appears in.
+
+Two modelling rules matter more than the list:
+
+- **A source port is not an entity.** It is ephemeral — the OS picks it per socket — so it identifies a connection, never a thing an investigation is about. `dst_port` *is* indexed, because that identifies a service and *"show me everything touching port 4444"* is a real question. Both remain fields on the event, so timeline filters and search are unaffected.
+- **`network_connection` is keyed on the host pair**, not the full flow tuple. With ports in the key it was unique per flow, so it could never be *shared* between two events — an entity that by construction correlated with nothing, at one row per event.
 
 Correlation links events within a time window and is explicit about strength:
 
@@ -413,6 +455,14 @@ Correlation links events within a time window and is explicit about strength:
 - **`possible_relationship`** — time-proximate only
 
 Neither implies causality, and the reports say so.
+
+Three rules keep the link budget spent on signal:
+
+- **A shared port is not a relationship.** On an HTTP capture *"both events touched port 80"* is true of nearly every pair. Measured before this rule on a 3,000-packet capture: 38,782 of 50,000 links were shared-port links, 29,333 of them port 80 alone, against **33** keyed on a shared domain. Ports are indexed; they are not correlated on.
+- **No single entity may take more than a tenth of the budget.** Correlation is pairwise, so a high-degree entity produces links *quadratically* — with ports removed, one address took 49,536 of 50,000 links and left 100 for every domain combined.
+- **`related` is never displaced by `possible_relationship`.** The weak tier only ever uses budget the strong tier left.
+
+**The link count is a ceiling, not a total.** A number landing exactly on the budget means correlation stopped, and both the CLI and the API say so rather than printing the round number as though it were a finding. On a dense capture, shorten `--time-window`.
 
 ### Timeline
 One chronological view across all evidence, filterable by time range, user, IP, hostname, process, file, event type, or evidence source.
@@ -450,13 +500,38 @@ Optional, explicit, cached VirusTotal lookups for IPs and file hashes. Never aut
 ### AI assistant
 Optional, never on the critical path. Four interchangeable providers — **Anthropic, OpenAI, Ollama (fully local), Google Gemini** — selected per request. See [AI safety model](#ai-safety-model).
 
+Two shapes, one contract. `investigate --ai` hands a fixed set of events to the model and gets back one hedged hypothesis. `chat` lets the model **retrieve** instead:
+
+```bash
+netforensic chat --case INC-0001 "was anything downloaded from an external host?"
+netforensic chat --case INC-0001                    # interactive
+```
+
+It cannot see the evidence. It reaches it through eight read-only tools — content search, stream following, stream listing, event search, detections, entities, protocol summary, evidence listing — and **every tool call appends what it returned to a citation ledger.** The answer must cite from that ledger and nothing else.
+
+Membership is an exact test on the `(kind, evidence_id, reference)` triple, not a substring search of the transcript: a looser check would accept the model quoting an identifier back out of *its own earlier reasoning*, which is the failure being guarded against. An unverifiable citation gets one correction pass naming exactly what failed; if it comes back unverifiable again the **whole answer is refused**, not shown with a caveat.
+
+The loop is JSON the model returns rather than four native tool-calling integrations. Each provider expresses tool use differently, so native support would put the safety-critical path in four places and leave **Ollama** — the only provider that keeps an investigation entirely off the network — worst supported. The transport is not what makes this safe; the ledger is.
+
 ### Findings & reporting
 Investigator-owned findings (`Open` / `Investigating` / `Confirmed` / `Rejected` / `False Positive` / `Resolved`), each citing specific evidence + event pairs, creatable from CLI or web UI. Reports render to **Markdown, JSON, and HTML**, every section traceable to evidence, with a stated limitations section.
 
 ### Web UI
 A dependency-free frontend (no CDN, no build step — works offline) over the same core modules the CLI uses:
 
-Overview · Evidence *(upload + analyze)* · Timeline · Entities *(graph + investigate)* · Findings *(create/update)* · Detections · ATT&CK · Custody · Reports · Live Capture · Settings
+The rail groups destinations by the stage of an investigation rather than listing them flat:
+
+| | |
+|---|---|
+| **Evidence** | Evidence · Live capture |
+| **Dig** | Search · Streams · Triage |
+| **Analysis** | Timeline · Entities · Detections · ATT&CK |
+| **Conclude** | Findings · Reports · Chain of custody |
+| **Assistant** | Ask (cited) |
+
+The **Overview is a dashboard**: KPI tiles, an analysis runner reporting *in progress / complete / completed-with-errors* (per-evidence failures listed individually — a partially-failed analyze is not a success), an event-density chart, top entities, a one-hop entity graph, recent detections, carved files, triage matches, an ask box, and the custody trail with its verification state. Charts are inline SVG: no build step, no CDN, works offline.
+
+Surfaces that need tshark are **dimmed and explained, never hidden** — a missing item reads as a missing feature, a disabled one reads as a setup step. The rail carries live capture status; the status bar reports which Wireshark tools were actually detected.
 
 ### Live capture
 Rotating pcap capture that auto-ingests each finished window through the **exact same pipeline** as a manually added file — including detection rules, so a match surfaces as an alert within one poll. That makes it a lightweight live-alerting mode with no separate "watch" step.
@@ -536,10 +611,14 @@ Every command supports `--help` and `--cases-dir` (env `NETFORENSIC_CASES_DIR`, 
 ```bash
 netforensic case create --name "Incident" [--description "..."] [--investigator "..."]
 netforensic case list
+netforensic case status --case INC-0001 open|investigating|closed
 netforensic case audit  --case INC-0001 [--verify]
 netforensic case export --case INC-0001 [--output INC-0001.zip]
 netforensic case import ./INC-0001.zip [--cases-dir other_cases]
+netforensic case delete --case INC-0001              # irreversible; see below
 ```
+
+`case delete` removes the evidence copies, the event store, carved artifacts, findings, reports **and the chain of custody** — the audit log lives inside the case directory. There is no soft delete and no trash: a forensics tool that pretends to delete evidence while keeping a copy is worse than one that deletes it, because the copy is then unaccounted for. Both the CLI and the web UI make you **type the case ID** rather than click through a yes/no, and both report what was removed.
 
 **Evidence**
 ```bash
@@ -597,6 +676,34 @@ netforensic capture --case INC-0001 --engine dumpcap|scapy   # default: auto
 netforensic web --cases-dir cases [--host 127.0.0.1] [--port 8000]
 netforensic scan ./capture.pcap [--vt-api KEY] [--save-files] [--no-dashboard]   # legacy standalone
 ```
+
+---
+
+## HTTP API
+
+The web UI is a client of this API, not a second implementation — every route calls the same core modules the CLI does. It is served on `127.0.0.1` by default and has **no authentication**; see [Limitations](#limitations).
+
+State-changing requests need an `X-Requested-With: NetForensicAI` header. That is not a session token — the app has no sessions — it is there so a cross-origin form or `fetch` from a malicious page cannot reach these routes blind.
+
+| | |
+|---|---|
+| `GET /api/cases` · `GET /api/cases/<id>` | list, and one case with its counters |
+| `POST /api/cases/<id>/status` | `open` / `investigating` / `closed` |
+| `DELETE /api/cases/<id>` | irreversible; body must echo `{"confirm": "<id>"}` |
+| `GET · POST /api/cases/<id>/evidence` | list and upload |
+| `POST /api/cases/<id>/analyze` | parse, correlate, scan rules |
+| `GET /api/cases/<id>/timeline` · `/entities` · `/detections` · `/attack` · `/findings` · `/audit` · `/artifacts` | the case, read back |
+| `POST /api/cases/<id>/search` | content search over a capture |
+| `GET /api/cases/<id>/streams` · `/streams/<n>` | list conversations, reassemble one |
+| `GET /api/cases/<id>/triage` | protocols, candidates, files, conversations |
+| `POST /api/cases/<id>/chat` | ask a question; refusals return 502 |
+| `GET /api/wireshark/status` · `POST /api/wireshark/check-filter` | tooling and filter validation |
+| `POST /api/cases/<id>/evidence/<eid>/slice` | carve a display-filter slice as new evidence |
+| `GET /api/cases/<id>/capture/status` · `POST .../start` · `.../stop` | live capture |
+
+`search`, `streams`, `triage` and `artifacts` are **read-only questions asked of a capture file**: none writes to the store, creates a finding, or records an audit entry — noting that somebody *looked* at evidence is not what a chain of custody is for. `triage` deliberately does not extract files, because a GET a dashboard polls must not write to disk.
+
+The entities route takes `?sort=events&limit=N`, applied after sorting so `limit` means "the top N".
 
 ---
 
@@ -692,13 +799,37 @@ Measured on a real 30 MB / 88,862-packet capture producing 84,712 events:
 
 Parsing is a **single streaming pass** — scapy's fully-dissected packets measure ~18× file size in RAM, so a 1 GB capture would need ~18 GB if loaded up front. Events stream from parser to database in batches, and correlation and detections read back through a cursor, so peak memory tracks working set rather than capture size.
 
+### Where the time actually goes
+
+Profiled on a 100,000-packet capture producing 159,892 events. The answer was not where any of the obvious suspects pointed:
+
+| phase | share |
+|---|---|
+| tshark + dissection | **6%** |
+| DuckDB event inserts | 27% |
+| **entity extraction + storage** | **66%** |
+
+Dissection — the part that looks expensive — is a rounding error. Writing entity links is the cost.
+
+The fix was the write path, not the parser: DuckDB reads a DataFrame columnar-natively instead of parsing a statement with thousands of placeholders and binding each value, which is **16,000 → 239,000 rows/s**. pandas stays optional; without it the chunked-`VALUES` path still runs, and the row counts where this matters come from pcap ingestion, which already installs it.
+
+| | before | after |
+|---|---|---|
+| 100k packets / 13 MB | 148.8 s | **35.6 s** |
+| throughput | 1,075 events/s | **4,497 events/s** |
+| 1M packets / 132 MB | *did not finish in 25 min* | **832 s** (1.59M events) |
+
+Three approaches that did **not** work, recorded so nobody re-tries them: `ON CONFLICT` costs only 1.4×; larger `VALUES` chunks are *slower*, not faster, because the SQL text grows faster than round trips shrink; and `executemany` with an `ON CONFLICT` clause **crashes the DuckDB Python client** with a fatal GIL error rather than raising.
+
+Throughput still degrades with case size — 4,497/s at 100k against 1,907/s at 1M — because every entity-link insert probes a growing index. Entity storage remains the dominant cost at scale.
+
 ---
 
 ## Limitations
 
 Stated plainly, because a forensics tool that hides its weaknesses is worse than one that has them.
 
-- **Correlation is noisy at scale.** It caps at 50,000 pairs and warns when it hits that ceiling. On a capture dominated by one high-volume activity those links are mostly time-proximity noise — detections and the timeline are the better entry points there.
+- **The correlation link count is a ceiling, not a total.** It caps at 50,000 pairs, and on a dense capture it will reach that: tens of thousands of shared-host pairs inside a five-minute window genuinely exist. The budget is now spent on signal first — ports are not correlated on, no entity may take more than a tenth of it, and `related` is never displaced by `possible_relationship` — and both the CLI and the API say when the number is a ceiling. Shorten `--time-window` on a dense case; detections and the timeline are the better entry points either way.
 - **Anomaly detection is disabled above ~20,000 packets.** IsolationForest's `contamination` is a *proportion*, so on a large capture it flags a fixed percentage of everything by construction — a quantile, not a finding. It stays on for smaller captures where an outlier means something.
 - **HTTP request/response pairing is FIFO per flow.** Correct for ordinary keep-alive traffic; genuinely pipelined requests could mis-pair, so a response's URL is a reference rather than a certainty.
 - **Correlation memory is reduced but not constant** — it still holds one entity-link map proportional to the case.
@@ -706,6 +837,9 @@ Stated plainly, because a forensics tool that hides its weaknesses is worse than
 - **EVTX covers five Sysmon event types richly**, everything else generically.
 - **The custody hash chain** detects corruption and casual editing, not an attacker who owns the machine.
 - **Live capture needs Npcap/libpcap and elevated privileges**, which this tool does not install or grant.
+- **Ingest is the scaling limit, not dissection.** tshark reads a 1M-packet capture in 46 seconds; putting those events and their entity links into the store takes about fourteen minutes, and throughput degrades with case size (4,497 events/s at 100k against 1,907/s at 1M) because every entity-link insert probes a growing index. For very large captures the workflow is to **search and slice first, then ingest the slice** — search and `wireshark slice` read the capture file and scale to gigabytes.
+- **The assistant has not been exercised against a live provider in this repository's testing.** Its rendering, its tool loop and its refusal path are covered against a scripted model; the HTTP round trip to Anthropic, OpenAI, Gemini or Ollama is not.
+- **Exported objects carry no timestamp.** tshark reports the recovered file but not the frame it completed on, so those `file_transfer` events sort at the end of a timeline as `unknown`. A wrong timestamp on forensic evidence is worse than an absent one, so none is invented.
 - **The two pcap engines do not produce identical output.** That is the point — tshark sees protocols the scapy engine cannot — but it means a case re-analyzed under a different engine will not have identical events. Each event records the engine that produced it, and `--engine` pins one when reproducibility matters.
 - **tshark object export runs as a second pass** over the capture. It keeps the streaming parse's memory profile intact, at the cost of reading the file twice when an output directory is given.
 - **Exported objects carry no timestamp.** tshark's object export reports the recovered file but not the frame it completed on, so `file_transfer` events from it sort at the end of the timeline as `unknown` rather than in position. A wrong timestamp on forensic evidence is worse than an absent one, so none is invented — the parent flow's events carry the timing.
@@ -720,7 +854,7 @@ pip install -e ".[dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web]"
 pytest
 ```
 
-**486 tests**, run in CI against Python 3.9 and 3.12, plus a dedicated job that installs tshark so the Wireshark integration is genuinely exercised rather than skipped, and a packaging check that installs the built wheel into a clean environment and confirms the web UI's assets are actually bundled.
+**612 tests**, run in CI against Python 3.9 and 3.12, plus a dedicated job that installs tshark so the Wireshark integration is genuinely exercised rather than skipped, and a packaging check that installs the built wheel into a clean environment and confirms the web UI's assets are actually bundled.
 
 The suite favours real fixtures over mocks: pcaps built with scapy, EVTX from hand-crafted XML matching the real schema, cases from `tmp_path`, and real tshark invocations wherever Wireshark is present. Mocks are reserved for what genuinely cannot be exercised in CI — external APIs, and opening a live network interface.
 
