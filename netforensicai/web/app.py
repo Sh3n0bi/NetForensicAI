@@ -49,6 +49,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 from netforensicai.core.case import CaseError, CaseManager
+from netforensicai.core.correlation import DEFAULT_MAX_PAIRS as CORRELATION_MAX_PAIRS
 from netforensicai.core.evidence import EvidenceError, EvidenceManager
 from netforensicai.core.event import parse_timestamp
 from netforensicai.core.finding import FindingManager
@@ -137,6 +138,11 @@ def create_app(cases_dir="cases"):
             detection_count = store.count_detections()
             correlation_count = store.count_correlation_links()
             correlation_by_type = store.count_correlation_links_by_type()
+            # A count that lands exactly on the budget means correlation
+            # stopped, not that the case holds precisely that many
+            # relationships. Displaying the round number as a finding is
+            # the kind of false precision a forensics tool must not print.
+            correlation_capped = correlation_count >= CORRELATION_MAX_PAIRS
         finding_count = len(FindingManager(_case_dir(case)).list())
 
         data = case.to_dict()
@@ -147,6 +153,7 @@ def create_app(cases_dir="cases"):
             finding_count=finding_count,
             detection_count=detection_count,
             correlation_count=correlation_count,
+            correlation_capped=correlation_capped,
             # Split as well as totalled: `related` (shared entity plus time
             # proximity) and `possible_relationship` (proximity alone) are
             # different strengths of claim, and a single number reads as

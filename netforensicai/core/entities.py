@@ -16,6 +16,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Event field -> entity_type this field's value represents.
+#
+# src_port is deliberately ABSENT. A source port is ephemeral - the OS
+# picks it per socket - so it identifies a connection, never a thing an
+# investigation is about. Indexing it produced 50,958 distinct "port"
+# entities on one 100k-packet capture, none of which anybody would ever
+# look up. dst_port stays: that identifies a SERVICE, and "show me
+# everything touching port 4444" is a real question. The value is still on
+# the event either way, so timeline filters and search are unaffected.
 FIELD_ENTITY_TYPES = {
     "user": "user",
     "hostname": "hostname",
@@ -27,11 +35,22 @@ FIELD_ENTITY_TYPES = {
     "file_name": "file",
     "file_hash": "hash",
     "process_name": "process",
-    "src_port": "port",
     "dst_port": "port",
 }
 
 ENTITY_TYPES = tuple(sorted(set(FIELD_ENTITY_TYPES.values()) | {"network_connection"}))
+
+# Entity types that are worth INDEXING but not worth CORRELATING ON.
+#
+# The two are different questions. "Show me everything touching port 4444"
+# is a good use of an entity; "these two events are related because both
+# involved port 80" is not a relationship at all - on an HTTP capture it
+# is true of nearly every pair. Measured on a 3,000-packet capture: 38,782
+# of 50,000 correlation links were shared-port links, 29,333 of them just
+# "both touched port 80", against 33 links keyed on a shared domain. The
+# noise did not merely dilute the signal, it consumed the budget the
+# signal needed.
+NON_CORRELATING_ENTITY_TYPES = frozenset({"port"})
 
 
 def generate_entity_id(entity_type, value):
@@ -53,9 +72,14 @@ def extract_entities(event):
         found.append((generate_entity_id(entity_type, value_str), entity_type, value_str, field))
 
     if event.src_ip and event.dst_ip:
-        src_port = event.src_port if event.src_port is not None else "?"
-        dst_port = event.dst_port if event.dst_port is not None else "?"
-        connection_value = f"{event.src_ip}:{src_port}->{event.dst_ip}:{dst_port}"
+        # Keyed on the HOST PAIR, not the full flow tuple. Including the
+        # ports made this entity unique per flow, so it could never be
+        # *shared* between two events - an entity that by construction
+        # correlates with nothing, while costing one row per event and
+        # 99,892 distinct entities on a 100k-packet capture. Keyed on the
+        # pair it means "these two hosts talked", which is a fact worth
+        # having and is genuinely shared across every flow between them.
+        connection_value = f"{event.src_ip}->{event.dst_ip}"
         found.append(
             (
                 generate_entity_id("network_connection", connection_value),

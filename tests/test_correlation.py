@@ -224,23 +224,40 @@ def test_excluding_the_weak_tier_keeps_only_shared_entity_links(tmp_path):
     assert {link["relationship_type"] for link in links} == {RELATED}
 
 
-def test_a_budget_filled_by_shared_entity_links_alone_says_so(tmp_path, caplog):
-    """When even the strong tier overflows the budget, correlation still
-    truncates chronologically - but that is now a genuine "this case is too
-    dense" signal rather than an artefact of weak links arriving first, and
-    the warning has to say which knob actually helps."""
-    import logging
-
+def test_no_single_entity_can_consume_the_link_budget(tmp_path):
+    """Correlation is pairwise, so a high-degree entity produces links
+    quadratically - a DNS resolver in three thousand events can fill the
+    budget by itself. Measured before this cap, one address took 49,536 of
+    50,000 links, leaving 100 for every domain in the case combined.
+    """
     events = [_event(f"EVT-{i:04d}", i, src_ip="10.0.0.5") for i in range(30)]
 
-    with caplog.at_level(logging.WARNING):
-        with _seeded_store(tmp_path, events) as store:
-            links = correlate_case(store, time_window_seconds=300, max_pairs=25)
+    with _seeded_store(tmp_path, events) as store:
+        links = correlate_case(store, time_window_seconds=300, max_pairs=100)
 
-    assert len(links) == 25
+    # 30 events sharing one address is 435 candidate pairs; the ceiling is
+    # a tenth of the budget, so that entity gets 10 and not 100.
+    assert len(links) == 10
     assert all(link["relationship_type"] == RELATED for link in links)
-    assert "shared-entity links alone" in caplog.text
-    assert "--time-window" in caplog.text
+
+
+def test_the_budget_is_shared_across_entities_rather_than_taken_by_one(tmp_path):
+    """The point of the cap: a busy hub must leave room for everything
+    else, so the result is a picture of the case rather than of its
+    busiest node."""
+    events = []
+    # A hub: many events all sharing one address.
+    for i in range(40):
+        events.append(_event(f"EVT-hub-{i:04d}", i, src_ip="10.0.0.5"))
+    # A quieter pair sharing a domain, late in the window.
+    events.append(_event("EVT-dom-0001", 41, domain="evil.example.com"))
+    events.append(_event("EVT-dom-0002", 42, domain="evil.example.com"))
+
+    with _seeded_store(tmp_path, events) as store:
+        links = correlate_case(store, time_window_seconds=300, max_pairs=50, include_possible=False)
+
+    kinds = {link["shared_entity_type"] for link in links}
+    assert "domain" in kinds, "the hub crowded out the only domain link"
 
 
 def test_the_link_budget_is_never_exceeded(tmp_path):
