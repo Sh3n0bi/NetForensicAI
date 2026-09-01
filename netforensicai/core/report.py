@@ -88,6 +88,12 @@ def build_report(case, case_dir):
         timeline_entries = [entry.to_dict() for entry in build_timeline(store)]
         threat_intel_results = store.list_threat_intel()
         attack_techniques = store.list_techniques()
+        # Assembled here because this is where the store is open. The
+        # account is deterministic - no model, no network - so a report
+        # containing it stays reproducible by whoever reads it.
+        from netforensicai.core import narrative as narrative_module
+
+        narrative = narrative_module.build(store)
         detections = store.list_detections()
 
         entity_event_counts = Counter()
@@ -122,14 +128,19 @@ def build_report(case, case_dir):
     possible_count = sum(1 for link in correlation_links if link["relationship_type"] == "possible_relationship")
 
     status_breakdown = ", ".join(f"{count} {status}" for status, count in findings_by_status.items())
-    executive_summary = (
-        f"This case includes {len(evidence_sources)} evidence item(s), {len(all_events)} normalized "
-        f"event(s), and {len(entities)} distinct entit{'y' if len(entities) == 1 else 'ies'}. "
-        f"Correlation identified {related_count} related event pair(s) and {possible_count} "
-        f"possible_relationship (time-proximity-only) pair(s). {len(detections)} bundled detection "
-        f"rule match(es) were found. {len(findings)} finding(s) have been recorded"
+
+    # The account of what happened leads the summary: a reader opening an
+    # incident report needs the story first, and the counts that follow
+    # are context for it rather than findings of their own. `narrative`
+    # is assembled above, inside the block where the store is open.
+    scale = (
+        f"Scope: {len(evidence_sources)} evidence item(s), {len(all_events)} normalized event(s), "
+        f"{len(entities)} distinct entit{'y' if len(entities) == 1 else 'ies'}, "
+        f"{related_count} related and {possible_count} time-proximity event pair(s). "
+        f"{len(findings)} investigator finding(s) recorded"
         + (f" ({status_breakdown})." if findings else ".")
     )
+    executive_summary = f"{narrative.headline} {narrative.assessment} {scale}"
 
     threat_intel_results = [
         {**row, "checked_at": row["checked_at"].isoformat() if row["checked_at"] else None}
@@ -200,6 +211,8 @@ def build_report(case, case_dir):
             "updated_at": case.updated_at,
         },
         "executive_summary": executive_summary,
+        "narrative": narrative.to_dict(),
+        "narrative_text": narrative_module.render_text(narrative),
         "evidence_sources": evidence_sources,
         "affected_entities": affected_entities,
         "timeline": timeline_entries,
@@ -267,6 +280,12 @@ def render_markdown(report):
         "",
         "## Executive Summary",
         report["executive_summary"],
+        "",
+        "## What Happened",
+        "",
+        "```",
+        report["narrative_text"].rstrip(),
+        "```",
         "",
         "## Evidence Sources",
     ]
@@ -412,6 +431,35 @@ def _e(value):
     return html.escape(str(value)) if value is not None else ""
 
 
+def _narrative_html(narrative):
+    """The account as HTML. Phases become sections and beats become rows,
+    each carrying the event ids it rests on so a reader can check it."""
+    if not narrative or not narrative.get("phases"):
+        return "<p><i>No bundled detection rule matched this evidence.</i></p>"
+
+    parts = [
+        f"<p><b>Assessment [{_e(narrative['severity'])}]:</b> {_e(narrative['assessment'])}</p>"
+    ]
+    window = narrative.get("window") or [None, None]
+    if window[0]:
+        parts.append(f"<p><i>Window: {_e(window[0])} to {_e(window[1])}</i></p>")
+    if narrative.get("subjects"):
+        parts.append(f"<p><i>Hosts: {_e(', '.join(narrative['subjects']))}</i></p>")
+
+    for phase in narrative["phases"]:
+        parts.append(f"<h3>{_e(phase['title'])}</h3><ul>")
+        for beat in phase["beats"]:
+            when = (beat.get("first_seen") or "unknown time").replace("T", " ")[:19]
+            repeat = f" (x{beat['occurrences']})" if beat["occurrences"] > 1 else ""
+            parts.append(
+                f"<li><b>[{_e(beat['severity'])}] {_e(when)} - {_e(beat['title'])}{_e(repeat)}</b>"
+                f"<br>{_e(beat['description'])}"
+                f"<br><small>evidence: {_e(', '.join(beat['event_ids'][:3]))}</small></li>"
+            )
+        parts.append("</ul>")
+    return "".join(parts)
+
+
 def render_html(report):
     case = report["case"]
     parts = [
@@ -438,6 +486,8 @@ def render_html(report):
         "</ul>",
         "<h2>Executive Summary</h2>",
         f"<p>{_e(report['executive_summary'])}</p>",
+        "<h2>What Happened</h2>",
+        _narrative_html(report["narrative"]),
         "<h2>Evidence Sources</h2>",
     ]
 
