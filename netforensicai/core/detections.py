@@ -426,6 +426,21 @@ _CLEARTEXT_AUTH_PORTS = {21: "FTP", 23: "Telnet", 110: "POP3", 143: "IMAP", 80: 
 # Bytes to one external destination before an upload is worth a look.
 BULK_TRANSFER_BYTES = 4_096
 
+# VOLUME ALONE IS THE WRONG DISCRIMINATOR, and this rule used to use it.
+# Audited against generated benign office traffic, an absolute threshold
+# fired on 11 ordinary browsing sessions: request headers, cookies and
+# form posts to one web host add up past any floor low enough to still
+# catch a small exfiltration. What actually separates the two is
+# DIRECTION - a browser receives far more than it sends, an upload is the
+# reverse. Requiring the outbound bytes to exceed what came back removed
+# all 11 without weakening the real detections.
+BULK_TRANSFER_MIN_RATIO = 1.0
+
+# Above this, direction stops mattering. A very large upload is worth
+# reporting even alongside a heavy download that would otherwise mask the
+# ratio - which is exactly where a patient exfiltration would hide.
+BULK_TRANSFER_ALWAYS_BYTES = 10_485_760
+
 # A beacon is regular. These bound what counts as regular: enough repeats
 # to be a pattern, and intervals that agree closely enough not to be a
 # person clicking.
@@ -561,6 +576,7 @@ class _NetworkAggregateState:
 
     def __init__(self):
         self.outbound = {}     # (src, dst) -> [bytes, events, first_event]
+        self.inbound = {}      # (internal, external) -> bytes that came back
         self.beacons = {}      # (src, dst, port) -> [timestamps, first_event]
         self.secrets = {}      # secret -> [(event, protocol)]
 
@@ -574,11 +590,22 @@ class _NetworkAggregateState:
             return
         if not event.src_ip or not event.dst_ip:
             return
+        size = (event.raw_event_reference or {}).get("byte_count") or 0
+
+        # The return direction is not noise to be discarded - it is the
+        # context that makes the outbound figure mean anything. 8 KB sent
+        # to a host that sent back 40 KB is a browser; 8 KB sent to a host
+        # that sent back nothing is an upload.
+        if _is_private(event.dst_ip) and not _is_private(event.src_ip):
+            self.inbound[(event.dst_ip, event.src_ip)] = (
+                self.inbound.get((event.dst_ip, event.src_ip), 0) + size
+            )
+            return
+
         # Outbound only: a copy between two internal hosts is not
         # exfiltration, and flagging it would bury the case that is.
         if not _is_private(event.src_ip) or _is_private(event.dst_ip):
             return
-        size = (event.raw_event_reference or {}).get("byte_count") or 0
         key = (event.src_ip, event.dst_ip)
         entry = self.outbound.setdefault(key, [0, 0, event])
         entry[0] += size
@@ -617,15 +644,23 @@ class _NetworkAggregateState:
         for (src, dst), (size, count, event) in self.outbound.items():
             if size < BULK_TRANSFER_BYTES:
                 continue
+            returned = self.inbound.get((src, dst), 0)
+            outbound_dominant = size > returned * BULK_TRANSFER_MIN_RATIO
+            if not outbound_dominant and size < BULK_TRANSFER_ALWAYS_BYTES:
+                # More came back than went out: this is a download, and
+                # the bytes going the other way are the request that asked
+                # for it.
+                continue
             bulk_pairs.add((src, dst))
+            ratio = f"{size / returned:.1f}x more than it received" if returned else "and received nothing back"
             out.append(
                 (
                     "OUTBOUND-BULK-TRANSFER",
                     "Bulk transfer to an external host",
                     "high" if size >= BULK_TRANSFER_BYTES * 4 else "medium",
-                    f"{src} sent {size:,} bytes to {dst} across {count} flow(s). Volume alone is "
-                    f"not exfiltration - check what was transferred and whether the destination "
-                    f"is expected.",
+                    f"{src} sent {size:,} bytes to {dst} across {count} flow(s), {ratio}. "
+                    f"Volume alone is not exfiltration - check what was transferred and whether "
+                    f"the destination is expected.",
                     event,
                 )
             )

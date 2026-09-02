@@ -287,6 +287,24 @@ def _with_transient_retry(call, provider):
     raise last_error
 
 
+def _rejected_message(provider, how_to_set):
+    """The message for a credential that was SENT AND REFUSED.
+
+    Distinct from "no credentials found" on purpose. A 401 means a key was
+    resolved, transmitted and rejected - expired, revoked, wrong project,
+    or lacking access to the model. All three providers used to report
+    that as "no credentials found", which tells the investigator to supply
+    a key they already supplied; they set the environment variable, get
+    the identical error, and conclude the tool is broken. The failure is
+    real either way, but only one of these two messages points at it.
+    """
+    return (
+        f"{provider} rejected the credential that was sent (HTTP 401/403). A key WAS found - "
+        f"it is expired, revoked, or not authorised for this model. Replace it with {how_to_set}, "
+        f"or check the key's project and model access."
+    )
+
+
 def _call_anthropic(system_prompt, user_prompt, api_key, model):
     try:
         import anthropic
@@ -318,7 +336,9 @@ def _call_anthropic(system_prompt, user_prompt, api_key, model):
             raise AssistantError(no_credentials_message) from e
         raise
     except anthropic.AuthenticationError as e:
-        raise AssistantError(no_credentials_message) from e
+        raise AssistantError(
+            _rejected_message("Anthropic", "--api-key or ANTHROPIC_API_KEY")
+        ) from e
     except anthropic.APIStatusError as e:
         raise AssistantError(f"AI request failed: {e.message}") from e
     except anthropic.APIConnectionError as e:
@@ -355,7 +375,7 @@ def _call_openai(system_prompt, user_prompt, api_key, model):
             max_completion_tokens=MAX_TOKENS,
         )
     except openai.AuthenticationError as e:
-        raise AssistantError(no_credentials_message) from e
+        raise AssistantError(_rejected_message("OpenAI", "--api-key or OPENAI_API_KEY")) from e
     except openai.OpenAIError as e:
         # Covers both "no credentials resolvable at all" (raised at client
         # construction, before any request) and any other SDK-level setup
@@ -411,7 +431,7 @@ def _call_gemini(system_prompt, user_prompt, api_key, model):
         raise
     except genai_errors.ClientError as e:
         if e.code in (401, 403):
-            raise AssistantError(no_credentials_message) from e
+            raise AssistantError(_rejected_message("Gemini", "--api-key or GEMINI_API_KEY")) from e
         raise AssistantError(f"AI request failed: {e.message or e}") from e
     except genai_errors.ServerError as e:
         raise AssistantError(f"AI request failed: {e.message or e}") from e
