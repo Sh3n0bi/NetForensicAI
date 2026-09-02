@@ -198,7 +198,7 @@ CREDENTIAL ACCESS
   [high] 22:14:19  One credential used across several protocols
       The same password was observed on FTP, HTTP. Reuse turns a single
       cleartext disclosure into access everywhere that credential is accepted.
-      evidence: EVT-EV-0001-000009, EVT-EV-0001-000013
+      evidence: EVT-EV-0001-000009
 ```
 
 A generator rather than a checked-in `.pcap`, deliberately: a binary in a repository is something you take on trust, and this is the same capture expressed as something you can read and diff. The traffic is fabricated end to end — no real host is contacted and nothing is captured from a real network. The credential rules need `tshark`; everything else works without it.
