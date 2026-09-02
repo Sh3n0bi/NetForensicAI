@@ -65,6 +65,7 @@ from pathlib import Path
 
 from netforensicai.core.event import Event, EventSequence, generate_event_id
 from netforensicai.integrations import wireshark
+from netforensicai.parsers import credentials
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +140,11 @@ FIELDS = (
 )
 
 # Form field names that carry a secret rather than an identity.
-_SECRET_FIELDS = {"password", "passwd", "pwd", "pass", "secret", "token", "api_key", "apikey"}
-_IDENTITY_FIELDS = {"username", "user", "login", "email", "userid", "uid"}
+# Re-exported from parsers/credentials.py, which both engines share. They
+# were duplicated here once and the copies drifted - one engine grew
+# credential detection and the other silently had none.
+_SECRET_FIELDS = credentials.SECRET_FIELDS
+_IDENTITY_FIELDS = credentials.IDENTITY_FIELDS
 
 # tshark's object-export dissectors. Each recovers complete transferred
 # files from reassembled streams - which is categorically better evidence
@@ -161,7 +165,7 @@ PROGRESS_LOG_EVERY_PACKETS = 25_000
 
 # Ports whose protocols authenticate without encrypting. A credential
 # seen on one of these is disclosed, not merely at risk.
-_CLEARTEXT_PROTOCOLS = {21: "FTP", 23: "Telnet", 25: "SMTP", 80: "HTTP", 110: "POP3", 143: "IMAP"}
+_CLEARTEXT_PROTOCOLS = credentials.CLEARTEXT_PROTOCOLS
 
 _TLS_CLIENT_HELLO = "1"
 _DNS_RESPONSE = "True"
@@ -522,18 +526,10 @@ class _TsharkCollector:
         if authorization:
             pairs.append(("authorization", authorization))
 
-        user = None
-        for name, value in pairs:
-            if str(name).lower() in _IDENTITY_FIELDS:
-                user = value
+        user = credentials.identity_of(pairs)
 
-        for name, value in pairs:
-            lowered = str(name).lower()
-            if lowered not in _SECRET_FIELDS and lowered != "authorization":
-                continue
-            if not value:
-                continue
-            protocol = _CLEARTEXT_PROTOCOLS.get(common.get("dst_port")) or (common.get("protocol") or "?").upper()
+        for lowered, value in credentials.secrets_in(pairs):
+            protocol = credentials.protocol_for(common.get("dst_port"), common.get("protocol"))
             events.append(
                 self._event(
                     {
@@ -541,19 +537,10 @@ class _TsharkCollector:
                         "event_type": "credential_exposure",
                         "user": user,
                         "severity": "high",
-                        "message": (
-                            f"A {lowered} field was transmitted over {protocol} without encryption"
-                            + (f" for user '{user}'" if user else "")
+                        "message": credentials.message_for(lowered, protocol, user),
+                        "raw_event_reference": credentials.reference_for(
+                            packet_number, lowered, protocol, value, "tshark"
                         ),
-                        "raw_event_reference": {
-                            "packet_number": packet_number,
-                            "field": lowered,
-                            "protocol": protocol,
-                            # Identifies the secret across events without
-                            # being the secret.
-                            "secret_sha256": hashlib.sha256(str(value).encode("utf-8")).hexdigest(),
-                            "engine": "tshark",
-                        },
                     }
                 )
             )

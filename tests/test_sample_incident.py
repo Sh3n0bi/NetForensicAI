@@ -32,18 +32,24 @@ requires_tshark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(autouse=True)
-def _use_the_real_engine(monkeypatch):
-    """The suite pins dissection to scapy (see conftest) so results do not
-    depend on whether Wireshark happens to be installed. This module is
-    the exception: the sample exists to demonstrate the path a user
-    actually takes, and two of its acts - the cleartext credential and the
-    password reused on FTP - are only visible to the tshark engine, which
-    is the only one that emits credential_exposure events.
+@pytest.fixture(params=["scapy", "tshark"])
+def engine(request, monkeypatch):
+    """Run the sample through BOTH dissection engines.
+
+    The suite otherwise pins to scapy (see conftest) so results do not
+    depend on whether Wireshark happens to be installed. Here the pin is
+    the wrong default: the sample's value is that it demonstrates the
+    whole incident, and "the whole incident" must not quietly mean
+    "whichever acts this engine can see". Credential detection existed in
+    tshark and silently did not exist in scapy for exactly as long as
+    nobody ran the sample both ways.
     """
     from netforensicai.parsers import pcap_engine
 
-    monkeypatch.delenv(pcap_engine.ENGINE_ENV, raising=False)
+    if request.param == "tshark" and not wireshark.available():
+        pytest.skip("Wireshark/tshark is not installed on this machine")
+    monkeypatch.setenv(pcap_engine.ENGINE_ENV, request.param)
+    return request.param
 
 
 def _generator():
@@ -119,8 +125,7 @@ def test_no_packet_looks_like_a_retransmission(capture):
     assert result.stdout.strip() == "", f"frames flagged as retransmissions: {result.stdout.split()}"
 
 
-@requires_tshark
-def test_the_sample_tells_the_story_it_claims_to(tmp_path, capture):
+def test_the_sample_tells_the_story_it_claims_to(engine, tmp_path, capture):
     """One test over the whole pipeline, because the sample's value is
     the end-to-end result and not any single stage of it."""
     with CaseStore(_ingest(tmp_path, capture)) as store:
@@ -133,7 +138,7 @@ def test_the_sample_tells_the_story_it_claims_to(tmp_path, capture):
     assert "EXECUTABLE-DOWNLOAD" in rules, "act 3: the download"
     assert "CLEARTEXT-CREDENTIALS" in rules, "act 4: the credential"
     assert "KEY-MATERIAL-IN-TRANSIT" in rules, "act 5: the private key"
-    assert "CREDENTIAL-REUSE" in rules, "act 6: the same password on FTP"
+    assert "CREDENTIAL-REUSE" in rules, "act 6: the same password on FTP"  # both engines
     assert "OUTBOUND-BULK-TRANSFER" in rules, "act 6: the upload"
     assert "PERIODIC-BEACON" in rules, "act 7: the beacons"
 
@@ -141,8 +146,7 @@ def test_the_sample_tells_the_story_it_claims_to(tmp_path, capture):
     assert "leaving this network" in story.assessment
 
 
-@requires_tshark
-def test_the_upload_is_not_also_called_a_beacon(tmp_path, capture):
+def test_the_upload_is_not_also_called_a_beacon(engine, tmp_path, capture):
     """The chunked upload is regular by nature and would satisfy a naive
     beacon rule. Two findings for one activity sends an analyst chasing
     two leads to the same place."""
@@ -156,8 +160,7 @@ def test_the_upload_is_not_also_called_a_beacon(tmp_path, capture):
         assert "104.21.7.19" not in beacon["description"], "the FTP upload was misread as a beacon"
 
 
-@requires_tshark
-def test_the_benign_traffic_produces_no_findings(tmp_path):
+def test_the_benign_traffic_produces_no_findings(engine, tmp_path):
     """A capture made entirely of findings does not test a detection
     rule, it only confirms it fires. The first act exists to be quiet."""
     from scapy.all import wrpcap

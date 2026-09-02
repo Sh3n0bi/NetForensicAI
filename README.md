@@ -201,7 +201,7 @@ CREDENTIAL ACCESS
       evidence: EVT-EV-0001-000009
 ```
 
-A generator rather than a checked-in `.pcap`, deliberately: a binary in a repository is something you take on trust, and this is the same capture expressed as something you can read and diff. The traffic is fabricated end to end — no real host is contacted and nothing is captured from a real network. The credential rules need `tshark`; everything else works without it.
+A generator rather than a checked-in `.pcap`, deliberately: a binary in a repository is something you take on trust, and this is the same capture expressed as something you can read and diff. The traffic is fabricated end to end — no real host is contacted and nothing is captured from a real network. Every act is detected identically by both dissection engines, so this works with or without Wireshark installed.
 
 
 ### Browser

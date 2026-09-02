@@ -165,7 +165,11 @@ Normalized events carry no payload by design, so a credential is invisible to a 
 
 That is enough to answer *"is this the same credential seen elsewhere"* — which is what makes `CREDENTIAL-REUSE` possible — without putting a working password into a case database that then rides along in every export, report and backup. The plaintext stays in the evidence file, which is already hashed, read-only, and reachable through [content search](#content-search).
 
-> **Engine limitation.** `credential_exposure` is produced by the **tshark engine only**. Without Wireshark installed, `CLEARTEXT-CREDENTIALS` and `CREDENTIAL-REUSE` will not fire — the scapy engine does not inspect payloads for credentials. Every other rule in both tables works on either engine.
+**Both engines produce it.** The rules live in `parsers/credentials.py`, which imports only the standard library, so the tshark engine (reading dissected fields) and the scapy engine (reading raw payload) share one vocabulary and one hash function. They were duplicated once and drifted — credential detection existed in tshark and silently did not exist in scapy — so a parity test now asserts the two engines report the same credentials from the same capture, and the sample incident is run through both.
+
+Covered: HTTP form bodies, HTTP query strings, HTTP Basic (decoded to name the account), FTP, POP3, IMAP `LOGIN`, and SMTP `AUTH PLAIN`. **Telnet is deliberately not covered** — it negotiates in-band and sends a character per packet, so a line-oriented reader produces confident nonsense on it.
+
+Only client-to-server payloads are scanned. A login *form* in an HTTP response carries the field names with no values, and reporting the page that asks for a password as a password crossing the network is exactly the false positive that teaches people to ignore a rule.
 
 
 ## MITRE ATT&CK mapping

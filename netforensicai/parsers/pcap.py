@@ -52,7 +52,7 @@ from scapy.all import DNS, ICMP, IP, IPv6, TCP, UDP, PcapReader
 from sklearn.ensemble import IsolationForest
 
 from netforensicai.core.event import Event, EventSequence, generate_event_id
-from netforensicai.parsers import base
+from netforensicai.parsers import base, credentials
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +461,13 @@ class _StreamCollector:
 
         self._carve(packet_number, packet, ip, src_port, dst_port, payload)
 
+        # Line-oriented cleartext logins, which have no HTTP framing to
+        # recognise them by. Guarded on the destination port so this only
+        # ever reads a client-to-server payload: a server's "331 Password
+        # required" is a prompt, not a credential.
+        if dst_port in credentials.CLEARTEXT_PROTOCOLS and dst_port != 80:
+            self._feed_credentials(packet_number, packet, ip, src_port, dst_port, payload)
+
         # Each branch returns: a payload that is an HTTP request or response
         # is not also a TLS ClientHello, and running the SNI parse over every
         # HTTP packet in a web capture is pure waste.
@@ -534,6 +541,10 @@ class _StreamCollector:
                 },
             })
         )
+        self._feed_credentials(
+            packet_number, packet, ip, src_port, dst_port, payload, is_http_request=True
+        )
+
         # Queue for pairing with the response that comes back on this flow.
         self._pending.setdefault((ip.src, src_port, ip.dst, dst_port), deque()).append(
             (method, url)
@@ -614,6 +625,46 @@ class _StreamCollector:
                 stream["packet_numbers"] = []
 
     # --- materialization ---
+
+    def _feed_credentials(
+        self, packet_number, packet, ip, src_port, dst_port, payload, is_http_request=False
+    ):
+        """One event per credential seen crossing the network in the clear.
+
+        THE SECRET ITSELF IS NEVER STORED - see parsers/credentials.py.
+        The event carries a SHA-256 of it, which is what lets a later rule
+        ask whether the same credential turned up on another protocol
+        without the case database ever holding a working password.
+
+        This engine used to emit nothing here, so CLEARTEXT-CREDENTIALS
+        and CREDENTIAL-REUSE silently did not exist without Wireshark
+        installed. Both engines now read the same rules from one module.
+        """
+        secrets, user = credentials.scan_payload(
+            payload, dst_port=dst_port, is_http_request=is_http_request
+        )
+        if not secrets:
+            return
+
+        protocol = credentials.protocol_for(dst_port, "tcp")
+        for field, value in secrets:
+            self._emitted.append(
+                self._event({
+                    "event_type": "credential_exposure",
+                    "timestamp": _packet_timestamp(packet),
+                    "src_ip": ip.src,
+                    "src_port": src_port,
+                    "dst_ip": ip.dst,
+                    "dst_port": dst_port,
+                    "protocol": "tcp",
+                    "user": user,
+                    "severity": "high",
+                    "message": credentials.message_for(field, protocol, user),
+                    "raw_event_reference": credentials.reference_for(
+                        packet_number, field, protocol, value, "scapy"
+                    ),
+                })
+            )
 
     def _event(self, fields):
         return Event(
