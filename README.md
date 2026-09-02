@@ -176,6 +176,34 @@ netforensic investigate --case INC-0001 --ip 192.168.1.10
 netforensic report generate --case INC-0001 --format html
 ```
 
+### Try it without evidence of your own
+
+`samples/generate_incident.py` builds a synthetic capture containing a complete incident — a lookup of a cheap-TLD domain, an executable pulled over cleartext HTTP, a credential posted in the clear, a private key retrieved, the same password reused on FTP, a customer CSV uploaded in chunks, then eight beacons — plus ordinary browsing, so the capture is not made entirely of findings.
+
+```bash
+python samples/generate_incident.py -o incident.pcap
+netforensic case create --name "Demo incident"
+netforensic evidence add ./incident.pcap --case INC-0001
+netforensic analyze --case INC-0001
+netforensic story --case INC-0001
+```
+
+```
+7 distinct findings (5 high severity) across 2 hosts.
+
+Assessment [critical]: Evidence is consistent with data leaving this network
+after a credential was exposed.
+
+CREDENTIAL ACCESS
+  [high] 22:14:19  One credential used across several protocols
+      The same password was observed on FTP, HTTP. Reuse turns a single
+      cleartext disclosure into access everywhere that credential is accepted.
+      evidence: EVT-EV-0001-000009, EVT-EV-0001-000013
+```
+
+A generator rather than a checked-in `.pcap`, deliberately: a binary in a repository is something you take on trust, and this is the same capture expressed as something you can read and diff. The traffic is fabricated end to end — no real host is contacted and nothing is captured from a real network. The credential rules need `tshark`; everything else works without it.
+
+
 ### Browser
 
 ```bash
@@ -185,7 +213,9 @@ netforensic web --cases-dir cases      # then open http://127.0.0.1:8000
 1. **Settings** *(top right)* — optionally add VirusTotal / AI keys and press **Test**. Everything except threat intel and the AI assistant works with no keys at all.
 2. **Cases** — create or open a case, then **Evidence → Choose File → Upload Evidence**.
 3. **Run Analyze** — parses, correlates, and runs detection rules in one step.
-4. Review **Timeline**, **Entities**, **Detections**, **ATT&CK**, **Custody**; record **Findings**; export a **Report**.
+4. **What happened** — read the account of the case before the counts: the assessment, the stages
+   it passed through, and each finding with the events it rests on.
+5. Review **Timeline**, **Entities**, **Detections**, **ATT&CK**, **Custody**; record **Findings**; export a **Report**.
 
 ---
 

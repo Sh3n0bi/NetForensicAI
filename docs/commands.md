@@ -35,6 +35,22 @@ netforensic timeline show  --case INC-0001 [--user ...] [--ip ...] [--type ...] 
 netforensic detections list --case INC-0001 [--severity high]
 ```
 
+**The story** — what happened, rather than how many objects there are
+```bash
+netforensic story --case INC-0001
+```
+
+Assembles the case into an account: beats (one per rule, grouped), grouped into the stages of an intrusion, under a one-sentence assessment. Same thing at `GET /api/cases/<id>/narrative`, in the web UI's **What happened** tab, and as the `## What Happened` section of an exported report.
+
+It is **deterministic** — no model, no network, no score that can't be explained. A narrative that goes into an incident report has to be reproducible by whoever reads it, and *"the language model said so"* is not a chain of custody. The AI assistant may interpret the narrative; it is not permitted to write it.
+
+Every beat names the `event_id`s it rests on, so each sentence walks back to a packet — in the UI those ids are clickable and resolve to the Wireshark display filter that isolates them.
+
+A case with no detections still produces a story, and it says so plainly:
+
+> No bundled detection rule matched this evidence. That is not the same as 'nothing happened' — it means nothing matched the rules that exist.
+
+
 **Wireshark** *(only available when Wireshark is installed — see [Wireshark integration](wireshark.md))*
 ```bash
 netforensic wireshark status                        # what was found, which engines are live

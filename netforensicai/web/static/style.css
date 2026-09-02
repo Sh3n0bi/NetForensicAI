@@ -116,6 +116,8 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .badge-potential { background: rgba(224,160,48,0.15); color: var(--warn); }
 .badge-medium, .badge-Medium { background: rgba(224,160,48,0.15); color: var(--warn); }
 .badge-high, .badge-High, .badge-Critical { background: rgba(224,90,78,0.15); color: var(--bad); }
+.badge-critical { background: var(--bad); color: #fff; font-weight: 700; }
+.badge-none { background: rgba(154,160,180,0.12); color: var(--text-dim); }
 .badge-low, .badge-Low { background: rgba(154,160,180,0.15); color: var(--text-dim); }
 
 .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -418,3 +420,97 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
 .mini th { font-size: 10px; }
 .more { color: var(--accent); font-size: 12px; cursor: pointer; display: inline-block; margin-top: 10px; }
 .more:hover { text-decoration: underline; }
+
+/* --- The narrative panel ------------------------------------------- */
+
+/* Severity is carried by one accent on the card edge rather than by
+   colouring the panel: a red block behind a paragraph makes it harder to
+   read at exactly the moment someone most needs to read it. */
+.narrative { border-left: 3px solid var(--border); margin-bottom: 16px; }
+.narrative.sev-critical, .narrative.sev-high { border-left-color: var(--bad); }
+.narrative.sev-medium { border-left-color: var(--warn); }
+.narrative.sev-low { border-left-color: var(--accent); }
+.narrative.sev-none { border-left-color: var(--border); }
+
+.nar-assess { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 6px; }
+.nar-statement { font-size: 15px; line-height: 1.45; color: var(--text); }
+.nar-meta { color: var(--text-dim); font-size: 12px; margin-bottom: 14px; }
+
+/* The stage strip. Absent stages stay visible but recede - the reader
+   should be able to see that nothing matched at a stage without that
+   reading as a claim it did not happen. */
+.nar-stages { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.nar-stage {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: #5c6379;
+  white-space: nowrap;
+}
+.nar-stage.on { border-color: var(--accent-dim); background: rgba(91, 157, 255, 0.12); color: var(--accent); }
+.nar-arrow { color: #3a4055; font-size: 11px; }
+
+.nar-beats { display: flex; flex-direction: column; }
+.nar-phase { margin-top: 18px; }
+.nar-phase-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+/* Beats hang off a rail so a phase reads as a sequence. */
+.beat { position: relative; padding: 10px 0 10px 20px; }
+.beat::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.beat:last-child::before { bottom: 50%; }
+.beat-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.beat-dot {
+  position: absolute;
+  left: 0;
+  top: 15px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  border: 2px solid var(--panel);
+}
+.beat.sev-high .beat-dot { background: var(--bad); }
+.beat.sev-medium .beat-dot { background: var(--warn); }
+.beat.sev-low .beat-dot { background: var(--text-dim); }
+.beat-time { color: var(--text-dim); }
+.beat-title { font-weight: 600; }
+.beat-x { color: var(--text-dim); font-size: 11px; }
+.beat-desc { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-top: 3px; }
+.beat-cite { margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cite-chip {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  color: var(--text-dim);
+}
+.cite-chip:hover { border-color: var(--accent-dim); color: var(--accent); text-decoration: none; }
+.nar-more { display: inline-block; margin-top: 10px; font-size: 13px; }
+
+.pivot {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 4px 0 12px;
+}
