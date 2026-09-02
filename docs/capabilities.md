@@ -141,6 +141,33 @@ Local, deterministic, zero-cost pattern matches. **No AI, no network call.** The
 | `SQL-INJECTION-ATTEMPT` | Injection payloads, **URL-decoded** first. Rated *high* only when the server actually returned success — intent and impact are different findings. |
 | `SCAN-SUCCESSFUL-PATHS` | The paths that returned success amid a 404-heavy scan — *what the scan actually found* |
 
+**Network rules** — the eight rules above grew from endpoint and web-scan evidence and matched nothing on a network intrusion. These cover that surface.
+
+| Rule | Fires on |
+|---|---|
+| `SUSPICIOUS-TLD` | Domains on TLDs cheap enough to be used in bulk by phishing and malware infrastructure. *Low* on purpose: common in legitimate use too |
+| `EXECUTABLE-DOWNLOAD` | An executable retrieved over **cleartext** HTTP. Not the file type alone — flagging every `.exe` would train people to ignore the rule |
+| `CLEARTEXT-CREDENTIALS` | A credential crossing the network unencrypted (HTTP form, HTTP Basic, FTP, IMAP, POP, Telnet) |
+| `KEY-MATERIAL-IN-TRANSIT` | Private key material by filename or content (`id_rsa`, `BEGIN … PRIVATE KEY`) |
+| `OUTBOUND-BULK-TRANSFER` | Volume to an **external** host. Internal-to-internal is a file copy, and flagging it would bury the case that isn't |
+| `PERIODIC-BEACON` | Repeated low-volume contact at a machine-regular interval |
+| `CREDENTIAL-REUSE` | The **same** password observed on more than one protocol — a join no single-event rule can make |
+
+Three deliberate suppressions, because a rule that cries wolf is worse than no rule:
+
+- **A 0-second interval is not "periodic", it is simultaneous.** A burst of parallel flows is one burst, not a beacon.
+- **A chunked upload is regular by nature** but it is an exfiltration, not an implant checking in. Volume separates them.
+- **One activity, one finding.** A transfer already reported as bulk is not *also* reported as a beacon.
+
+### How credentials are handled
+
+Normalized events carry no payload by design, so a credential is invisible to a rule reading events — only the parser, holding the dissected packet, ever sees one. The tshark engine therefore emits a `credential_exposure` event carrying a **SHA-256 of the secret, never the secret**.
+
+That is enough to answer *"is this the same credential seen elsewhere"* — which is what makes `CREDENTIAL-REUSE` possible — without putting a working password into a case database that then rides along in every export, report and backup. The plaintext stays in the evidence file, which is already hashed, read-only, and reachable through [content search](#content-search).
+
+> **Engine limitation.** `credential_exposure` is produced by the **tshark engine only**. Without Wireshark installed, `CLEARTEXT-CREDENTIALS` and `CREDENTIAL-REUSE` will not fire — the scapy engine does not inspect payloads for credentials. Every other rule in both tables works on either engine.
+
+
 ## MITRE ATT&CK mapping
 Deterministic, rule-based, evidence-cited suggestions — never an automated "this happened" claim. Currently T1059, T1059.001, T1027, T1105. Each carries an investigator-settable status (`potential` / `confirmed` / `rejected`) that survives re-scans.
 

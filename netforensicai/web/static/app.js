@@ -97,6 +97,12 @@ function parseHash() {
 }
 
 async function route() {
+  // Modals attach to document.body, so clearing #app does not remove
+  // them. Left open across a navigation, a pivot dialog goes on showing
+  // one case's evidence over another case's page - in a forensics tool
+  // that is not untidy, it is wrong.
+  for (const modal of document.querySelectorAll(".modal")) modal.remove();
+
   const parts = parseHash();
   const nav = document.getElementById("case-nav");
   const app = document.getElementById("app");
@@ -319,6 +325,7 @@ async function renderSettings(app) {
 
 async function renderCaseTab(app, c, tab, rest) {
   stopCapturePolling(); // leaving (or re-rendering) any tab cancels a live capture-status poll loop
+  if (tab === "story") return renderStory(app, c);
   if (tab === "evidence") return renderEvidence(app, c);
   if (tab === "timeline") return renderTimeline(app, c);
   if (tab === "entities") return renderEntities(app, c, rest[0]);
@@ -398,6 +405,13 @@ async function renderOverview(app, c) {
   actions.appendChild(el("button", { class: "danger", text: "Delete case", onclick: () => confirmDelete(c) }));
   head.appendChild(actions);
   app.appendChild(head);
+
+  // --- what happened ------------------------------------------------
+  //
+  // Above the counts, deliberately. An investigator opening a case
+  // wants the account first; "81 events" is context for a finding and
+  // was never a finding itself.
+  app.appendChild(narrativeCard(c, { compact: true }));
 
   // --- KPI row ------------------------------------------------------
   const corr = c.correlation_by_type || {};
@@ -816,6 +830,219 @@ async function loadInto(panel, fetcher, build, degradedNote) {
       })
     );
   }
+}
+
+// --- The narrative: the case as an account of what happened ------------
+//
+// core/narrative.py does the reasoning; this only draws it. Nothing here
+// derives a fact, re-orders a phase or picks a severity of its own - if
+// the panel disagrees with `netforensic story` on the same case, the bug
+// is here, and that is deliberate: one place decides what happened.
+
+// The canonical stages, drawn whether or not they were evidenced. A stage
+// with nothing in it is information too - but it means "no bundled rule
+// matched", never "this did not happen", which is why absent chips are
+// labelled rather than simply left out.
+const STAGES = [
+  ["reconnaissance", "Recon"],
+  ["delivery", "Delivery"],
+  ["credential-access", "Credentials"],
+  ["collection", "Collection"],
+  ["exfiltration", "Exfiltration"],
+  ["command-and-control", "C2"],
+];
+
+function beatTime(iso) {
+  if (!iso) return "unknown time";
+  const t = String(iso).replace("T", " ");
+  return t.slice(11, 19) || t.slice(0, 19);
+}
+
+function stageStrip(present) {
+  const strip = el("div", { class: "nar-stages" });
+  STAGES.forEach(([key, label], i) => {
+    const on = present.has(key);
+    strip.appendChild(
+      el("span", {
+        class: "nar-stage" + (on ? " on" : ""),
+        text: label,
+        title: on ? "" : "No bundled rule matched this stage - not proof it did not happen.",
+      })
+    );
+    if (i < STAGES.length - 1) strip.appendChild(el("span", { class: "nar-arrow", text: "→" }));
+  });
+  return strip;
+}
+
+function beatRow(c, beat, opts) {
+  const row = el("div", { class: "beat sev-" + cssClass(beat.severity) });
+  const head = el("div", { class: "beat-head" });
+  head.appendChild(el("span", { class: "beat-dot" }));
+  head.appendChild(
+    el("span", { class: "beat-time mono", text: beatTime(beat.first_seen), title: beat.first_seen || "" })
+  );
+  head.appendChild(el("span", { class: "beat-title", text: beat.title }));
+  if (beat.occurrences > 1) head.appendChild(el("span", { class: "beat-x", text: "×" + beat.occurrences }));
+  head.appendChild(el("span", { class: "badge badge-" + cssClass(beat.severity), text: beat.severity }));
+  row.appendChild(head);
+  row.appendChild(el("div", { class: "beat-desc", text: beat.description }));
+
+  if (!(opts && opts.full)) return row;
+
+  // Citations. The whole claim of this panel is that every sentence walks
+  // back to a packet, so the ids are shown rather than summarised, and
+  // each one opens where those packets actually are.
+  const cite = el("div", { class: "beat-cite" });
+  cite.appendChild(el("span", { class: "dim", text: "evidence " }));
+  for (const id of (beat.event_ids || []).slice(0, 6)) {
+    cite.appendChild(
+      el("a", {
+        class: "cite-chip mono",
+        href: "#",
+        text: id,
+        title: "Show the display filter that isolates this event",
+        onclick: (ev) => {
+          ev.preventDefault();
+          showPivot(c, id);
+        },
+      })
+    );
+  }
+  const extra = (beat.event_ids || []).length - 6;
+  if (extra > 0) cite.appendChild(el("span", { class: "dim", text: "+" + extra + " more" }));
+  if (beat.hosts && beat.hosts.length) {
+    cite.appendChild(el("span", { class: "dim", text: " · " + beat.hosts.join(", ") }));
+  }
+  row.appendChild(cite);
+  return row;
+}
+
+// The pivot to packets. Read-only: it resolves the display filter and the
+// command, and launches nothing on the server's behalf.
+async function showPivot(c, eventId) {
+  const box = el("div", { class: "modal" });
+  const card = el("div", { class: "modal-card" });
+  card.appendChild(el("h3", { text: eventId }));
+  const body = el("div");
+  card.appendChild(body);
+  const actions = el("div", { class: "modal-actions" });
+  actions.appendChild(el("button", { class: "secondary", text: "Close", onclick: () => box.remove() }));
+  card.appendChild(actions);
+  box.appendChild(card);
+  document.body.appendChild(box);
+
+  body.appendChild(el("div", { class: "loading", text: "Resolving..." }));
+  try {
+    const p = await apiGet(`/cases/${c.case_id}/events/${eventId}/wireshark`);
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "dim", text: "Display filter" }));
+    body.appendChild(el("pre", { class: "pivot", text: p.display_filter }));
+    body.appendChild(el("div", { class: "dim", text: "Open the packets" }));
+    // gui_command() returns one shell-quoted string, ready to paste.
+    body.appendChild(el("pre", { class: "pivot", text: p.command }));
+    if (!p.gui_available) {
+      body.appendChild(
+        el("div", {
+          class: "dim",
+          text: "The Wireshark GUI was not found on this machine - run the command where it is installed.",
+        })
+      );
+    }
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "error-box", text: e.message }));
+  }
+}
+
+function narrativeBody(c, n, opts) {
+  const full = !!(opts && opts.full);
+  const wrap = el("div", { class: "nar-body" });
+
+  const assess = el("div", { class: "nar-assess sev-" + cssClass(n.severity) });
+  assess.appendChild(el("span", { class: "badge badge-" + cssClass(n.severity), text: n.severity }));
+  assess.appendChild(el("div", { class: "nar-statement", text: n.assessment }));
+  wrap.appendChild(assess);
+
+  const bits = [n.headline];
+  const window_ = n.window || [null, null];
+  if (window_[0]) bits.push(beatTime(window_[0]) + " → " + beatTime(window_[1]));
+  if (n.subjects && n.subjects.length) bits.push(n.subjects.join(", "));
+  wrap.appendChild(el("div", { class: "nar-meta", text: bits.filter(Boolean).join("  ·  ") }));
+
+  const phases = n.phases || [];
+  if (!phases.length) return wrap;
+
+  wrap.appendChild(stageStrip(new Set(phases.map((p) => p.phase))));
+
+  if (full) {
+    for (const phase of phases) {
+      const sec = el("div", { class: "nar-phase" });
+      sec.appendChild(el("div", { class: "nar-phase-title", text: phase.title }));
+      for (const beat of phase.beats) sec.appendChild(beatRow(c, beat, { full: true }));
+      wrap.appendChild(sec);
+    }
+    return wrap;
+  }
+
+  // Compact: the first few beats in the order they happened, then a way
+  // through to the rest. Truncating silently would misrepresent the case.
+  const flat = phases.reduce((acc, p) => acc.concat(p.beats), []);
+  const shown = flat.slice(0, 4);
+  const list = el("div", { class: "nar-beats" });
+  for (const beat of shown) list.appendChild(beatRow(c, beat, { full: false }));
+  wrap.appendChild(list);
+  const hidden = flat.length - shown.length;
+  if (hidden > 0) {
+    wrap.appendChild(
+      el("a", {
+        class: "nar-more",
+        href: `#/case/${c.case_id}/story`,
+        text: `${hidden} more finding${hidden === 1 ? "" : "s"} in the full story →`,
+      })
+    );
+  }
+  return wrap;
+}
+
+function narrativeCard(c, opts) {
+  const card = el("div", { class: "card narrative" });
+  const head = el("div", { class: "card-head" });
+  head.appendChild(el("h3", { text: "What happened" }));
+  head.appendChild(el("span", { class: "dim", text: "assembled from detections - no model, no network" }));
+  head.appendChild(
+    el("span", { class: "right" }, [el("a", { href: `#/case/${c.case_id}/story`, text: "Full story →" })])
+  );
+  card.appendChild(head);
+
+  loadInto(card, () => apiGet(`/cases/${c.case_id}/narrative`), (n) => {
+    card.classList.add("sev-" + cssClass(n.severity));
+    if (!c.event_count) {
+      return el("div", {
+        class: "empty",
+        text: "Nothing has been analysed yet. Run analyze below, and the account of what happened appears here.",
+      });
+    }
+    return narrativeBody(c, n, opts);
+  });
+  return card;
+}
+
+async function renderStory(app, c) {
+  app.appendChild(el("h1", { text: "What happened" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "The case as an account rather than a count, assembled from the detections and the events they cite. " +
+        "Deterministic: the same evidence produces the same story, and every line names the events it rests on.",
+    })
+  );
+  const panel = el("div", { class: "card narrative" });
+  app.appendChild(panel);
+  loadInto(panel, () => apiGet(`/cases/${c.case_id}/narrative`), (n) => {
+    panel.classList.add("sev-" + cssClass(n.severity));
+    return narrativeBody(c, n, { full: true });
+  });
 }
 
 // Deleting a case destroys the evidence AND the chain of custody, so the
@@ -2408,12 +2635,14 @@ const ICONS = {
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   event: '<path d="M3 13h4l3-8 4 16 3-8h4"/>',
   arrow: '<path d="M5 12h13M13 6l6 6-6 6"/>',
+  story: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H12v18H6.5A2.5 2.5 0 0 1 4 18.5z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H12v18h5.5A2.5 2.5 0 0 0 20 18.5z"/>',
 };
 
 // tab -> [group, label, icon]. The group headings are the four stages of
 // an investigation; `null` means the item stands alone.
 const RAIL = [
   [null, "overview", "Overview", "overview"],
+  [null, "story", "What happened", "story"],
   ["Evidence", "evidence", "Evidence", "evidence"],
   [null, "capture", "Live capture", "capture"],
   ["Dig", "search", "Search", "search"],
