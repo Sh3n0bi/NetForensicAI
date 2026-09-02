@@ -536,7 +536,12 @@ def test_investigate_ai_flag_shows_hypothesis(tmp_path):
     assert "not a conclusion" in result.output
 
 
-def test_investigate_ai_flag_reports_unavailable_without_credentials(tmp_path):
+def test_investigate_ai_flag_reports_a_rejected_credential(tmp_path):
+    """The name used to say "without credentials", but the test raises an
+    AuthenticationError - which is a key that was sent and REFUSED, not
+    one that was missing. The two now produce different messages, and
+    conflating them is what sends an investigator to set a variable they
+    have already set."""
     pytest.importorskip("anthropic")
     from unittest.mock import patch
 
@@ -561,7 +566,7 @@ def test_investigate_ai_flag_reports_unavailable_without_credentials(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "Not available" in result.output
-    assert "credentials" in result.output
+    assert "rejected the credential" in result.output
 
 
 def test_investigate_without_ai_flag_has_no_hypothesis_section(tmp_path):

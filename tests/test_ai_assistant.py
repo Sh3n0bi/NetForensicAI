@@ -134,7 +134,7 @@ def test_authentication_error_raises_assistant_error():
     mock_client.messages.parse.side_effect = auth_error
 
     with patch("anthropic.Anthropic", return_value=mock_client):
-        with pytest.raises(AssistantError, match="credentials"):
+        with pytest.raises(AssistantError, match="rejected the credential"):
             generate_hypothesis([_event("EVT-0001")], api_key="bad-key")
 
 
@@ -341,7 +341,7 @@ def test_openai_provider_authentication_error_raises_assistant_error():
     mock_client.beta.chat.completions.parse.side_effect = auth_error
 
     with patch("openai.OpenAI", return_value=mock_client):
-        with pytest.raises(AssistantError, match="credentials"):
+        with pytest.raises(AssistantError, match="rejected the credential"):
             generate_hypothesis([_event("EVT-0001")], provider="openai", api_key="bad-key")
 
 
@@ -421,7 +421,7 @@ def test_gemini_provider_client_error_with_401_raises_assistant_error():
     mock_client.models.generate_content.side_effect = client_error
 
     with patch("google.genai.Client", return_value=mock_client):
-        with pytest.raises(AssistantError, match="credentials"):
+        with pytest.raises(AssistantError, match="rejected the credential"):
             generate_hypothesis([_event("EVT-0001")], provider="gemini", api_key="bad-key")
 
 
@@ -475,3 +475,30 @@ def test_ollama_provider_uses_custom_base_url():
         generate_hypothesis([_event("EVT-0001")], provider="ollama", base_url="http://192.168.1.50:11434")
 
     assert mock_post.call_args.args[0] == "http://192.168.1.50:11434/api/chat"
+
+
+def test_a_rejected_key_is_not_reported_as_a_missing_key():
+    """A 401 means a key WAS resolved, sent, and refused - expired,
+    revoked, or not authorised for the model.
+
+    All three providers used to report that as "No credentials found",
+    which sends the investigator to set an environment variable they have
+    already set, get the identical error, and conclude the tool is broken.
+    Found while trying to verify the assistant against a live provider,
+    where it cost exactly that debugging cycle.
+    """
+    pytest.importorskip("google.genai")
+    from google.genai import errors as genai_errors
+
+    rejected = genai_errors.ClientError(401, {"error": {"message": "API key not valid"}})
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = rejected
+
+    with patch("netforensicai.core.ai_assistant.RETRY_BACKOFF_SECONDS", 0):
+        with patch("google.genai.Client", return_value=mock_client):
+            with pytest.raises(AssistantError) as caught:
+                generate_hypothesis([_event("EVT-0001")], provider="gemini", api_key="stale-key")
+
+    message = str(caught.value)
+    assert "A key WAS found" in message
+    assert "No Gemini credentials found" not in message, "the misleading message came back"
