@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Wireshark: optional](https://img.shields.io/badge/wireshark-optional-informational.svg)](docs/wireshark.md)
 
-[Use cases](#use-cases) · [Install](#installation) · [How it works](docs/architecture.md) · [Worked example](docs/walkthrough.md) · [Commands](docs/commands.md) · [Limitations](#limitations)
+[Use cases](#use-cases) · [Install](#installation) · [How it works](docs/architecture.md) · [Worked example](docs/walkthrough.md) · [Commands](docs/commands.md) · [Deploy & sizing](docs/deployment.md) · [Limitations](#limitations)
 
 </div>
 
@@ -21,7 +21,7 @@
 - [Installation](#installation) · [Quick start](#quick-start)
 - [Limitations](#limitations) · [Testing](#testing) · [Contributing](#contributing)
 
-**Reference:** [Capabilities](docs/capabilities.md) · [Commands](docs/commands.md) · [HTTP API](docs/api.md) · [Wireshark](docs/wireshark.md) · [Architecture & performance](docs/architecture.md) · [Worked example](docs/walkthrough.md)
+**Reference:** [Capabilities](docs/capabilities.md) · [Commands](docs/commands.md) · [HTTP API](docs/api.md) · [Wireshark](docs/wireshark.md) · [Architecture & performance](docs/architecture.md) · [Deployment, sizing & compliance](docs/deployment.md) · [Worked example](docs/walkthrough.md)
 
 ---
 
