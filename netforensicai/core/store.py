@@ -166,6 +166,16 @@ CORRELATION_FIELDS = [
     "confidence",
 ]
 
+IOC_FIELDS = [
+    "ioc_id",
+    "ioc_type",
+    "value",
+    "description",
+    "source",
+    "feed_sha256",
+    "added_at",
+]
+
 DETECTION_FIELDS = [
     "detection_id",
     "rule_id",
@@ -329,6 +339,23 @@ class CaseStore:
                 evidence_id TEXT NOT NULL,
                 description TEXT NOT NULL,
                 detected_at TIMESTAMPTZ NOT NULL
+            )
+            """
+        )
+        # Imported threat-intelligence indicators. Stored in the case, not
+        # alongside it, so an exported case carries the intel its
+        # conclusions rested on - and feed_sha256 records WHICH feed, which
+        # is the question a reviewer asks months later.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS iocs (
+                ioc_id TEXT PRIMARY KEY,
+                ioc_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                description TEXT,
+                source TEXT,
+                feed_sha256 TEXT,
+                added_at TIMESTAMPTZ NOT NULL
             )
             """
         )
@@ -778,6 +805,52 @@ class CaseStore:
 
     def count_detections(self):
         return self.conn.execute("SELECT count(*) FROM detections").fetchone()[0]
+
+    def add_iocs(self, rows):
+        """Insert indicators not already in the case; return how many were new.
+
+        Deduplicated against existing ids in Python rather than with ON
+        CONFLICT, because _bulk_insert's fallback path must never pair
+        executemany with a conflict clause (see its docstring). Re-importing
+        the same feed is therefore a no-op, and the first import's source
+        and note are kept - they record where the indicator first came from.
+        """
+        rows = list(rows)
+        if not rows:
+            return 0
+        existing = {r[0] for r in self.conn.execute("SELECT ioc_id FROM iocs").fetchall()}
+        fresh = {}
+        for row in rows:
+            if row["ioc_id"] not in existing and row["ioc_id"] not in fresh:
+                fresh[row["ioc_id"]] = row
+        _bulk_insert(
+            self.conn,
+            "iocs",
+            IOC_FIELDS,
+            [[row[field] for field in IOC_FIELDS] for row in fresh.values()],
+        )
+        return len(fresh)
+
+    def list_iocs(self, ioc_type=None):
+        where_sql, params = ("WHERE ioc_type = ?", [ioc_type]) if ioc_type else ("", [])
+        rows = self.conn.execute(
+            f"SELECT {', '.join(IOC_FIELDS)} FROM iocs {where_sql} ORDER BY ioc_type, value", params
+        ).fetchall()
+        return [dict(zip(IOC_FIELDS, row)) for row in rows]
+
+    def count_iocs(self):
+        return self.conn.execute("SELECT count(*) FROM iocs").fetchone()[0]
+
+    def clear_iocs(self, source=None):
+        """Remove every indicator, or only those from one source. Returns
+        how many were removed."""
+        if source:
+            count = self.conn.execute("SELECT count(*) FROM iocs WHERE source = ?", [source]).fetchone()[0]
+            self.conn.execute("DELETE FROM iocs WHERE source = ?", [source])
+        else:
+            count = self.count_iocs()
+            self.conn.execute("DELETE FROM iocs")
+        return count
 
 
 @contextlib.contextmanager

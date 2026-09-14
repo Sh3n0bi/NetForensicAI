@@ -16,6 +16,7 @@ State-changing requests need an `X-Requested-With: NetForensicAI` header. That i
 | `GET · POST /api/cases/<id>/evidence` | list and upload |
 | `POST /api/cases/<id>/analyze` | parse, correlate, scan rules |
 | `GET /api/cases/<id>/timeline` · `/entities` · `/detections` · `/attack` · `/findings` · `/audit` · `/artifacts` | the case, read back |
+| `GET · POST · DELETE /api/cases/<id>/iocs` | list indicators (with match state), import a feed (multipart `file`, optional `source`; re-runs detections), remove all or one `source` |
 | `POST /api/cases/<id>/search` | content search over a capture |
 | `GET /api/cases/<id>/streams` · `/streams/<n>` | list conversations, reassemble one |
 | `GET /api/cases/<id>/triage` | protocols, candidates, files, conversations |

@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 # the order phases appear in the narrative, NOT a claim that an
 # investigation must find all of them or find them in sequence.
 PHASES = (
+    # First, because it is the most directly actionable thing in a case:
+    # evidence touching something a threat feed already named.
+    ("known-indicators", "Known indicators from threat intelligence"),
     ("reconnaissance", "Reconnaissance and infrastructure"),
     ("delivery", "Delivery"),
     ("credential-access", "Credential access"),
@@ -53,6 +56,7 @@ PHASES = (
 )
 
 RULE_PHASE = {
+    "IOC-MATCH": "known-indicators",
     "SUSPICIOUS-TLD": "reconnaissance",
     "HTTP-PATH-ENUMERATION": "reconnaissance",
     "SCAN-SUCCESSFUL-PATHS": "reconnaissance",
@@ -71,6 +75,13 @@ RULE_PHASE = {
 }
 
 SEVERITY_RANK = {"high": 3, "medium": 2, "low": 1}
+
+# Rules whose detections are each a distinct fact and must not be merged
+# into one beat. Grouping by rule is right for SUSPICIOUS-TLD - eight
+# matches on one domain are one thing - but every IOC-MATCH detection is
+# already one indicator, and collapsing five different indicators into a
+# single beat would show one description and hide the other four.
+PER_DETECTION_RULES = frozenset({"IOC-MATCH"})
 
 # An assessment is only as strong as the phases it rests on. These are
 # read in order and the first whose condition holds is used, so the
@@ -102,6 +113,12 @@ ASSESSMENTS = (
         ("command-and-control",),
         "high",
         "A host is in machine-regular contact with external infrastructure.",
+    ),
+    (
+        ("known-indicators",),
+        "high",
+        "Evidence matched indicators from threat intelligence imported into this case. A match "
+        "says the value was reported as malicious elsewhere; it still needs confirming here.",
     ),
     (
         ("delivery",),
@@ -214,10 +231,12 @@ def build(store):
     # times is how a report becomes unreadable.
     grouped = defaultdict(list)
     for detection in detections:
-        grouped[detection["rule_id"]].append(detection)
+        key = detection["detection_id"] if detection["rule_id"] in PER_DETECTION_RULES else detection["rule_id"]
+        grouped[key].append(detection)
 
     beats = []
-    for rule_id, matches in grouped.items():
+    for _group, matches in grouped.items():
+        rule_id = matches[0]["rule_id"]
         stamped = [events.get(m.get("event_id")) for m in matches]
         stamped = [e for e in stamped if e is not None]
         times = sorted(e.timestamp for e in stamped if e.timestamp)

@@ -332,6 +332,7 @@ async function renderCaseTab(app, c, tab, rest) {
   if (tab === "findings") return renderFindings(app, c);
   if (tab === "audit") return renderAudit(app, c);
   if (tab === "detections") return renderDetections(app, c);
+  if (tab === "iocs") return renderIocs(app, c);
   if (tab === "attack") return renderAttack(app, c);
   if (tab === "reports") return renderReports(app, c);
   if (tab === "capture") return renderCapture(app, c);
@@ -1684,6 +1685,183 @@ async function renderAudit(app, c) {
 
 // --- Detections (bundled offline rules - read-only, recomputed by Analyze) ---
 
+// --- Threat intel: import indicators, see which ones the evidence touched ---
+//
+// Every value on this page comes from a feed somebody else wrote, so all of
+// it is set with textContent and never innerHTML. A "note" field in a shared
+// MISP export is exactly where a stored-XSS payload would ride in.
+
+function iocSummary(c, s) {
+  const box = el("div", { class: "ioc-result" });
+  const byType = Object.entries(s.by_type || {})
+    .map(([t, n]) => `${n} ${t}`)
+    .join(", ");
+  box.appendChild(
+    el("div", {
+      text: `${s.source} (${s.feed_format}) - added ${s.added}${byType ? ` (${byType})` : ""}, ${s.total_indicators} now in case.`,
+    })
+  );
+  if (s.already_present) box.appendChild(el("div", { class: "dim", text: `${s.already_present} were already in this case.` }));
+  if (s.duplicates_in_feed) box.appendChild(el("div", { class: "dim", text: `${s.duplicates_in_feed} duplicate line(s) in the feed.` }));
+  if (s.skipped_non_ids) {
+    box.appendChild(
+      el("div", {
+        class: "dim",
+        text: `${s.skipped_non_ids} MISP attribute(s) skipped: to_ids is false, which the feed author uses to mark context that should not alert.`,
+      })
+    );
+  }
+  if (s.rejected_count) {
+    const wrap = el("div", { class: "warn-note" });
+    wrap.appendChild(el("div", { text: `${s.rejected_count} line(s) refused:` }));
+    const list = el("ul");
+    for (const r of (s.rejected || []).slice(0, 10)) {
+      const li = el("li");
+      li.appendChild(el("span", { class: "mono", text: r.value }));
+      li.appendChild(document.createTextNode(` - ${r.reason}`));
+      list.appendChild(li);
+    }
+    wrap.appendChild(list);
+    if (s.rejected_count > 10) wrap.appendChild(el("div", { class: "dim", text: `...and ${s.rejected_count - 10} more.` }));
+    box.appendChild(wrap);
+  }
+  const matched = el("div", { class: s.match_count ? "ioc-matched" : "dim" });
+  if (s.match_count) {
+    matched.appendChild(document.createTextNode(`${s.match_count} indicator(s) matched the evidence. `));
+    matched.appendChild(el("a", { href: `#/case/${c.case_id}/story`, text: "See them in What happened →" }));
+  } else {
+    matched.textContent = "No indicator matched the evidence in this case.";
+  }
+  box.appendChild(matched);
+  return box;
+}
+
+async function renderIocs(app, c) {
+  app.appendChild(el("h1", { text: "Threat intel" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Import indicators from a feed - plain text, CSV, STIX 2.1 or MISP JSON - and each one the evidence touches becomes a " +
+        "detection that leads the story. Defanged values (hxxp://, evil[.]com) are accepted, refused lines say why, and the " +
+        "feed's SHA-256 goes into the chain of custody. Nothing is fetched from the network.",
+    })
+  );
+
+  const importCard = el("div", { class: "card ioc-import" });
+  importCard.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Import a feed" })]));
+  const row = el("div", { class: "ioc-import-row" });
+  const fileInput = el("input", { type: "file", accept: ".txt,.csv,.json,.list,.ioc", "aria-label": "Indicator feed file" });
+  const sourceInput = el("input", { type: "text", placeholder: "Feed name (defaults to the file name)", "aria-label": "Feed name" });
+  const importBtn = el("button", { text: "Import and match" });
+  row.appendChild(fileInput);
+  row.appendChild(sourceInput);
+  row.appendChild(importBtn);
+  importCard.appendChild(row);
+  const resultSlot = el("div");
+  importCard.appendChild(resultSlot);
+  app.appendChild(importCard);
+
+  const listCard = el("div", { class: "card" });
+  app.appendChild(listCard);
+
+  function renderList(data) {
+    listCard.innerHTML = "";
+    const head = el("div", { class: "card-head" });
+    head.appendChild(el("h3", { text: "Indicators in this case" }));
+    head.appendChild(el("span", { class: "dim", text: `${data.total} imported · ${data.matched} matched` }));
+    if (data.total) {
+      const clearBtn = el("button", { class: "danger", text: "Remove all" });
+      clearBtn.onclick = async () => {
+        if (!window.confirm(`Remove all ${data.total} indicators from ${c.case_id}? Their matches are removed with them.`)) return;
+        try {
+          const r = await apiDelete(`/cases/${c.case_id}/iocs`, {});
+          toast(`Removed ${r.removed} indicator(s)`);
+          resultSlot.innerHTML = "";
+          loadList();
+        } catch (e) {
+          toast("Could not remove indicators: " + e.message, true);
+        }
+      };
+      head.appendChild(el("span", { class: "right" }, [clearBtn]));
+    }
+    listCard.appendChild(head);
+
+    if (!data.total) {
+      listCard.appendChild(el("div", { class: "empty", text: "No indicators yet. Import a feed above." }));
+      return;
+    }
+
+    // Matched first: the indicators the evidence touched are the reason
+    // anyone opens this page.
+    const rows = [...data.indicators].sort((a, b) => Number(b.matched) - Number(a.matched));
+    const wrap = el("div", { class: "table-wrap" });
+    const table = el("table", { class: "ioc-table" });
+    const thead = el("thead");
+    thead.appendChild(el("tr", {}, ["Match", "Type", "Indicator", "Source"].map((h) => el("th", { text: h }))));
+    table.appendChild(thead);
+    const tbody = el("tbody");
+    for (const item of rows) {
+      const tr = el("tr", { class: item.matched ? "ioc-row-hit" : "" });
+      tr.appendChild(
+        el("td", {}, [
+          item.matched ? el("span", { class: "badge badge-high", text: "seen" }) : el("span", { class: "dim", text: "-" }),
+        ])
+      );
+      tr.appendChild(el("td", { class: "mono dim", text: item.ioc_type }));
+      const valueCell = el("td");
+      valueCell.appendChild(el("div", { class: "mono ioc-value", text: item.value }));
+      if (item.description) valueCell.appendChild(el("div", { class: "dim", text: item.description }));
+      if (item.matched && item.match_description) {
+        valueCell.appendChild(el("div", { class: "ioc-match-note", text: item.match_description }));
+      }
+      tr.appendChild(valueCell);
+      tr.appendChild(el("td", { class: "dim", text: item.source || "" }));
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    listCard.appendChild(wrap);
+  }
+
+  async function loadList() {
+    listCard.innerHTML = "";
+    listCard.appendChild(el("div", { class: "loading", text: "Loading…" }));
+    try {
+      renderList(await apiGet(`/cases/${c.case_id}/iocs`));
+    } catch (e) {
+      listCard.innerHTML = "";
+      listCard.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    }
+  }
+
+  importBtn.onclick = async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) {
+      toast("Choose a feed file first.", true);
+      return;
+    }
+    const form = new FormData();
+    form.append("file", file);
+    if (sourceInput.value.trim()) form.append("source", sourceInput.value.trim());
+    importBtn.disabled = true;
+    importBtn.textContent = "Importing…";
+    resultSlot.innerHTML = "";
+    try {
+      const summary = await apiUpload(`/cases/${c.case_id}/iocs`, form);
+      resultSlot.appendChild(iocSummary(c, summary));
+      renderList(summary.case);
+      toast(`Imported ${summary.added} indicator(s), ${summary.match_count} matched`);
+    } catch (e) {
+      resultSlot.appendChild(el("div", { class: "error-box", text: e.message }));
+    } finally {
+      importBtn.disabled = false;
+      importBtn.textContent = "Import and match";
+    }
+  };
+
+  loadList();
+}
 async function renderDetections(app, c) {
   app.appendChild(el("h1", { text: "Detections" }));
   app.appendChild(
@@ -2636,6 +2814,7 @@ const ICONS = {
   event: '<path d="M3 13h4l3-8 4 16 3-8h4"/>',
   arrow: '<path d="M5 12h13M13 6l6 6-6 6"/>',
   story: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H12v18H6.5A2.5 2.5 0 0 1 4 18.5z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H12v18h5.5A2.5 2.5 0 0 0 20 18.5z"/>',
+  indicators: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
 };
 
 // tab -> [group, label, icon]. The group headings are the four stages of
@@ -2651,6 +2830,7 @@ const RAIL = [
   ["Analysis", "timeline", "Timeline", "timeline"],
   [null, "entities", "Entities", "entities"],
   [null, "detections", "Detections", "detections"],
+  [null, "iocs", "Threat intel", "indicators"],
   [null, "attack", "ATT&CK", "attack"],
   ["Conclude", "findings", "Findings", "findings"],
   [null, "reports", "Reports", "reports"],

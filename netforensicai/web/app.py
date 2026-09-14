@@ -290,6 +290,69 @@ def create_app(cases_dir="cases"):
             d["detected_at"] = d["detected_at"].isoformat() if d["detected_at"] else None
         return jsonify(detections)
 
+    # --- threat-intelligence indicators ---
+    #
+    # Imports go through core/ioc.import_into_case, the same function the
+    # CLI uses, so both leave an identical chain-of-custody record naming
+    # the feed by its SHA-256.
+
+    def _ioc_payload(store):
+        matched = {
+            d["detection_id"].removeprefix("DET-IOC-MATCH-"): d
+            for d in store.list_detections()
+            if d["rule_id"] == "IOC-MATCH"
+        }
+        indicators = []
+        for item in store.list_iocs():
+            hit = matched.get(item["ioc_id"])
+            item["added_at"] = item["added_at"].isoformat() if item["added_at"] else None
+            item["matched"] = hit is not None
+            item["match_event_id"] = hit["event_id"] if hit else None
+            item["match_description"] = hit["description"] if hit else None
+            indicators.append(item)
+        return {"indicators": indicators, "total": len(indicators), "matched": len(matched)}
+
+    @app.route("/api/cases/<case_id>/iocs")
+    def list_iocs(case_id):
+        case = _load_case(case_id)
+        with locked_store(_case_dir(case)) as store:
+            return jsonify(_ioc_payload(store))
+
+    @app.route("/api/cases/<case_id>/iocs", methods=["POST"])
+    def import_iocs(case_id):
+        case = _load_case(case_id)
+        from netforensicai.core import ioc
+
+        if "file" not in request.files:
+            raise ApiError("No file provided (expected multipart field 'file').")
+        uploaded = request.files["file"]
+        filename = secure_filename(uploaded.filename or "") or "feed.txt"
+        content = uploaded.read(ioc.MAX_FEED_BYTES + 1)
+        source = (request.form.get("source") or "").strip() or None
+
+        try:
+            with locked_store(_case_dir(case)) as store:
+                summary = ioc.import_into_case(store, _case_dir(case), content, filename, source=source)
+                payload = _ioc_payload(store)
+        except ioc.IocError as e:
+            raise ApiError(str(e))
+
+        for d in summary["matches"]:
+            d["detected_at"] = d["detected_at"].isoformat() if d["detected_at"] else None
+        summary["case"] = payload
+        return jsonify(summary), 201
+
+    @app.route("/api/cases/<case_id>/iocs", methods=["DELETE"])
+    def clear_iocs(case_id):
+        case = _load_case(case_id)
+        from netforensicai.core import ioc
+
+        payload = request.get_json(force=True, silent=True) or {}
+        source = (payload.get("source") or "").strip() or None
+        with locked_store(_case_dir(case)) as store:
+            removed = ioc.clear_from_case(store, _case_dir(case), source=source)
+        return jsonify({"removed": removed, "source": source})
+
     # --- timeline ---
 
     @app.route("/api/cases/<case_id>/timeline")

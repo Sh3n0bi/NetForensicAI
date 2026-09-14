@@ -1197,6 +1197,131 @@ def detections_list(
         typer.echo(f"{d['severity']:<10} {d['rule_id']:<24} {d['event_id']:<20} {d['description']}")
 
 
+ioc_app = typer.Typer(
+    help="Import threat-intelligence indicators and match them against a case.",
+    no_args_is_help=True,
+)
+app.add_typer(ioc_app, name="ioc")
+
+
+def _load_case_dir(case_id, cases_dir):
+    from netforensicai.core.case import CaseError, CaseManager
+
+    try:
+        case = CaseManager(cases_dir).load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    return Path(cases_dir) / case.case_id
+
+
+@ioc_app.command("import")
+def ioc_import(
+    feed: Path = typer.Argument(..., help="Indicator file: plain text, CSV, STIX 2.1 bundle, or MISP JSON"),
+    case_id: str = typer.Option(..., "--case", help="Case ID to import into"),
+    source: str = typer.Option(None, "--source", help="Name for this feed (default: the filename)"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR, "--cases-dir", envvar="NETFORENSIC_CASES_DIR", help="Root directory for case storage"
+    ),
+):
+    """Import indicators and re-run detections, so matches show up at once.
+
+    Defanged values (hxxp://, evil[.]com) are accepted. Every rejected line
+    is reported with its reason, and the feed's SHA-256 is recorded in the
+    chain of custody. Nothing is fetched from the network.
+    """
+    from netforensicai.core import ioc
+    from netforensicai.core.store import CaseStore
+
+    case_dir = _load_case_dir(case_id, cases_dir)
+    if not feed.is_file():
+        typer.echo(f"Error: {feed} is not a file.", err=True)
+        raise typer.Exit(code=1)
+    content = feed.read_bytes()
+
+    try:
+        with CaseStore(case_dir) as store:
+            summary = ioc.import_into_case(store, case_dir, content, feed.name, source=source)
+    except ioc.IocError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    by_type = ", ".join(f"{n} {t}" for t, n in sorted(summary["by_type"].items())) or "none"
+    typer.echo(f"Feed: {summary['source']} ({summary['feed_format']}, sha256 {summary['feed_sha256'][:16]}...)")
+    typer.echo(f"  Added:    {summary['added']}  ({by_type})")
+    if summary["already_present"]:
+        typer.echo(f"  Already in case: {summary['already_present']}")
+    if summary["duplicates_in_feed"]:
+        typer.echo(f"  Duplicates within the feed: {summary['duplicates_in_feed']}")
+    if summary["skipped_non_ids"]:
+        typer.echo(f"  Skipped (MISP to_ids = false, context only): {summary['skipped_non_ids']}")
+    if summary["rejected_count"]:
+        typer.echo(f"  Rejected: {summary['rejected_count']}")
+        for item in summary["rejected"][:10]:
+            typer.echo(f"    {item['value'][:60]!r}: {item['reason']}")
+        if summary["rejected_count"] > 10:
+            typer.echo(f"    ... and {summary['rejected_count'] - 10} more")
+    typer.echo(f"Indicators in case: {summary['total_indicators']}")
+
+    if not summary["matches"]:
+        typer.echo("No indicator matched the evidence in this case.")
+        return
+    typer.echo()
+    typer.echo(f"{summary['match_count']} indicator(s) matched:")
+    for d in summary["matches"]:
+        typer.echo(f"  [{d['severity']}] {d['event_id']}  {d['description']}")
+
+
+@ioc_app.command("list")
+def ioc_list(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    ioc_type: str = typer.Option(None, "--type", help="Filter: ip, cidr, domain, url, md5, sha1, sha256, email"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR, "--cases-dir", envvar="NETFORENSIC_CASES_DIR", help="Root directory for case storage"
+    ),
+):
+    """List the indicators imported into a case, marking the ones that matched."""
+    from netforensicai.core.store import CaseStore
+
+    case_dir = _load_case_dir(case_id, cases_dir)
+    with CaseStore(case_dir) as store:
+        indicators = store.list_iocs(ioc_type=ioc_type)
+        matched = {
+            d["detection_id"].removeprefix("DET-IOC-MATCH-")
+            for d in store.list_detections()
+            if d["rule_id"] == "IOC-MATCH"
+        }
+
+    if not indicators:
+        typer.echo("No indicators imported. Use `netforensic ioc import FILE --case ...`.")
+        return
+    typer.echo(f"{'MATCH':<6} {'TYPE':<7} {'VALUE':<48} SOURCE")
+    for item in indicators:
+        flag = "yes" if item["ioc_id"] in matched else ""
+        typer.echo(f"{flag:<6} {item['ioc_type']:<7} {item['value'][:48]:<48} {item['source'] or ''}")
+    typer.echo()
+    typer.echo(f"{len(indicators)} indicator(s), {len(matched)} matched.")
+
+
+@ioc_app.command("clear")
+def ioc_clear(
+    case_id: str = typer.Option(..., "--case", help="Case ID"),
+    source: str = typer.Option(None, "--source", help="Remove only indicators from this feed"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR, "--cases-dir", envvar="NETFORENSIC_CASES_DIR", help="Root directory for case storage"
+    ),
+):
+    """Remove indicators and re-run detections, so their matches go too."""
+    from netforensicai.core import ioc
+    from netforensicai.core.store import CaseStore
+
+    case_dir = _load_case_dir(case_id, cases_dir)
+    with CaseStore(case_dir) as store:
+        removed = ioc.clear_from_case(store, case_dir, source=source)
+    scope = f" from {source}" if source else ""
+    typer.echo(f"Removed {removed} indicator(s){scope}.")
+
+
 report_app = typer.Typer(help="Generate case reports.", no_args_is_help=True)
 app.add_typer(report_app, name="report")
 

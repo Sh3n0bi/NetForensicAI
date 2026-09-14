@@ -178,6 +178,31 @@ Deterministic, rule-based, evidence-cited suggestions — never an automated "th
 ## Investigation
 `netforensic investigate <entity>` returns everything the case knows about one IP, user, hash, host, domain, process, file, or device: related evidence, a scoped timeline, ranked related entities, a 1-hop relationship graph, and deterministic leads — plus optional threat-intel and AI enrichment.
 
+## Indicator matching
+Import a threat-intelligence feed into a case, and every indicator the evidence touches becomes a detection. That means it leads the story, appears in the report, and survives the next `analyze`. **No network access:** a feed is a file you supply, never one this fetches.
+
+| Format | What is read |
+|---|---|
+| Plain text | One indicator per line; `#` comments and inline `value  # note` |
+| CSV | A header naming the value, type and description columns — or headerless rows of `indicator, note` |
+| STIX 2.1 | `indicator` patterns made of single or OR'd comparisons, plus bare observables |
+| MISP JSON | Event exports, including objects and composite types such as `filename\|sha256` |
+
+Types: IPv4/IPv6 addresses and networks, domains, URLs, MD5, SHA-1, SHA-256, and email addresses.
+
+How it behaves, and why:
+
+- **Defanged values are refanged.** `hxxp://evil[.]com` is how indicators arrive from reports. Stored verbatim, it would import cleanly and never match anything.
+- **A domain matches its subdomains.** An indicator for `evil.top` catches `cdn.evil.top`, which is how the same infrastructure usually shows up in traffic.
+- **One detection per indicator, not per packet.** It says how many events touched the indicator, over what time span, and in which fields — rather than thousands of identical rows.
+- **Severity reflects what a match proves.** Hashes, URLs and domains are *high*. Addresses are *medium*, because shared hosting and CDNs put unrelated sites behind one IP.
+- **Refused lines say why.** Networks broader than /16 (IPv4) or /48 (IPv6), loopback, single-label names, and hashes whose declared type disagrees with their length are refused and listed. A single stray `10.0.0.0/8` would otherwise flag every internal flow.
+- **Compound STIX patterns are refused, not split.** `[a] AND [b]` means both together; importing *a* and *b* separately would match far more than the author meant.
+- **MISP `to_ids = false` is honoured.** That flag is the feed author marking context that should not alert — skipped attributes are counted, not silently dropped.
+- **The feed is recorded by hash.** Each import writes the feed's SHA-256 to the chain of custody, so *"matched against campaign.txt"* stays verifiable long after the file has been renamed or replaced.
+
+A match says a value was reported as malicious *somewhere*. The detection and the story both say so, and ask for it to be confirmed here.
+
 ## Threat intelligence
 Optional, explicit, cached VirusTotal lookups for IPs and file hashes. Never automatic, never sent evidence content, cached in the case so repeat runs don't re-query. Values are validated as a real IP or MD5/SHA-1/SHA-256 before anything is sent.
 
