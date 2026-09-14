@@ -68,6 +68,15 @@ netforensic investigate --case INC-0001 --ip 1.2.3.4 --ai --ai-provider ollama
 netforensic investigate --case INC-0001 --ip 1.2.3.4 --ai --ai-provider gemini --model gemini-3.6-flash
 ```
 
+**Threat intel** — import indicators and match them against the case
+```bash
+netforensic ioc import ./campaign.txt --case INC-0001 [--source "Vendor X, Sep 2026"]
+netforensic ioc list   --case INC-0001 [--type domain]   # matched indicators are marked
+netforensic ioc clear  --case INC-0001 [--source "Vendor X, Sep 2026"]
+```
+
+Reads plain text, CSV, STIX 2.1 and MISP JSON. Importing re-runs detections at once, so matches appear immediately and lead `netforensic story`. Every refused line is printed with its reason. See [Indicator matching](capabilities.md#indicator-matching) for what is accepted and why.
+
 **Findings**
 ```bash
 netforensic finding create --case INC-0001 --title "..." --severity High --event EVT-...

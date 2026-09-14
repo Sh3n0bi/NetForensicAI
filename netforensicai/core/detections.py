@@ -746,10 +746,18 @@ def scan_case(store):
     # ones keep their own small accumulators.
     aggregate = _AggregateState()
     network = _NetworkAggregateState()
+    # Imported indicators are matched in this same pass rather than
+    # written to detections from outside it: replace_detections below
+    # rebuilds the table from scratch, so a match stored any other way
+    # would vanish on the next analyze.
+    from netforensicai.core.ioc import MatchState
+
+    indicators = MatchState(store.list_iocs())
     detections = []
     for event in store.iter_events():
         aggregate.feed(event)
         network.feed(event)
+        indicators.feed(event)
         for rule_id, rule_name, severity, description in itertools.chain(
             _rules_for_event(event), _network_rules_for_event(event)
         ):
@@ -774,6 +782,22 @@ def scan_case(store):
                 # Keyed by the representative event so re-running analyze on
                 # unchanged evidence produces the same detection_id.
                 "detection_id": f"DET-{rule_id}-{event.event_id}",
+                "rule_id": rule_id,
+                "rule_name": rule_name,
+                "severity": severity,
+                "event_id": event.event_id,
+                "evidence_id": event.evidence_id,
+                "description": description,
+                "detected_at": detected_at,
+            }
+        )
+
+    for rule_id, rule_name, severity, description, event, ioc_id in indicators.results():
+        detections.append(
+            {
+                # Keyed by the INDICATOR, not the event: one detection per
+                # indicator seen, however many flows touched it.
+                "detection_id": f"DET-{rule_id}-{ioc_id}",
                 "rule_id": rule_id,
                 "rule_name": rule_name,
                 "severity": severity,

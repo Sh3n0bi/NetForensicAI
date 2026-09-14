@@ -514,3 +514,37 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
   word-break: break-all;
   margin: 4px 0 12px;
 }
+
+/* --- Threat intel ---------------------------------------------------- */
+
+.ioc-import { margin-bottom: 14px; }
+.ioc-import-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ioc-import-row input[type="text"] {
+  flex: 1 1 220px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.ioc-import-row input[type="file"] { color: var(--text-dim); font-size: 13px; max-width: 100%; }
+.ioc-result { margin-top: 14px; display: grid; gap: 6px; font-size: 13px; }
+.ioc-result ul { margin: 6px 0 0; padding-left: 18px; }
+.ioc-result li { margin: 2px 0; word-break: break-word; }
+.ioc-matched { color: var(--text); font-weight: 600; }
+.table-wrap { overflow-x: auto; }
+.ioc-table td { vertical-align: top; }
+.ioc-value { word-break: break-all; }
+/* The match sentence is the answer to "why is this marked seen" - kept
+   beside the indicator rather than behind a click. */
+.ioc-match-note {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--bad);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 78ch;
+}
+.ioc-row-hit td:first-child { box-shadow: inset 2px 0 0 var(--bad); }

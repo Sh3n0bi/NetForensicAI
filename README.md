@@ -57,6 +57,12 @@ netforensic evidence add ./alert-2026-08-28.pcap --case INC-0001 && netforensic 
 netforensic investigate --case INC-0001 --domain suspicious.example.com
 ```
 
+**Check a threat-intel feed against the evidence.** Import a vendor feed — plain text, CSV, STIX 2.1 or MISP — and every indicator the case touches becomes a finding at the top of the story. Defanged values from a PDF are accepted, and the feed's hash goes into the chain of custody.
+
+```bash
+netforensic ioc import ./campaign-feed.txt --case INC-0001
+```
+
 **Run lightweight live monitoring on a segment.** Rotating capture auto-ingests each finished window through the same pipeline, detection rules included — so a match surfaces as an alert without any separate "watch" mode.
 
 **Analyse a web attack from server-side capture.** Aggregate rules are built for this: they summarize a 41,000-request scan into a handful of findings rather than 41,000 rows, and separately surface *the paths that actually returned success* — what the scan found, not just that it happened.
