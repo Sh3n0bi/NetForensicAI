@@ -579,3 +579,173 @@ button.danger:disabled:hover { background: rgba(240, 97, 106, 0.14); color: var(
   #app { padding: 16px; }
   .panel, .card { overflow-x: auto; }
 }
+
+/* ====================================================================
+   First run, onboarding and the stateful case list (PR #22), restyled
+   into the refined design system.
+   ==================================================================== */
+
+/* --- home header + toolbar ------------------------------------------- */
+.home-head { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.home-head h1 { letter-spacing: -0.02em; }
+.home-head .subtitle { margin-bottom: 0; max-width: 64ch; }
+.home-head-actions { margin-left: auto; }
+.home-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.home-toolbar input[type="search"] {
+  flex: 1 1 260px;
+  max-width: 440px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  transition: border-color var(--ease), box-shadow var(--ease);
+}
+.home-toolbar input[type="search"]:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+
+/* --- case list: each row states what a case concluded or needs next --- */
+.case-list { display: flex; flex-direction: column; gap: 10px; }
+.case-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 15px 18px;
+  color: var(--text);
+  transition: border-color var(--ease), transform var(--ease), box-shadow var(--ease), background var(--ease);
+}
+.case-row:hover { background: var(--surface-2); border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-2); text-decoration: none; }
+.case-row.sev-critical, .case-row.sev-high { border-left-color: var(--bad); }
+.case-row.sev-medium { border-left-color: var(--warn); }
+.case-row.sev-low { border-left-color: var(--accent); }
+.case-row.sev-none { border-left-color: var(--border); }
+.case-row-title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.case-row-name { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.case-row-id { color: var(--text-mute); font-family: var(--mono); font-size: 12px; }
+.case-row-meta { color: var(--text-mute); font-size: 12px; margin-top: 2px; }
+.case-row-state { color: var(--text-dim); font-size: 13px; line-height: 1.45; margin-top: 6px; max-width: 82ch; }
+.case-row-state.pending { font-style: italic; color: var(--text-mute); }
+.case-row-side { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.case-row-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.case-row-counts { color: var(--text-mute); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .case-row { grid-template-columns: 1fr; gap: 10px; }
+  .case-row-side { align-items: flex-start; }
+  .case-row-chips { justify-content: flex-start; }
+}
+
+/* --- onboarding: the three steps an investigation actually takes ------ */
+.onboard {
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 32px;
+  max-width: 900px;
+  box-shadow: var(--shadow-1);
+}
+.onboard-eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.onboard-title { font-size: 27px; font-weight: 750; margin: 8px 0 10px; letter-spacing: -0.025em; text-wrap: balance; }
+.onboard-lede { color: var(--text-dim); font-size: 14px; line-height: 1.6; max-width: 64ch; margin: 0 0 26px; }
+.onboard-steps { list-style: none; counter-reset: step; padding: 0; margin: 0 0 28px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.onboard-steps li {
+  counter-increment: step;
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 16px 16px 16px 54px;
+}
+.onboard-steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.step-t { font-weight: 650; margin-bottom: 4px; }
+.step-d { color: var(--text-dim); font-size: 12.5px; line-height: 1.5; }
+.onboard-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+@media (max-width: 820px) {
+  .onboard { padding: 22px 18px; }
+  .onboard-steps { grid-template-columns: 1fr; }
+}
+
+/* --- get-started card on an empty/unanalyzed case overview ------------ */
+.getstarted { margin-bottom: 16px; border-left: 3px solid var(--accent); }
+.getstarted-lede { color: var(--text-dim); margin: 0 0 14px; max-width: 70ch; line-height: 1.55; }
+
+/* --- evidence drop zone ---------------------------------------------- */
+.dropzone {
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  padding: 22px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--ease), background var(--ease), color var(--ease);
+}
+.dropzone:hover, .dropzone.over { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.dropzone.disabled { opacity: 0.5; cursor: default; pointer-events: none; }
+.case-row:focus-visible, .dropzone:focus-visible { outline-offset: 3px; }
+
+/* --- selected-file list + per-file create-wizard progress ------------ */
+.file-list { display: flex; flex-direction: column; gap: 4px; }
+.file-list:not(:empty) { margin-top: 8px; }
+.file-item { display: flex; align-items: center; gap: 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px 8px 6px 11px; font-size: 12.5px; }
+.fl-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn { background: transparent; border-color: transparent; color: var(--text-dim); padding: 2px 8px; font-size: 12px; box-shadow: none; }
+.icon-btn:hover { background: var(--surface-3); color: var(--text); filter: none; }
+.wizard-progress { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.wizard-progress:not(:empty) { margin-top: 14px; }
+.fp-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 8px 11px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--border); }
+.fp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-status { grid-column: 1 / -1; color: var(--text-dim); font-size: 12px; }
+.fp-row.active .fp-status { color: var(--accent); }
+.fp-row.done .fp-status { color: var(--ok); }
+
+/* The PR marks the one main action per screen with .primary; in this theme
+   the default button is already the primary gradient, so .primary needs no
+   override - only the large call-to-action variant does. */
+button.lg { padding: 10px 20px; font-size: 14px; border-radius: var(--r-md); }
+
+/* --- new-investigation dialog: wider modal + form fields ------------- */
+.modal-card.wide { width: 640px; max-height: 92vh; overflow-y: auto; }
+.modal-lede { margin-top: -2px; }
+.field { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; min-width: 0; }
+.field label { font-size: 12px; color: var(--text-dim); font-weight: 600; }
+.field-hint { font-size: 11px; color: var(--text-mute); }
+.field input, .field textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--r-sm);
+  padding: 8px 11px;
+  font-size: 13px;
+  transition: border-color var(--ease), box-shadow var(--ease);
+}
+.field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); background: var(--surface); }
+.field textarea { resize: vertical; min-height: 38px; font-family: inherit; }
+.field input[aria-invalid="true"] { border-color: var(--bad); }
+.field-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 0 12px; }
+@media (max-width: 620px) { .field-pair { grid-template-columns: 1fr; } }
+.fp-open { font-weight: 600; margin-top: 4px; }

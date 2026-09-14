@@ -141,14 +141,14 @@ async function route() {
     }
   } else if (parts[0] === "settings") {
     stopCapturePolling();
-    nav.hidden = true;
+    renderHomeRail("settings");
     switcher.innerHTML = "";
     captureCard.innerHTML = "";
     app.innerHTML = "";
     renderStatusBar(null);
     await renderSettings(app);
   } else {
-    nav.hidden = true;
+    renderHomeRail("home");
     switcher.innerHTML = "";
     captureCard.innerHTML = "";
     renderStatusBar(null);
@@ -397,37 +397,610 @@ async function renderCaseTab(app, c, tab, rest) {
 
 // --- Case list ---
 
+// ===================================================================
+// Home: the first screen, and the way into a new investigation.
+// ===================================================================
+//
+// The first screen used to be a heading and a bare list - and when the
+// list was empty it told the user to open a terminal and run
+// `netforensic case create`. A web app whose front door is a CLI command
+// is not one anyone new can use. It now starts an investigation (details,
+// evidence, analysis) in one step, and shows each case's state at a
+// glance, so the case that needs attention is findable without opening
+// every one of them.
+
+const EVIDENCE_ACCEPT = ".pcap,.pcapng,.evtx,.json,.csv";
+const SEVERITY_ORDER = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };
+
+function renderHomeRail(active) {
+  const nav = document.getElementById("case-nav");
+  nav.innerHTML = "";
+  nav.hidden = false;
+  nav.appendChild(el("div", { class: "rail-group", text: "Workspace" }));
+  const items = [
+    ["home", "#/", "Investigations", ICONS.folder],
+    ["settings", "#/settings", "Settings", ICONS.gear],
+  ];
+  for (const [key, href, label, iconPath] of items) {
+    const link = el("a", { href, class: "rail-link" + (key === active ? " active" : "") });
+    if (key === active) link.setAttribute("aria-current", "page");
+    link.appendChild(icon(iconPath));
+    link.appendChild(document.createTextNode(label));
+    nav.appendChild(link);
+  }
+}
+
+function relativeDay(iso) {
+  if (!iso) return "";
+  const then = new Date(iso);
+  if (isNaN(then.getTime())) return "";
+  const days = Math.floor((Date.now() - then.getTime()) / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  return then.toISOString().slice(0, 10);
+}
+
+function fmtBytes(n) {
+  if (!n && n !== 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v < 10 && i ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+function field(label, control, id, hint) {
+  const wrap = el("div", { class: "field" }, [el("label", { for: id, text: label }), control]);
+  if (hint) wrap.appendChild(el("div", { class: "field-hint", text: hint }));
+  return wrap;
+}
+
 async function renderCaseList(app) {
   app.innerHTML = "";
-  app.appendChild(el("h1", { text: "Cases" }));
-  app.appendChild(el("div", { class: "subtitle", text: "Local-first DFIR investigation platform" }));
-  const list = el("div", {});
-  app.appendChild(list);
+
+  const head = el("div", { class: "home-head" });
+  head.appendChild(
+    el("div", {}, [
+      el("h1", { text: "Investigations" }),
+      el("div", {
+        class: "subtitle",
+        text: "Each case keeps its evidence, analysis, findings and chain of custody together - on this machine.",
+      }),
+    ])
+  );
+  const newBtn = el("button", { class: "primary", type: "button", onclick: () => openNewCaseModal() });
+  newBtn.appendChild(icon(ICONS.plus, { size: 15, width: 2.2 }));
+  newBtn.appendChild(document.createTextNode("New investigation"));
+  const headActions = el("div", { class: "home-head-actions" }, [newBtn]);
+  head.appendChild(headActions);
+  app.appendChild(head);
+
+  const body = el("div");
+  app.appendChild(body);
+  body.appendChild(el("div", { class: "loading", text: "Loading cases…" }));
+
+  let cases;
   try {
-    const cases = await apiGet("/cases");
-    if (!cases.length) {
+    cases = await apiGet("/cases");
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "error-box", text: "Could not load cases: " + e.message }));
+    return;
+  }
+  body.innerHTML = "";
+
+  if (!cases.length) {
+    // The onboarding card carries its own call to action; two identical
+    // buttons on an otherwise empty screen compete for no reason.
+    headActions.hidden = true;
+    body.appendChild(renderOnboarding());
+    return;
+  }
+
+  const toolbar = el("div", { class: "home-toolbar" });
+  const search = el("input", {
+    type: "search",
+    placeholder: "Search by name, case ID or investigator",
+    "aria-label": "Search cases",
+  });
+  toolbar.appendChild(search);
+
+  const counts = { all: cases.length, open: 0, investigating: 0, closed: 0 };
+  for (const c of cases) counts[c.status] = (counts[c.status] || 0) + 1;
+  const seg = el("div", { class: "seg", role: "group", "aria-label": "Filter by status" });
+  let status = "all";
+  for (const key of ["all", "open", "investigating", "closed"]) {
+    const b = el("button", { type: "button", class: "seg-btn" + (key === "all" ? " on" : "") });
+    b.setAttribute("aria-pressed", String(key === "all"));
+    b.appendChild(document.createTextNode(key[0].toUpperCase() + key.slice(1)));
+    b.appendChild(el("span", { class: "seg-n", text: String(counts[key] || 0) }));
+    b.onclick = () => {
+      status = key;
+      for (const other of seg.querySelectorAll(".seg-btn")) {
+        other.classList.toggle("on", other === b);
+        other.setAttribute("aria-pressed", String(other === b));
+      }
+      draw();
+    };
+    seg.appendChild(b);
+  }
+  toolbar.appendChild(seg);
+  body.appendChild(toolbar);
+
+  // Attention first: active cases before closed ones, the most severe
+  // story first, then the most recently touched.
+  const ordered = [...cases].sort((a, b) => {
+    const closed = Number(a.status === "closed") - Number(b.status === "closed");
+    if (closed) return closed;
+    const sev = (SEVERITY_ORDER[b.severity] || 0) - (SEVERITY_ORDER[a.severity] || 0);
+    if (sev) return sev;
+    return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+  });
+
+  const list = el("div", { class: "case-list" });
+  body.appendChild(list);
+
+  function draw() {
+    const q = search.value.trim().toLowerCase();
+    list.innerHTML = "";
+    const shown = ordered.filter(
+      (c) =>
+        (status === "all" || c.status === status) &&
+        (!q || [c.name, c.case_id, c.investigator, c.description].some((v) => String(v || "").toLowerCase().includes(q)))
+    );
+    if (!shown.length) {
       list.appendChild(
         el("div", {
           class: "empty",
-          text: 'No cases found. Create one with: netforensic case create --name "..."',
+          text: q ? `No case matches "${search.value.trim()}".` : `No ${status} cases.`,
         })
       );
       return;
     }
-    for (const c of cases) {
-      const card = el("a", { class: "case-card", href: `#/case/${c.case_id}/overview` });
-      card.innerHTML = `
-        <div class="id">${escapeHtml(c.case_id)}</div>
-        <div class="name">${escapeHtml(c.name)}</div>
-        <div class="meta">
-          <span class="badge badge-${cssClass(c.status)}">${escapeHtml(c.status)}</span>
-          &nbsp; ${escapeHtml(c.investigator)} &nbsp; created ${escapeHtml((c.created_at || "").split("T")[0])}
-        </div>`;
-      list.appendChild(card);
-    }
-  } catch (e) {
-    list.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    for (const c of shown) list.appendChild(caseRow(c));
   }
+  search.addEventListener("input", draw);
+  draw();
+}
+
+function renderOnboarding() {
+  const card = el("section", { class: "onboard", "aria-labelledby": "onboard-title" });
+  card.appendChild(el("div", { class: "onboard-eyebrow", text: "Get started" }));
+  card.appendChild(el("h2", { id: "onboard-title", class: "onboard-title", text: "Start your first investigation" }));
+  card.appendChild(
+    el("p", {
+      class: "onboard-lede",
+      text:
+        "Add a packet capture or a log export. NetForensicAI parses it, correlates events across sources, runs its " +
+        "detection rules, and tells you what happened - with every line citing the evidence it rests on.",
+    })
+  );
+
+  // A real sequence, so it is numbered: these are the steps, in order.
+  const steps = el("ol", { class: "onboard-steps" });
+  const STEPS = [
+    ["Name the case", "What it is about and who is investigating. Creating it opens the chain of custody."],
+    ["Add evidence", "pcap or pcapng captures, Windows Event Logs (.evtx), or JSON and CSV logs. Each file is hashed and kept read-only."],
+    ["Read what happened", "Analysis runs straight away and opens on the story: the assessment first, then each finding and its evidence."],
+  ];
+  for (const [title, detail] of STEPS) {
+    steps.appendChild(el("li", {}, [el("div", { class: "step-t", text: title }), el("div", { class: "step-d", text: detail })]));
+  }
+  card.appendChild(steps);
+
+  const cta = el("button", { type: "button", class: "primary lg", onclick: () => openNewCaseModal() });
+  cta.appendChild(icon(ICONS.plus, { size: 16, width: 2.2 }));
+  cta.appendChild(document.createTextNode("Start an investigation"));
+  card.appendChild(
+    el("div", { class: "onboard-actions" }, [
+      cta,
+      el("span", { class: "dim", text: "Nothing is uploaded anywhere. Files stay on this machine." }),
+    ])
+  );
+  return card;
+}
+
+function caseRow(c) {
+  const analyzed = c.event_count > 0;
+  const sev = analyzed ? c.severity || "none" : "pending";
+  const row = el("a", {
+    class: "case-row sev-" + cssClass(sev),
+    href: `#/case/${c.case_id}/${analyzed ? "story" : "overview"}`,
+  });
+
+  const main = el("div", { class: "case-row-main" });
+  main.appendChild(
+    el("div", { class: "case-row-title" }, [
+      el("span", { class: "case-row-name", text: c.name }),
+      el("span", { class: "mono case-row-id", text: c.case_id }),
+    ])
+  );
+  const who = c.investigator && c.investigator !== "unknown" ? c.investigator : null;
+  main.appendChild(
+    el("div", { class: "case-row-meta", text: [who, `created ${relativeDay(c.created_at)}`].filter(Boolean).join(" · ") })
+  );
+
+  // The line that answers "why would I open this one": what the story
+  // concluded, or what the case needs before it can conclude anything.
+  let state;
+  let pending = true;
+  if (c.summary_error) state = "This case's analysis could not be read.";
+  else if (!c.evidence_count && !analyzed) state = "No evidence yet - open it to add some.";
+  else if (!analyzed) state = "Evidence added, not analyzed yet.";
+  else {
+    state = c.assessment || c.headline || "";
+    pending = false;
+  }
+  main.appendChild(el("div", { class: "case-row-state" + (pending ? " pending" : ""), text: state }));
+  row.appendChild(main);
+
+  const side = el("div", { class: "case-row-side" });
+  const chips = el("div", { class: "case-row-chips" });
+  if (analyzed) {
+    chips.appendChild(el("span", { class: "badge badge-" + cssClass(sev), text: sev === "none" ? "no detections" : sev }));
+  } else {
+    chips.appendChild(el("span", { class: "badge badge-none", text: c.evidence_count ? "ready to analyze" : "empty" }));
+  }
+  chips.appendChild(el("span", { class: "badge badge-" + cssClass(c.status), text: c.status }));
+  side.appendChild(chips);
+  side.appendChild(
+    el("div", {
+      class: "case-row-counts",
+      text: `${c.evidence_count} evidence · ${c.detection_count} detection${c.detection_count === 1 ? "" : "s"}`,
+    })
+  );
+  row.appendChild(side);
+  return row;
+}
+
+// --- Evidence intake, shared by the new-case dialog and an empty case ---
+
+function evidenceDropzone(onFiles) {
+  const input = el("input", { type: "file", multiple: "", accept: EVIDENCE_ACCEPT, class: "dz-input", tabindex: "-1" });
+  const zone = el("div", { class: "dropzone", role: "button", tabindex: "0", "aria-label": "Add evidence files" });
+  zone.appendChild(icon(ICONS.upload, { size: 22 }));
+  zone.appendChild(el("div", { class: "dz-title", text: "Drop evidence here, or choose files" }));
+  zone.appendChild(el("div", { class: "dz-hint", text: "pcap · pcapng · evtx · json · csv - up to 1 GB each" }));
+  zone.appendChild(input);
+
+  const disabled = () => zone.classList.contains("disabled");
+  const pick = () => {
+    if (!disabled()) input.click();
+  };
+  zone.addEventListener("click", (e) => {
+    // The input sits inside the zone, so its own click bubbles here.
+    if (e.target !== input) pick();
+  });
+  zone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      pick();
+    }
+  });
+  input.addEventListener("change", () => {
+    if (input.files.length) onFiles([...input.files]);
+    input.value = "";
+  });
+  for (const type of ["dragenter", "dragover"]) {
+    zone.addEventListener(type, (e) => {
+      e.preventDefault();
+      if (!disabled()) zone.classList.add("over");
+    });
+  }
+  for (const type of ["dragleave", "drop"]) {
+    zone.addEventListener(type, (e) => {
+      e.preventDefault();
+      zone.classList.remove("over");
+    });
+  }
+  zone.addEventListener("drop", (e) => {
+    if (disabled()) return;
+    const dropped = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    if (dropped.length) onFiles(dropped);
+  });
+  return zone;
+}
+
+// Upload each file, then analyze once. Returns { analyzed, clean }: clean
+// means every file was added and analysis reported no error, which is the
+// only case in which it is right to move the user on without them seeing
+// what happened.
+async function uploadAndAnalyze(caseId, files, progress) {
+  progress.replaceChildren();
+  const rows = files.map((f) => {
+    const status = el("div", { class: "fp-status", text: "Waiting" });
+    const row = el("div", { class: "fp-row" }, [
+      el("span", { class: "fp-name", text: f.name, title: f.name }),
+      el("span", { class: "dim", text: fmtBytes(f.size) }),
+      status,
+    ]);
+    progress.appendChild(row);
+    return { f, row, status };
+  });
+
+  let added = 0;
+  for (const r of rows) {
+    r.row.className = "fp-row active";
+    r.status.textContent = "Uploading and hashing…";
+    try {
+      const form = new FormData();
+      form.append("file", r.f);
+      const evidence = await apiUpload(`/cases/${caseId}/evidence`, form);
+      r.row.className = "fp-row done";
+      r.status.textContent = `Added as ${evidence.evidence_id} (${evidence.evidence_type})`;
+      added += 1;
+    } catch (e) {
+      r.row.className = "fp-row failed";
+      r.status.textContent = e.message;
+    }
+  }
+
+  if (!added) {
+    progress.appendChild(el("div", { class: "error-box", text: "No file could be added, so there is nothing to analyze." }));
+    return { analyzed: false, clean: false };
+  }
+
+  const line = el("div", { class: "fp-analyze", text: "Analyzing - parsing, correlating and running detection rules…" });
+  progress.appendChild(line);
+  try {
+    const result = await apiPost(`/cases/${caseId}/analyze`, {});
+    const failed = (result.results || []).filter((x) => x.error);
+    const analyzed = result.total_events > 0;
+    if (failed.length) {
+      line.className = "error-box";
+      line.textContent =
+        `Analysis finished with ${failed.length} error${failed.length === 1 ? "" : "s"}: ` +
+        failed.map((x) => `${x.evidence_id}: ${x.error}`).join("; ");
+      return { analyzed, clean: false };
+    }
+    line.className = "fp-analyze done";
+    line.textContent = `Analyzed ${result.total_events.toLocaleString()} events - ${result.detection_count} detection${result.detection_count === 1 ? "" : "s"}.`;
+    return { analyzed, clean: added === files.length };
+  } catch (e) {
+    line.className = "error-box";
+    line.textContent = "Analysis failed: " + e.message;
+    return { analyzed: false, clean: false };
+  }
+}
+
+function openNewCaseModal() {
+  const box = el("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "new-case-title" });
+  const form = el("form", { class: "modal-card wide", novalidate: "" });
+  form.appendChild(el("h3", { id: "new-case-title", text: "New investigation" }));
+  form.appendChild(
+    el("div", { class: "dim modal-lede", text: "Everything you add is hashed on arrival and stays on this machine." })
+  );
+
+  const name = el("input", {
+    id: "nc-name",
+    type: "text",
+    maxlength: "200",
+    autocomplete: "off",
+    placeholder: "e.g. Unusual outbound traffic from a finance laptop",
+  });
+  const investigator = el("input", { id: "nc-investigator", type: "text", maxlength: "120", placeholder: "Your name" });
+  try {
+    investigator.value = localStorage.getItem("nfai.investigator") || "";
+  } catch (e) {
+    /* remembering the name is a convenience; without storage the field is simply empty */
+  }
+  const description = el("textarea", {
+    id: "nc-desc",
+    rows: "2",
+    maxlength: "2000",
+    placeholder: "What prompted it, and what you are looking for",
+  });
+
+  form.appendChild(field("Case name", name, "nc-name"));
+  const pair = el("div", { class: "field-pair" }, [
+    field("Investigator", investigator, "nc-investigator", "Recorded on every action in the chain of custody."),
+    field("Description (optional)", description, "nc-desc"),
+  ]);
+  form.appendChild(pair);
+
+  const files = [];
+  const fileList = el("div", { class: "file-list" });
+  const zone = evidenceDropzone((picked) => {
+    for (const f of picked) {
+      if (!files.some((x) => x.name === f.name && x.size === f.size)) files.push(f);
+    }
+    drawFiles();
+  });
+  const evidenceField = el("div", { class: "field" }, [el("label", { text: "Evidence (optional)" }), zone, fileList]);
+  form.appendChild(evidenceField);
+
+  const progress = el("div", { class: "wizard-progress", "aria-live": "polite" });
+  form.appendChild(progress);
+
+  const cancel = el("button", { type: "button", class: "secondary", text: "Cancel" });
+  const submit = el("button", { type: "submit", class: "primary" });
+  form.appendChild(el("div", { class: "modal-actions" }, [cancel, submit]));
+
+  let busy = false;
+  const close = () => {
+    if (!busy) box.remove();
+  };
+  cancel.onclick = close;
+
+  function drawFiles() {
+    fileList.replaceChildren();
+    files.forEach((f, index) => {
+      const remove = el("button", { type: "button", class: "icon-btn", "aria-label": `Remove ${f.name}`, text: "Remove" });
+      remove.onclick = () => {
+        files.splice(index, 1);
+        drawFiles();
+      };
+      fileList.appendChild(
+        el("div", { class: "file-item" }, [
+          el("span", { class: "fl-name", text: f.name, title: f.name }),
+          el("span", { class: "dim", text: fmtBytes(f.size) }),
+          remove,
+        ])
+      );
+    });
+    submit.textContent = files.length
+      ? `Create and analyze ${files.length} file${files.length === 1 ? "" : "s"}`
+      : "Create investigation";
+  }
+  drawFiles();
+
+  const setBusy = (on) => {
+    busy = on;
+    for (const control of [name, investigator, description, submit, cancel]) control.disabled = on;
+    zone.classList.toggle("disabled", on);
+    for (const b of fileList.querySelectorAll("button")) b.disabled = on;
+  };
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const caseName = name.value.trim();
+    if (!caseName) {
+      name.setAttribute("aria-invalid", "true");
+      progress.replaceChildren(el("div", { class: "error-box", text: "Give the case a name - it is how you will find it later." }));
+      name.focus();
+      return;
+    }
+    name.removeAttribute("aria-invalid");
+    try {
+      localStorage.setItem("nfai.investigator", investigator.value.trim());
+    } catch (e) {
+      /* see above */
+    }
+
+    setBusy(true);
+    progress.replaceChildren(el("div", { class: "loading", text: "Creating the case…" }));
+    let created;
+    try {
+      created = await apiPost("/cases", {
+        name: caseName,
+        investigator: investigator.value.trim(),
+        description: description.value.trim(),
+      });
+    } catch (e) {
+      progress.replaceChildren(el("div", { class: "error-box", text: "Could not create the case: " + e.message }));
+      setBusy(false);
+      return;
+    }
+
+    if (!files.length) {
+      busy = false;
+      box.remove();
+      toast(`${created.case_id} created. Add evidence to begin.`);
+      location.hash = `#/case/${created.case_id}/overview`;
+      return;
+    }
+
+    const outcome = await uploadAndAnalyze(created.case_id, files, progress);
+    busy = false;
+    if (outcome.clean) {
+      box.remove();
+      toast(`${created.case_id} analyzed`);
+      location.hash = `#/case/${created.case_id}/${outcome.analyzed ? "story" : "overview"}`;
+      return;
+    }
+    // Something went wrong part-way. The case exists, so the useful next
+    // step is to open it - not to retry a create that already happened.
+    cancel.disabled = false;
+    cancel.textContent = "Close";
+    submit.hidden = true;
+    progress.appendChild(
+      el("a", {
+        class: "fp-open",
+        href: `#/case/${created.case_id}/${outcome.analyzed ? "story" : "evidence"}`,
+        text: `Open ${created.case_id} →`,
+      })
+    );
+  });
+
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+  box.addEventListener("mousedown", (e) => {
+    if (e.target === box) close();
+  });
+
+  box.appendChild(form);
+  document.body.appendChild(box);
+  name.focus();
+}
+
+// A case with nothing analyzed has no story to tell, and six zero counters
+// are not a substitute for saying what to do next.
+function renderGetStarted(c) {
+  const hasEvidence = c.evidence_count > 0;
+  const card = el("section", { class: "card getstarted" });
+  card.appendChild(
+    el("div", { class: "card-head" }, [el("h3", { text: hasEvidence ? "Ready to analyze" : "Add evidence to begin" })])
+  );
+  card.appendChild(
+    el("p", {
+      class: "getstarted-lede",
+      text: hasEvidence
+        ? `${c.evidence_count} evidence item${c.evidence_count === 1 ? " is" : "s are"} waiting. Analysis parses ${c.evidence_count === 1 ? "it" : "them"}, correlates events, runs the detection rules and writes the story.`
+        : "Drop a packet capture or log export. It is hashed, stored read-only and analyzed straight away.",
+    })
+  );
+  const progress = el("div", { class: "wizard-progress", "aria-live": "polite" });
+
+  if (!hasEvidence) {
+    const zone = evidenceDropzone(async (files) => {
+      zone.classList.add("disabled");
+      const outcome = await uploadAndAnalyze(c.case_id, files, progress);
+      if (outcome.clean && outcome.analyzed) {
+        toast(`${c.case_id} analyzed`);
+        location.hash = `#/case/${c.case_id}/story`;
+        return;
+      }
+      zone.classList.remove("disabled");
+      progress.appendChild(
+        el("a", {
+          class: "fp-open",
+          href: "#",
+          text: "Refresh this case",
+          onclick: (e) => {
+            e.preventDefault();
+            route();
+          },
+        })
+      );
+    });
+    card.appendChild(zone);
+  } else {
+    const run = el("button", { type: "button", class: "primary", text: "Analyze now" });
+    run.onclick = async () => {
+      run.disabled = true;
+      progress.replaceChildren(
+        el("div", { class: "loading", text: "Analyzing - parsing, correlating and running detection rules…" })
+      );
+      try {
+        const result = await apiPost(`/cases/${c.case_id}/analyze`, {});
+        const failed = (result.results || []).filter((x) => x.error);
+        if (failed.length) {
+          progress.replaceChildren(
+            el("div", { class: "error-box", text: failed.map((x) => `${x.evidence_id}: ${x.error}`).join("; ") })
+          );
+          run.disabled = false;
+          return;
+        }
+        location.hash = `#/case/${c.case_id}/story`;
+      } catch (e) {
+        progress.replaceChildren(el("div", { class: "error-box", text: "Analysis failed: " + e.message }));
+        run.disabled = false;
+      }
+    };
+    card.appendChild(
+      el("div", { class: "onboard-actions" }, [
+        run,
+        el("a", { href: `#/case/${c.case_id}/evidence`, text: "Review or add evidence first" }),
+      ])
+    );
+  }
+  card.appendChild(progress);
+  return card;
 }
 
 // --- Overview ---
@@ -464,6 +1037,12 @@ async function renderOverview(app, c) {
   // Above the counts, deliberately. An investigator opening a case
   // wants the account first; "81 events" is context for a finding and
   // was never a finding itself.
+  // Nothing analyzed yet means there is no story, and zero counters and empty
+  // charts say nothing useful. Show the next step instead, and stop there.
+  if (!c.event_count) {
+    app.appendChild(renderGetStarted(c));
+    return;
+  }
   app.appendChild(narrativeCard(c, { compact: true }));
 
   // --- KPI row ------------------------------------------------------
@@ -2874,6 +3453,10 @@ const ICONS = {
   event: '<path d="M3 13h4l3-8 4 16 3-8h4"/>',
   arrow: '<path d="M5 12h13M13 6l6 6-6 6"/>',
   story: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H12v18H6.5A2.5 2.5 0 0 1 4 18.5z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H12v18h5.5A2.5 2.5 0 0 0 20 18.5z"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  upload: '<path d="M12 15V4M7 9l5-5 5 5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/>',
   indicators: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
 };
 
@@ -2963,7 +3546,7 @@ async function renderCaseSwitch(c) {
   // Populated after the first paint: the switcher must not wait on a
   // second request before the case it already has can be shown.
   try {
-    const cases = await apiGet("/cases");
+    const cases = await apiGet("/cases?brief=1");
     select.innerHTML = "";
     for (const other of cases) {
       const opt = el("option", { value: other.case_id, text: `${other.case_id} · ${other.name}` });
