@@ -61,4 +61,8 @@ jobs:
         # temporary waiver, so the exception is reviewable in git history.
         run: |
           python -m pip install pip-audit
-          pip-audit --strict --desc
+          # --skip-editable: the project itself is installed with `-e .` and
+          # isn't on PyPI, so pip-audit can't look it up; without this,
+          # --strict fails on "netforensicai not found on PyPI" rather than
+          # on any actual dependency vulnerability. Real deps are still audited.
+          pip-audit --strict --desc --skip-editable
