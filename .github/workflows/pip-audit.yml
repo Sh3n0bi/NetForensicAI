@@ -1,0 +1,64 @@
+name: Dependency audit
+
+# Scans the project's declared dependencies (and their transitive closure) for
+# known vulnerabilities using pip-audit, which queries the Python Packaging
+# Advisory Database (PyPA) and OSV. This is separate from CodeQL: CodeQL finds
+# bugs in *our* code, pip-audit finds published CVEs in the packages we pull in.
+#
+# It runs on pushes and PRs so a dependency bump that introduces a known-
+# vulnerable version is caught in review, and weekly so a CVE disclosed against
+# a version we already ship is surfaced even when nothing changed.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  schedule:
+    # Mondays at 07:30 UTC, just after the CodeQL scan.
+    - cron: "30 7 * * 1"
+
+# Cancel an in-progress run on the same ref when a newer commit arrives - no
+# point auditing a superseded commit.
+concurrency:
+  group: pip-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          # Audit against the highest supported version, which resolves the
+          # widest set of extras (the `ai` extra needs >=3.10). Auditing here
+          # covers the resolved versions across every extra installed below.
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install the project with all extras
+        # Install the real dependency set - every runtime extra - so pip-audit
+        # sees exactly what a full installation resolves to, not just the three
+        # core deps. `dev` and `build` are included so their tooling is audited
+        # too; `dashboard` is added here (unlike the test matrix) specifically
+        # because it pulls in dash/plotly, a large transitive tree worth
+        # watching for CVEs even though the tests don't exercise it.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,pcap,intel,ai,ai-openai,ai-gemini,evtx,web,dashboard,build]"
+
+      - name: Audit installed dependencies
+        # pip-audit reads the environment we just built. `--strict` fails the
+        # job if any dependency cannot be audited (rather than silently passing
+        # over it). No `--ignore-vuln` entries yet; add one with a comment here
+        # if a specific advisory is assessed as not applicable and needs a
+        # temporary waiver, so the exception is reviewable in git history.
+        run: |
+          python -m pip install pip-audit
+          pip-audit --strict --desc

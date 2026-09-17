@@ -637,13 +637,13 @@ def test_ai_hypothesis_endpoint_passes_provider_and_model_through(prepared_case)
                 "value": "192.168.1.10",
                 "provider": "ollama",
                 "model": "custom-model",
-                "base_url": "http://192.168.1.50:11434",
+                "base_url": "http://127.0.0.1:11434",
             },
         )
 
     assert response.status_code == 200
     assert response.get_json()["claim"] == "May represent routine authentication."
-    assert mock_post.call_args.args[0] == "http://192.168.1.50:11434/api/chat"
+    assert mock_post.call_args.args[0] == "http://127.0.0.1:11434/api/chat"
     assert mock_post.call_args.kwargs["json"]["model"] == "custom-model"
 
 

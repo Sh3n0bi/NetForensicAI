@@ -118,7 +118,10 @@ def normalize_record(record, evidence_id, sequence, source, raw_event_reference)
 def _load_json_records(path):
     try:
         raw_text = Path(path).read_text(encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # Non-UTF-8 bytes are hostile-evidence input, not a program error:
+        # surface them as a handled NormalizationError, never an unhandled
+        # UnicodeDecodeError that crashes ingestion.
         raise NormalizationError(f"Failed to read JSON file '{path}': {e}") from e
     try:
         data = json.loads(raw_text)
@@ -147,7 +150,8 @@ def _load_csv_records(path):
     try:
         with open(path, newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # As with JSON: non-UTF-8 evidence is a handled input error, not a crash.
         raise NormalizationError(f"Failed to read CSV file '{path}': {e}") from e
 
 

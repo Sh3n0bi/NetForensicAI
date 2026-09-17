@@ -40,6 +40,7 @@ a clear message rather than an ImportError leaking out of this module.
 """
 
 import logging
+import os
 from typing import List, Literal
 
 from pydantic import BaseModel, ValidationError
@@ -156,6 +157,38 @@ def _event_summary(event):
     return f"[{event.evidence_id}/{event.event_id}] " + " ".join(fields)
 
 
+#: Set NETFORENSIC_OLLAMA_ALLOW_REMOTE=1 to permit a non-loopback Ollama host.
+OLLAMA_ALLOW_REMOTE_ENV = "NETFORENSIC_OLLAMA_ALLOW_REMOTE"
+
+
+def _validate_ollama_base_url(base_url):
+    """Reject an Ollama base URL that isn't a safe local target.
+
+    Guards against server-side request forgery: base_url originates from a
+    web request, so without this an unauthenticated caller could drive the
+    server into POSTing to an arbitrary internal host. Ollama runs locally,
+    so loopback is allowed; a remote host must be opted into explicitly via
+    OLLAMA_ALLOW_REMOTE_ENV, which is a deliberate operator choice.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url or "")
+    if parsed.scheme not in ("http", "https"):
+        raise AssistantError(
+            f"Ollama base URL must use http or https, not '{parsed.scheme or base_url}'."
+        )
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise AssistantError(f"Ollama base URL has no host: '{base_url}'.")
+    is_loopback = host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+    if is_loopback or os.environ.get(OLLAMA_ALLOW_REMOTE_ENV):
+        return
+    raise AssistantError(
+        f"Refusing to send to non-local Ollama host '{host}'. Ollama is a local "
+        f"service; set {OLLAMA_ALLOW_REMOTE_ENV}=1 to allow a remote host you trust."
+    )
+
+
 def call_model(system_prompt, user_prompt, provider="anthropic", api_key=None, model=None, base_url=None):
     """Send one prompt to a provider and return its parsed JSON response.
 
@@ -190,6 +223,12 @@ def call_model(system_prompt, user_prompt, provider="anthropic", api_key=None, m
         api_key = config.get_secret(config_key_name, api_key)
     if provider == "ollama":
         base_url = base_url or config.get_plain("ollama_base_url") or None
+        # base_url can reach this from an unauthenticated web request
+        # (web/app.py's chat/hypothesis routes). Validate it so the server
+        # can't be pointed at an arbitrary internal host as a blind-SSRF
+        # relay. Ollama is a local service, so loopback is allowed by
+        # default and a remote host needs a deliberate opt-in.
+        _validate_ollama_base_url(base_url or DEFAULT_OLLAMA_BASE_URL)
 
     model = model or DEFAULT_MODELS[provider]
 
