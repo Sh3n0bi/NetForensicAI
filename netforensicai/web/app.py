@@ -40,6 +40,7 @@ browser request reads it, and DuckDB is single-writer - see
 core/store.py's GLOBAL_WRITE_LOCK.
 """
 
+import hmac
 import logging
 import shutil
 import tempfile
@@ -73,6 +74,15 @@ MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 CSRF_HEADER = "X-Requested-With"
 CSRF_HEADER_VALUE = "NetForensicAI"
 
+# Optional shared-secret auth (see create_app's auth_token). The token may
+# arrive as this header (programmatic callers), this cookie (set after the
+# token is first supplied in the URL), or a `?token=` query parameter (the
+# one-time bootstrap a browser can use). It is the credential itself, not a
+# session id: there are no sessions to manage in a single-user local tool.
+AUTH_HEADER = "X-Auth-Token"
+AUTH_COOKIE = "nf_auth"
+AUTH_QUERY_PARAM = "token"
+
 
 class ApiError(Exception):
     def __init__(self, message, status_code=400):
@@ -81,10 +91,31 @@ class ApiError(Exception):
         self.status_code = status_code
 
 
-def create_app(cases_dir="cases"):
+def create_app(cases_dir="cases", auth_token=None):
+    """Build the Flask app.
+
+    auth_token: when set, every request must carry this secret (via the
+    X-Auth-Token header, the nf_auth cookie, or a one-time `?token=` query
+    parameter). This is what makes a deliberately non-loopback deployment
+    defensible - the CLI refuses to bind off-loopback without one. When it
+    is None (the default) the app stays exactly as it was: unauthenticated,
+    for local single-user use on 127.0.0.1.
+    """
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+    auth_token = auth_token or None
     case_manager = CaseManager(cases_dir)
+
+    def _request_is_authenticated():
+        if not auth_token:
+            return True
+        supplied = (
+            request.headers.get(AUTH_HEADER)
+            or request.cookies.get(AUTH_COOKIE)
+            or request.args.get(AUTH_QUERY_PARAM)
+        )
+        # Constant-time compare so a wrong token can't be recovered by timing.
+        return bool(supplied) and hmac.compare_digest(str(supplied), str(auth_token))
 
     def _load_case(case_id):
         try:
@@ -98,6 +129,30 @@ def create_app(cases_dir="cases"):
     @app.errorhandler(ApiError)
     def handle_api_error(err):
         return jsonify({"error": err.message}), err.status_code
+
+    @app.before_request
+    def _require_auth_token():
+        # Runs before the CSRF check: an unauthenticated caller should be
+        # turned away regardless of method, and should not learn anything
+        # about the CSRF contract. No-op when auth_token is unset.
+        if not _request_is_authenticated():
+            raise ApiError(
+                "Authentication required. Supply the token via the "
+                f"'{AUTH_HEADER}' header, the '{AUTH_COOKIE}' cookie, or a "
+                f"'?{AUTH_QUERY_PARAM}=' query parameter.",
+                401,
+            )
+
+    @app.after_request
+    def _persist_auth_cookie(response):
+        # When a valid token first arrives as a query parameter (a browser
+        # opening the UI), pin it as an httponly cookie so subsequent asset
+        # and API requests carry it without the token staying in the URL bar.
+        if auth_token and request.args.get(AUTH_QUERY_PARAM) and _request_is_authenticated():
+            response.set_cookie(
+                AUTH_COOKIE, auth_token, httponly=True, samesite="Strict", secure=request.is_secure
+            )
+        return response
 
     @app.before_request
     def _require_csrf_header_on_writes():

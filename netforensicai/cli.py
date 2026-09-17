@@ -2171,23 +2171,63 @@ def web(
     ),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address (127.0.0.1 = local machine only)"),
     port: int = typer.Option(8000, "--port", help="Port to listen on"),
+    auth_token: str = typer.Option(
+        None,
+        "--auth-token",
+        envvar="NETFORENSIC_WEB_TOKEN",
+        help="Shared secret required on every request. Mandatory when --host is not loopback.",
+    ),
 ):
     """Launch the local web UI: browse cases, upload/analyze evidence,
     investigate entities, manage findings, run live capture, and generate
     reports - all calling the same core modules the CLI uses."""
     from netforensicai.web.app import create_app
 
-    if host not in ("127.0.0.1", "localhost"):
+    is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    if not is_loopback and not auth_token:
+        # The UI drives evidence handling and live capture. Reachable from
+        # other machines without a credential, that is an unauthenticated
+        # remote foothold - so refuse rather than warn-and-continue.
         typer.echo(
-            f"WARNING: binding to {host} may expose this UI to other machines on the network. "
-            "There is no authentication - only do this on a trusted network."
+            f"ERROR: refusing to bind to {host} without authentication.\n"
+            "Set a shared secret with --auth-token or the NETFORENSIC_WEB_TOKEN "
+            "environment variable, then open the UI once as "
+            f"http://{host}:{port}/?token=YOUR_TOKEN (the token is then stored "
+            "in a cookie). Only expose this on a trusted network.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if not is_loopback:
+        typer.echo(
+            f"WARNING: binding to {host} exposes this UI to other machines. It is "
+            "protected only by the shared token - use HTTPS (a reverse proxy) on an "
+            "untrusted network."
         )
 
-    flask_app = create_app(cases_dir)
-    typer.echo(f"NetForensicAI web UI running at http://{host}:{port} (Ctrl+C to stop)")
+    flask_app = create_app(cases_dir, auth_token=auth_token)
+    scheme = "http"
+    entry = f"{scheme}://{host}:{port}"
+    if auth_token and not is_loopback:
+        entry += "/?token=<your token>"
+    typer.echo(f"NetForensicAI web UI running at {entry} (Ctrl+C to stop)")
+
     # Single-threaded deliberately: CaseStore/DuckDB is single-writer, and
-    # this is a local single-user tool, not a production multi-user
-    # server - see netforensicai/web/app.py's module docstring.
+    # this is a local single-user tool - see web/app.py's module docstring.
+    # Off loopback, prefer a production WSGI server (waitress) over the
+    # Werkzeug dev server, which is not built to face a network; fall back
+    # to the dev server with a warning if waitress isn't installed.
+    if not is_loopback:
+        try:
+            from waitress import serve
+
+            serve(flask_app, host=host, port=port, threads=1)
+            return
+        except ImportError:
+            typer.echo(
+                "NOTE: 'waitress' is not installed; falling back to the development "
+                "server. Install it with: pip install waitress",
+                err=True,
+            )
     flask_app.run(host=host, port=port, debug=False, threaded=False)
 
 

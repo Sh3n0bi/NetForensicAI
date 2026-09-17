@@ -97,11 +97,25 @@ Nothing here reaches the network unless you invoke a feature that does.
 netforensic web --host 127.0.0.1 --port 8000
 ```
 
-**It binds to `127.0.0.1` by default, and that default is the security model.** There is no authentication, no user accounts, and no authorisation — it assumes the only person who can reach the port is the person sitting at the machine.
+**It binds to `127.0.0.1` by default, and that default is the security model.** On loopback there is no authentication — it assumes the only person who can reach the port is the person sitting at the machine.
 
-> **Do not expose it directly.** Binding to `0.0.0.0` publishes an unauthenticated interface that can read every case, delete cases, and start packet captures. If more than one analyst needs it, put it behind an authenticating reverse proxy (or an SSH tunnel) and keep the app on loopback.
+**Binding off loopback now requires a shared token.** The CLI refuses to start on any non-loopback `--host` unless you set one:
 
-State-changing requests require an `X-Requested-With` header, which blocks cross-site form posts from a browser the analyst has open elsewhere. That is a CSRF control, **not** an access control.
+```bash
+# refused: non-loopback bind with no token
+netforensic web --host 0.0.0.0
+
+# allowed: a token is required on every request
+NETFORENSIC_WEB_TOKEN=$(openssl rand -hex 24) netforensic web --host 0.0.0.0
+# then open the UI once as  http://<host>:8000/?token=<the token>
+# the token is stored in an httponly cookie for subsequent requests.
+```
+
+Supply the token as the `X-Auth-Token` header (programmatic callers), the `nf_auth` cookie, or a one-time `?token=` query parameter. When bound off loopback the app also serves through **waitress** (a production WSGI server) instead of the Werkzeug development server, when it is installed (`pip install 'netforensicai[web]'`).
+
+> **Even with a token, still front it with TLS.** The token is a bearer secret; over plain HTTP on an untrusted network it can be sniffed. Put an HTTPS reverse proxy in front, or keep the app on loopback and reach it over an SSH tunnel.
+
+State-changing requests also require an `X-Requested-With` header, which blocks cross-site form posts from a browser the analyst has open elsewhere. That is a CSRF control, **not** an access control — the token is the access control.
 
 ### Privileges
 
@@ -146,7 +160,7 @@ What the tool actually gives you. Read the limits as carefully as the capabiliti
 
 Be direct about these with anyone who asks whether the tool "is compliant":
 
-- **No authentication, authorisation, or multi-user separation.** Anyone who can reach the process can read and delete every case. Access control is the operating system's job and the network's.
+- **No multi-user separation, and only a single shared token for authentication.** On loopback there is no auth at all; off loopback a single shared token gates access, but there are no user accounts, roles, or per-analyst authorisation. Anyone holding the token (or with local access) can read and delete every case. Access control beyond that token is the operating system's job and the network's.
 - **No encryption at rest.** The case directory is plaintext on disk. Use full-disk or volume encryption (BitLocker, LUKS, FileVault) if evidence warrants it.
 - **The audit log is tamper-*evident*, not tamper-*proof*.** A hash chain proves an entry was altered; it does not prevent it. Someone with write access to the case directory can rewrite the whole chain consistently. For a stronger guarantee, export and hold a signed copy externally.
 - **No certification.** It is not accredited or validated against any standard, and no claim is made that it is. It supports evidence-handling practice; it does not confer compliance.
@@ -155,7 +169,7 @@ Be direct about these with anyone who asks whether the tool "is compliant":
 ### Deployment checklist
 
 - [ ] Full-disk encryption enabled on the machine holding cases
-- [ ] Web UI on `127.0.0.1`, or behind an authenticating proxy — never `0.0.0.0` unprotected
+- [ ] Web UI on `127.0.0.1`, or off loopback only with `NETFORENSIC_WEB_TOKEN` set and behind a TLS proxy — never `0.0.0.0` unprotected
 - [ ] OS permissions restrict the cases directory to the investigators who should see it
 - [ ] `dumpcap` given capabilities; the tool **not** run as root/Administrator
 - [ ] `intel` and `ai-*` extras omitted for air-gapped work, or Ollama used for local-only AI
