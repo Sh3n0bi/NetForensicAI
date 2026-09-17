@@ -1,0 +1,37 @@
+version: 2
+
+# Companion to the pip-audit workflow: pip-audit *reports* known-vulnerable
+# dependencies, Dependabot *opens the PR that bumps them* (and keeps the CI
+# Actions current too). Both matter - a scan that nobody acts on is just noise.
+
+updates:
+  # Python runtime/dev dependencies declared in pyproject.toml.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    # Security-relevant bumps should stand on their own; group the routine
+    # version churn so it doesn't drown the PR list.
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+
+  # Keep the GitHub Actions used across the workflows (checkout, setup-python,
+  # codeql-action, pypi-publish, ...) up to date. Pairs with pinning those
+  # actions to commit SHAs: Dependabot updates the SHA and records the version
+  # it points at, so pinning stays maintainable rather than frozen.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["ci", "dependencies"]
+    commit-message:
+      prefix: "ci"
