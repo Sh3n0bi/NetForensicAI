@@ -87,8 +87,8 @@ MAX_CARVE_BYTES_PER_STREAM = 64 * 1024 * 1024
 PROGRESS_LOG_EVERY_PACKETS = 25_000
 
 
-class PcapParseError(Exception):
-    """Raised when a pcap file cannot be read."""
+class PcapParseError(base.PcapReadError):
+    """Raised when a pcap file cannot be read (scapy engine)."""
 
 
 def _iter_packets(pcap_path):

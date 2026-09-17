@@ -9,6 +9,20 @@ new one is added.
 
 from abc import ABC, abstractmethod
 
+
+class PcapReadError(Exception):
+    """A pcap could not be read into events.
+
+    Shared base for both dissection engines' errors (scapy's PcapParseError
+    and tshark's TsharkParseError), so a caller of the unified engine can
+    catch one type regardless of which backend ran. The two subclasses stay
+    distinct - and defined in their own modules - because the tshark path
+    must import without scapy present, so it cannot reach into the scapy
+    parser's module for the type; this base lives here, where both already
+    import, and depends on nothing heavier than the standard library.
+    """
+
+
 _REGISTRY = {}
 
 

@@ -65,12 +65,12 @@ from pathlib import Path
 
 from netforensicai.core.event import Event, EventSequence, generate_event_id
 from netforensicai.integrations import wireshark
-from netforensicai.parsers import credentials
+from netforensicai.parsers import base, credentials
 
 logger = logging.getLogger(__name__)
 
 
-class TsharkParseError(Exception):
+class TsharkParseError(base.PcapReadError):
     """Raised when tshark cannot read a capture file."""
 
 
