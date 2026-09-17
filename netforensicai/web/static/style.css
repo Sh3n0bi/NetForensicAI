@@ -26,6 +26,16 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+/* Keyboard focus: a clearly visible ring on whatever the user has tabbed to.
+   :focus-visible (not :focus) so a mouse click doesn't leave a ring behind,
+   only keyboard navigation does. There was no focus style before, which left
+   keyboard users unable to see where they were. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 
 
 .settings-link:hover { color: var(--text); }
@@ -208,7 +218,7 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
 .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; border-top: 2px solid var(--border); }
 .kpi-l { color: var(--text-dim); font-size: 12px; }
 .kpi-n { font-size: 24px; font-weight: 700; margin: 4px 0 2px; }
-.kpi-s { color: #6b7288; font-size: 11px; }
+.kpi-s { color: #868ca0; font-size: 11px; }
 .kpi.k-blue { border-top-color: var(--accent); }
 .kpi.k-violet { border-top-color: #b07cff; }
 .kpi.k-red { border-top-color: var(--bad); }
@@ -245,7 +255,7 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
 .turn pre { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 
 .proto-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
-.proto-note { color: #6b7288; font-size: 11px; padding-bottom: 4px; }
+.proto-note { color: #868ca0; font-size: 11px; padding-bottom: 4px; }
 .file-row { background: var(--panel-2); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
 
 /* --- assistant -------------------------------------------------------- */
@@ -289,11 +299,11 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
 .brand-text { display: flex; flex-direction: column; }
 .brand-name { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
 .brand-name em { font-style: normal; color: var(--accent); }
-.brand-sub { color: #6b7288; font-size: 10px; }
+.brand-sub { color: #868ca0; font-size: 10px; }
 
 .rail { display: flex; flex-direction: column; gap: 1px; }
 .rail-group {
-  color: #6b7288;
+  color: #868ca0;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -328,7 +338,7 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
 .capture-card .row { display: flex; font-size: 12px; padding: 2px 0; }
 .capture-card .row span:last-child { margin-left: auto; font-family: var(--mono); }
 .local-mode { display: flex; align-items: center; gap: 8px; padding: 0 8px; font-size: 12px; }
-.local-mode .muted { color: #6b7288; font-size: 11px; }
+.local-mode .muted { color: #868ca0; font-size: 11px; }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .dot.ok { background: var(--ok); }
@@ -370,7 +380,7 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   font-size: 11px;
-  color: #6b7288;
+  color: #868ca0;
 }
 .statusbar .right { margin-left: auto; font-family: var(--mono); }
 .statusbar .item { display: flex; align-items: center; gap: 6px; }
@@ -409,7 +419,7 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
 .kpi-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .kpi-l { color: var(--text-dim); font-size: 12px; }
 .kpi-n { font-size: 25px; font-weight: 700; letter-spacing: -0.02em; }
-.kpi-s { color: #6b7288; font-size: 11px; margin-top: 3px; }
+.kpi-s { color: #868ca0; font-size: 11px; margin-top: 3px; }
 
 .k-blue .kpi-icon { background: rgba(91,157,255,0.14); }
 .k-violet .kpi-icon { background: rgba(176,124,255,0.14); }

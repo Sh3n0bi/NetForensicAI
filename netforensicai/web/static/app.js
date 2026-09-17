@@ -62,6 +62,18 @@ function el(tag, attrs, children) {
       else e.setAttribute(k, v);
     }
   }
+  // Accessibility: a field with only a placeholder has no accessible name
+  // for a screen reader (a placeholder is not a label). Mirror it unless a
+  // name is already provided some other way.
+  if (
+    (tag === "input" || tag === "textarea") &&
+    e.placeholder &&
+    !e.getAttribute("aria-label") &&
+    !e.getAttribute("aria-labelledby") &&
+    !e.id
+  ) {
+    e.setAttribute("aria-label", e.placeholder);
+  }
   if (children) for (const c of children) e.appendChild(c);
   return e;
 }
@@ -167,7 +179,7 @@ async function renderSettings(app) {
 
   const panel = el("div", { class: "panel" });
   app.appendChild(panel);
-  panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+  panel.appendChild(el("div", { class: "loading", text: "Loading…" }));
 
   let data;
   try {
@@ -248,6 +260,44 @@ async function renderSettings(app) {
   ollamaRow.appendChild(el("span", { class: "setting-status", text: "" }));
   panel.appendChild(ollamaRow);
 
+  // --- performance (advanced) ---
+  // DuckDB sizes memory and threads itself by default, which is right for a
+  // dedicated machine. These bound it on a shared or constrained host.
+  panel.appendChild(el("h3", { text: "Performance (advanced)", style: "margin-top:18px;" }));
+  panel.appendChild(
+    el("div", {
+      class: "setting-note",
+      text: "Leave blank to let DuckDB size itself (about 80% of RAM, one thread per core). Set these only to bound the tool on a shared or memory-limited machine.",
+    })
+  );
+
+  const memRow = el("div", { class: "setting-row" });
+  const memInput = el("input", {
+    type: "text",
+    id: "set-duckdb-memory",
+    value: data.preferences.duckdb_memory_limit || "",
+    placeholder: "e.g. 2GB (blank = automatic)",
+    "aria-label": "DuckDB memory limit",
+  });
+  memRow.appendChild(el("label", { text: "Memory limit", for: "set-duckdb-memory" }));
+  memRow.appendChild(memInput);
+  memRow.appendChild(el("span", { class: "setting-status", text: "" }));
+  panel.appendChild(memRow);
+
+  const threadsRow = el("div", { class: "setting-row" });
+  const threadsInput = el("input", {
+    type: "text",
+    id: "set-duckdb-threads",
+    inputmode: "numeric",
+    value: data.preferences.duckdb_threads || "",
+    placeholder: "e.g. 4 (blank = all cores)",
+    "aria-label": "DuckDB worker threads",
+  });
+  threadsRow.appendChild(el("label", { text: "Worker threads", for: "set-duckdb-threads" }));
+  threadsRow.appendChild(threadsInput);
+  threadsRow.appendChild(el("span", { class: "setting-status", text: "" }));
+  panel.appendChild(threadsRow);
+
   const actions = el("div", { class: "filter-bar", style: "margin-top:16px;" });
   const saveBtn = el("button", { text: "Save Settings" });
   actions.appendChild(saveBtn);
@@ -268,6 +318,8 @@ async function renderSettings(app) {
         ai_provider: providerSelect.value,
         ai_model: modelInput.value.trim(),
         ollama_base_url: ollamaInput.value.trim(),
+        duckdb_memory_limit: memInput.value.trim(),
+        duckdb_threads: threadsInput.value.trim(),
       };
       // Only send keys the user actually typed into: an untouched field
       // must leave the saved key alone, not clear it.
@@ -739,13 +791,15 @@ function densityChart(entries) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("style", "width:100%;height:168px;display:block");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Event volume over time (timeline density)");
 
   let markup = "";
   for (let g = 0; g <= 3; g++) {
     const y = 10 + ((H - 40) / 3) * g;
     markup += `<line x1="${pad}" y1="${y}" x2="${W}" y2="${y}" stroke="#2a2f3f" stroke-width="1"/>`;
     const value = Math.round((peak / 3) * (3 - g));
-    markup += `<text x="${pad - 5}" y="${y + 3}" fill="#6b7288" font-size="9" text-anchor="end">${value}</text>`;
+    markup += `<text x="${pad - 5}" y="${y + 3}" fill="#868ca0" font-size="9" text-anchor="end">${value}</text>`;
   }
   buckets.forEach((b, i) => {
     const x = pad + i * ((W - pad) / BUCKETS);
@@ -757,8 +811,8 @@ function densityChart(entries) {
     }
   });
   const fmt = (ms) => new Date(ms).toISOString().slice(11, 16);
-  markup += `<text x="${pad}" y="${H - 8}" fill="#6b7288" font-size="9">${fmt(first)}</text>`;
-  markup += `<text x="${W}" y="${H - 8}" fill="#6b7288" font-size="9" text-anchor="end">${fmt(last)}</text>`;
+  markup += `<text x="${pad}" y="${H - 8}" fill="#868ca0" font-size="9">${fmt(first)}</text>`;
+  markup += `<text x="${W}" y="${H - 8}" fill="#868ca0" font-size="9" text-anchor="end">${fmt(last)}</text>`;
   svg.innerHTML = markup;
 
   const wrap = el("div");
@@ -803,6 +857,8 @@ function entityGraph(hub, data) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("style", "width:100%;height:200px;display:block");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Entity relationship graph for ${hub.value}`);
   svg.innerHTML = markup;
 
   const wrap = el("div");
@@ -932,7 +988,7 @@ async function showPivot(c, eventId) {
   box.appendChild(card);
   document.body.appendChild(box);
 
-  body.appendChild(el("div", { class: "loading", text: "Resolving..." }));
+  body.appendChild(el("div", { class: "loading", text: "Resolving…" }));
   try {
     const p = await apiGet(`/cases/${c.case_id}/events/${eventId}/wireshark`);
     body.innerHTML = "";
@@ -1117,7 +1173,7 @@ async function renderEvidence(app, c) {
 
   async function loadList() {
     panel.innerHTML = "";
-    panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+    panel.appendChild(el("div", { class: "loading", text: "Loading…" }));
     try {
       const items = await apiGet(`/cases/${c.case_id}/evidence`);
       panel.innerHTML = "";
@@ -1177,7 +1233,7 @@ async function renderEvidence(app, c) {
   analyzeBtn.addEventListener("click", async () => {
     analyzeBtn.disabled = true;
     statusBox.innerHTML = "";
-    statusBox.appendChild(el("div", { class: "loading", text: "Analyzing (parsing evidence + correlating)..." }));
+    statusBox.appendChild(el("div", { class: "loading", text: "Analyzing (parsing evidence + correlating)…" }));
     try {
       const result = await apiPost(`/cases/${c.case_id}/analyze`);
       statusBox.innerHTML = "";
@@ -1222,7 +1278,7 @@ async function renderTimeline(app, c) {
 
   async function load() {
     panel.innerHTML = "";
-    panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+    panel.appendChild(el("div", { class: "loading", text: "Loading…" }));
     const params = new URLSearchParams();
     for (const f of fields) {
       const v = inputs[f].value.trim();
@@ -1285,7 +1341,7 @@ function summarizeEntry(e) {
 async function renderEntities(app, c, focusEntityId) {
   app.appendChild(el("h1", { text: "Entities" }));
   const filterBar = el("div", { class: "filter-bar" });
-  const searchInput = el("input", { placeholder: "Search value..." });
+  const searchInput = el("input", { placeholder: "Search value…" });
   const typeSelect = el("select", {});
   typeSelect.innerHTML =
     '<option value="">All types</option>' +
@@ -1319,7 +1375,7 @@ async function renderEntities(app, c, focusEntityId) {
 
   async function loadList() {
     listPanel.innerHTML = "";
-    listPanel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+    listPanel.appendChild(el("div", { class: "loading", text: "Loading…" }));
     const params = new URLSearchParams();
     const q = searchInput.value.trim();
     const t = typeSelect.value;
@@ -1358,7 +1414,7 @@ async function renderEntities(app, c, focusEntityId) {
 
     rightCol.innerHTML = "";
     const panel = el("div", { class: "panel" });
-    panel.appendChild(el("div", { class: "loading", text: "Investigating..." }));
+    panel.appendChild(el("div", { class: "loading", text: "Investigating…" }));
     rightCol.appendChild(panel);
     try {
       const result = await apiGet(
@@ -1420,7 +1476,7 @@ async function renderInvestigatePanel(panel, c, result) {
   tiBtn.addEventListener("click", async () => {
     tiBtn.disabled = true;
     tiBox.innerHTML = "";
-    tiBox.appendChild(el("div", { class: "loading", text: "Checking..." }));
+    tiBox.appendChild(el("div", { class: "loading", text: "Checking…" }));
     try {
       const body = {
         entity_id: result.entity.entity_id,
@@ -1499,7 +1555,7 @@ async function renderInvestigatePanel(panel, c, result) {
   aiBtn.addEventListener("click", async () => {
     aiBtn.disabled = true;
     aiBox.innerHTML = "";
-    aiBox.appendChild(el("div", { class: "loading", text: "Asking..." }));
+    aiBox.appendChild(el("div", { class: "loading", text: "Asking…" }));
     try {
       const body = {
         entity_type: result.entity.entity_type,
@@ -1634,7 +1690,7 @@ async function renderAudit(app, c) {
 
   const panel = el("div", { class: "panel" });
   app.appendChild(panel);
-  panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+  panel.appendChild(el("div", { class: "loading", text: "Loading…" }));
 
   try {
     const data = await apiGet(`/cases/${c.case_id}/audit`);
@@ -1884,7 +1940,7 @@ async function renderDetections(app, c) {
 
   async function loadList() {
     panel.innerHTML = "";
-    panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+    panel.appendChild(el("div", { class: "loading", text: "Loading…" }));
     try {
       const query = severitySelect.value ? `?severity=${encodeURIComponent(severitySelect.value)}` : "";
       const detections = await apiGet(`/cases/${c.case_id}/detections${query}`);
@@ -1975,7 +2031,7 @@ async function renderFindings(app, c) {
 
   async function loadList() {
     panel.innerHTML = "";
-    panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+    panel.appendChild(el("div", { class: "loading", text: "Loading…" }));
     try {
       const findings = await apiGet(`/cases/${c.case_id}/findings`);
       panel.innerHTML = "";
@@ -2022,7 +2078,7 @@ async function renderFindings(app, c) {
     card.appendChild(updateRow);
 
     const noteRow = el("div", { class: "filter-bar" });
-    const noteInput = el("input", { type: "text", placeholder: "Add a note...", style: "min-width:300px;" });
+    const noteInput = el("input", { type: "text", placeholder: "Add a note…", style: "min-width:300px;" });
     const noteBtn = el("button", { class: "secondary", text: "Add Note" });
     noteRow.appendChild(noteInput);
     noteRow.appendChild(noteBtn);
@@ -2111,7 +2167,7 @@ async function renderAttack(app, c) {
 
   const panel = el("div", { class: "panel" });
   app.appendChild(panel);
-  panel.appendChild(el("div", { class: "loading", text: "Loading..." }));
+  panel.appendChild(el("div", { class: "loading", text: "Loading…" }));
   try {
     const techniques = await apiGet(`/cases/${c.case_id}/attack`);
     panel.innerHTML = "";
@@ -2433,7 +2489,7 @@ async function renderSearch(app, c) {
   );
 
   const bar = el("div", { class: "filter-bar" });
-  const term = el("input", { placeholder: "flag{ , password=, 4d5a9000 ...", style: "min-width:260px" });
+  const term = el("input", { placeholder: "flag{ , password=, 4d5a9000 …", style: "min-width:260px" });
   const mode = el("select", {});
   for (const m of ["text", "regex", "hex"]) mode.appendChild(el("option", { value: m, text: m }));
   const dfilter = el("input", { placeholder: "display filter (optional)", class: "mono", style: "min-width:240px" });
@@ -2451,7 +2507,7 @@ async function renderSearch(app, c) {
     const pattern = term.value.trim();
     if (!pattern) return;
     out.innerHTML = "";
-    out.appendChild(el("div", { class: "loading", text: "Searching the capture..." }));
+    out.appendChild(el("div", { class: "loading", text: "Searching the capture…" }));
     go.disabled = true;
     try {
       const res = await apiPost(`/cases/${c.case_id}/search`, {
@@ -2539,7 +2595,7 @@ async function renderStreams(app, c, focus) {
 
   async function follow(index) {
     reader.innerHTML = "";
-    reader.appendChild(el("div", { class: "loading", text: "Reassembling..." }));
+    reader.appendChild(el("div", { class: "loading", text: "Reassembling…" }));
     try {
       const s = await apiGet(`/cases/${c.case_id}/streams/${index}`);
       reader.innerHTML = "";
@@ -2564,7 +2620,7 @@ async function renderStreams(app, c, focus) {
     }
   }
 
-  list.appendChild(el("div", { class: "loading", text: "Loading conversations..." }));
+  list.appendChild(el("div", { class: "loading", text: "Loading conversations…" }));
   try {
     const res = await apiGet(`/cases/${c.case_id}/streams`);
     list.innerHTML = "";
@@ -2608,7 +2664,7 @@ async function renderTriage(app, c) {
 
   const out = el("div");
   app.appendChild(out);
-  out.appendChild(el("div", { class: "loading", text: "Running triage..." }));
+  out.appendChild(el("div", { class: "loading", text: "Running triage…" }));
 
   try {
     const r = await apiGet(`/cases/${c.case_id}/triage`);
@@ -2790,6 +2846,10 @@ function icon(path, opts) {
   svg.setAttribute("stroke-width", (opts && opts.width) || 1.8);
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
+  // These icons are decorative - every one sits beside its own text label,
+  // so hide them from assistive tech rather than reading 25 unnamed graphics.
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
   svg.innerHTML = path;
   return svg;
 }
