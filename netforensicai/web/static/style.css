@@ -379,9 +379,24 @@ button.danger:disabled:hover { background: rgba(224,90,78,0.15); color: var(--ba
   .shell { flex-direction: column; height: auto; }
   .sidebar { width: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; overflow: visible; }
   .rail { flex-direction: row; flex-wrap: wrap; }
-  .rail-group { padding: 0 4px; }
+  /* Full width so each section label heads its own row instead of being
+     stranded inline between the wrapped nav links. */
+  .rail-group { flex-basis: 100%; padding: 8px 4px 2px; }
   .rail-foot { margin-top: 0; padding-top: 0; }
   .capture-card, .local-mode { display: none; }
+  /* Let the case bar wrap instead of clipping the status badges off the
+     right edge on a narrow screen. The status meta gets its own row so
+     the "Analyzed / OPEN / N evidence" badges are never cut off. */
+  .topbar { flex-wrap: wrap; gap: 8px 10px; padding: 10px 16px; }
+  /* case-meta lives inside case-switch, so case-switch is what must wrap;
+     the meta then drops to its own full-width row, uncut. */
+  .case-switch { flex-wrap: wrap; }
+  .case-meta { flex-basis: 100%; }
+  .settings-link { margin-left: 0; }
+  /* A wide data table (timeline, entities, detections) is 600px+; on a
+     phone it must scroll inside its card, not be clipped where the page
+     doesn't scroll. */
+  .panel { overflow-x: auto; }
 }
 
 /* --- dashboard tiles ------------------------------------------------- */
