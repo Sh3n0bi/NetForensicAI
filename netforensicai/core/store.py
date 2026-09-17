@@ -23,6 +23,7 @@ background capture might be running concurrently with the call.
 import contextlib
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -37,6 +38,43 @@ logger = logging.getLogger(__name__)
 # a simple lock that's always correct beats a per-case lock dict that's
 # marginally faster but easier to get wrong.
 GLOBAL_WRITE_LOCK = threading.Lock()
+
+
+def _resource_limit(key, env_var):
+    """Resolve one DuckDB resource limit: env var wins, then saved config,
+    then empty (= leave DuckDB's own default in place). Kept env-first so a
+    per-run override needs no config edit, and never raises - a bad value
+    must not stop a case from opening."""
+    from_env = os.environ.get(env_var)
+    if from_env:
+        return from_env.strip()
+    try:
+        from netforensicai.core import config
+
+        return (config.get_plain(key) or "").strip()
+    except Exception:  # config is a convenience, never a hard dependency here
+        return ""
+
+
+def _apply_resource_limits(conn):
+    """Apply the optional memory_limit / threads bounds to a fresh
+    connection. Both default to empty, meaning DuckDB sizes itself (~80% of
+    RAM, one thread per core) - the right choice for a dedicated box. A bad
+    value is logged and skipped rather than propagated, so a typo in the
+    setting degrades to the default instead of breaking every case."""
+    memory_limit = _resource_limit("duckdb_memory_limit", "NETFORENSIC_DUCKDB_MEMORY_LIMIT")
+    if memory_limit:
+        try:
+            conn.execute("SET memory_limit=?", [memory_limit])
+        except duckdb.Error as e:
+            logger.warning(f"Ignoring invalid duckdb_memory_limit {memory_limit!r}: {e}")
+
+    threads = _resource_limit("duckdb_threads", "NETFORENSIC_DUCKDB_THREADS")
+    if threads:
+        try:
+            conn.execute("SET threads=?", [int(threads)])
+        except (ValueError, duckdb.Error) as e:
+            logger.warning(f"Ignoring invalid duckdb_threads {threads!r}: {e}")
 
 # Event model field, in insertion/selection order. "user" is stored under
 # a different column name (see _column) since it's close enough to a SQL
@@ -212,6 +250,7 @@ class CaseStore:
         # back exactly as normalized (see core/event.py), not just
         # UTC-equivalent with a different displayed offset.
         self.conn.execute("SET TimeZone='UTC'")
+        _apply_resource_limits(self.conn)
         self._init_schema()
 
     def _init_schema(self):

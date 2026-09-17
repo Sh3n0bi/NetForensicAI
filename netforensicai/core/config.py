@@ -51,6 +51,18 @@ PLAIN_KEYS = {
     # is installed, otherwise scapy), "tshark", or "scapy". See
     # parsers/pcap_engine.py.
     "pcap_engine": "auto",
+    # DuckDB resource limits applied to every case connection (see
+    # core/store.py). Empty means "use DuckDB's own default" - it sizes
+    # memory to ~80% of RAM and threads to the core count on its own, which
+    # is the right choice for most machines. Set these only to bound the
+    # tool on a shared or memory-constrained host:
+    #   duckdb_memory_limit - e.g. "2GB", "512MB" (DuckDB spills to disk
+    #     past this rather than failing; lower = safer, possibly slower).
+    #   duckdb_threads - max threads DuckDB uses for query execution (reads,
+    #     correlation joins). The ingest write path is serial regardless;
+    #     this only bounds CPU used by parallel scans. e.g. "4".
+    "duckdb_memory_limit": "",
+    "duckdb_threads": "",
 }
 
 
