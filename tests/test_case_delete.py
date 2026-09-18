@@ -126,8 +126,12 @@ def client(seeded):
 def test_web_delete_requires_confirmation(client):
     c, case, case_dir = client
 
-    assert c.delete(f"/api/cases/{case.case_id}", json={}).status_code == 400
-    assert c.delete(f"/api/cases/{case.case_id}", json={"confirm": "INC-9999"}).status_code == 400
+    # The delete requests are kept out of the assert expression: an assert
+    # with a side effect would stop deleting under `python -O`.
+    no_confirm = c.delete(f"/api/cases/{case.case_id}", json={})
+    wrong_confirm = c.delete(f"/api/cases/{case.case_id}", json={"confirm": "INC-9999"})
+    assert no_confirm.status_code == 400
+    assert wrong_confirm.status_code == 400
     assert case_dir.exists()
 
 

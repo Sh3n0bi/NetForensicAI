@@ -145,3 +145,14 @@ def test_evidence_to_dict_and_from_dict_round_trip():
     )
 
     assert Evidence.from_dict(evidence.to_dict()) == evidence
+
+
+def test_load_rejects_path_traversal_evidence_id(case_dir):
+    # evidence_id reaches EvidenceManager directly from web-API URL segments
+    # and CLI flags with no upstream validation - _evidence_path() must
+    # refuse anything that isn't a well-formed EV-#### id rather than
+    # resolving it as a path (CWE-22).
+    manager = EvidenceManager(case_dir)
+    for malicious_id in ("../secret", "..\secret", "../../etc/passwd", "EV-0001/../../secret"):
+        with pytest.raises(EvidenceError):
+            manager.load(malicious_id)

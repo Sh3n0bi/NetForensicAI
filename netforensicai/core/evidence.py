@@ -84,6 +84,12 @@ class EvidenceManager:
         self.evidence_dir = self.case_dir / "evidence"
 
     def _evidence_path(self, evidence_id):
+        # evidence_id reaches here from web-API URL segments and CLI flags
+        # with no upstream validation. Without this check an id like
+        # "../../etc" would let load() walk outside evidence_dir (CWE-22),
+        # same reasoning as CaseManager._case_path().
+        if not EVIDENCE_ID_PATTERN.match(evidence_id or ""):
+            raise EvidenceError(f"Invalid evidence ID: {evidence_id!r}")
         return self.evidence_dir / evidence_id
 
     def _next_evidence_id(self):

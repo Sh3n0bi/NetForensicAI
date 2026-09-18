@@ -323,7 +323,10 @@ def _with_transient_retry(call, provider):
                 f"(attempt {attempt + 2} of {MAX_TRANSIENT_RETRIES + 1})"
             )
             time.sleep(delay)
-    raise last_error
+    # Unreachable in practice - the final iteration always re-raises via the
+    # `attempt == MAX_TRANSIENT_RETRIES` branch above - but fall back to a
+    # real exception so this can never `raise None`.
+    raise last_error or AssistantError(f"{provider} request failed after retries.")
 
 
 def _rejected_message(provider, how_to_set):
