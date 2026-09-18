@@ -150,8 +150,10 @@ def _load_csv_records(path):
     try:
         with open(path, newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
-    except (OSError, UnicodeDecodeError) as e:
-        # As with JSON: non-UTF-8 evidence is a handled input error, not a crash.
+    except (OSError, UnicodeDecodeError, csv.Error) as e:
+        # As with JSON: malformed evidence is a handled input error, not a
+        # crash. csv.Error covers a NUL byte in the data ("line contains
+        # NUL"), which the csv module raises on 3.9 (but tolerates on 3.12).
         raise NormalizationError(f"Failed to read CSV file '{path}': {e}") from e
 
 

@@ -54,14 +54,23 @@ evtx = [
     "python-evtx>=0.8,<0.9",
 ]
 web = [
-    "flask>=3.0,<4.0",
+    # Lower bounds raised past the known-vulnerable 3.0.x line (flask
+    # PYSEC-2026-2151; werkzeug PYSEC-2026-2044/2046/2320) - the fixes are
+    # within the same 3.x major, so this just excludes the bad releases.
+    # werkzeug is pinned explicitly (not only pulled via flask) because
+    # web/app.py imports werkzeug.utils.secure_filename directly.
+    "flask>=3.1.3,<4.0",
+    "werkzeug>=3.1.6,<4.0",
     # Production WSGI server used when the UI is bound off-loopback (see the
     # `web` command in cli.py); the Werkzeug dev server is loopback-only.
     "waitress>=3.0,<4.0",
 ]
 dashboard = [
-    "dash>=2.17,<3.0",
-    "plotly>=5.15,<6.0",
+    # dash 2.x caps Flask<3.1 / Werkzeug<3.1, which would pin the web extra
+    # back onto the vulnerable 3.0.x line (see the `web` extra). dash >=3.0
+    # supports the patched Flask 3.1.x, so the two extras stay co-installable.
+    "dash>=3.0,<5.0",
+    "plotly>=5.15,<7.0",
 ]
 dev = [
     "pytest>=8.0,<9.0",

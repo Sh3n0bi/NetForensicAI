@@ -61,4 +61,17 @@ jobs:
         # temporary waiver, so the exception is reviewable in git history.
         run: |
           python -m pip install pip-audit
-          pip-audit --strict --desc
+          # --skip-editable: the project itself is installed with `-e .` and
+          # isn't on PyPI, so it can't be looked up. We intentionally do NOT
+          # pass --strict: under --strict, skipping that local package is
+          # itself treated as a failure ("distribution marked as editable").
+          # Without it, pip-audit still exits non-zero when it finds an actual
+          # vulnerability in a real dependency - which is the check we want.
+          #
+          # --ignore-vuln PYSEC-2026-1845: a pytest advisory (a local
+          # /tmp/pytest-of-* DoS on UNIX). pytest is a dev/test-only tool that
+          # never ships in the package, the fix is pytest>=9.0.3 (outside our
+          # deliberate <9.0 pin), and the CI runner's tmp is ephemeral - so
+          # this one is assessed as not applicable and waived here rather than
+          # blocking the build. Runtime deps stay strictly audited.
+          pip-audit --desc --skip-editable --ignore-vuln PYSEC-2026-1845

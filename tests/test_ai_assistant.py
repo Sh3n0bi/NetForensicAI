@@ -465,7 +465,10 @@ def test_ollama_provider_connection_error_raises_assistant_error():
             generate_hypothesis([_event("EVT-0001")], provider="ollama")
 
 
-def test_ollama_provider_uses_custom_base_url():
+def test_ollama_provider_uses_custom_base_url(monkeypatch):
+    # A remote Ollama host is allowed only with the explicit opt-in (the SSRF
+    # guard blocks it by default); this test covers that supported path.
+    monkeypatch.setenv("NETFORENSIC_OLLAMA_ALLOW_REMOTE", "1")
     hyp = _valid_hypothesis([])
     mock_response = MagicMock()
     mock_response.json.return_value = {"message": {"content": hyp.model_dump_json()}}
