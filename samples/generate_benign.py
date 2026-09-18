@@ -30,7 +30,7 @@ import random
 from pathlib import Path
 
 try:
-    from scapy.all import IP, TCP, UDP, DNS, DNSQR, Raw, wrpcap
+    from scapy.all import wrpcap
 except ImportError:  # pragma: no cover
     raise SystemExit("This script needs scapy: pip install -e '.[pcap]'")
 
