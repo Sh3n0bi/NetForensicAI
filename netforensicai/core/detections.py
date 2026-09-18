@@ -400,11 +400,6 @@ _EXECUTABLE_SUFFIXES = (
     ".hta", ".apk", ".elf", ".so", ".dylib", ".pyc",
 )
 
-# Field names that carry a secret when they appear in a cleartext body.
-_CREDENTIAL_MARKERS = re.compile(
-    r"(?:^|[?&\s])(?:password|passwd|pwd|pass|secret|token|api[_-]?key)=", re.IGNORECASE
-)
-
 # Filenames that are private key material by convention. Checked as well
 # as content, because object export names a recovered file even when its
 # bytes are not carried on any event.

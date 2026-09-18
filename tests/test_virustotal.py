@@ -1,7 +1,6 @@
 """Tests for the VirusTotal client. requests is always mocked - these
 tests must never touch the real network or require a real API key."""
 
-import os
 from unittest.mock import MagicMock, patch
 
 from netforensicai.intel import virustotal

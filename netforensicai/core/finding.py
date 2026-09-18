@@ -144,7 +144,9 @@ class FindingManager:
             actor=created_by,
         )
 
-        logger.info(f"Created finding {finding_id}: {title}")
+        # !r on the user-supplied title escapes newlines/control chars, so a
+        # crafted title can't forge extra log lines (log injection).
+        logger.info(f"Created finding {finding_id}: {title!r}")
         return finding
 
     def _save(self, finding):

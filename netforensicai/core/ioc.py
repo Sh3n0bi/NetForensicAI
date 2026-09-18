@@ -119,10 +119,19 @@ _STIX_PATH_TYPES = {
     "file:hashes.'sha-256'": "sha256",
     "file:hashes.sha256": "sha256",
 }
+# The object-path class allows a quote because a STIX hash path really does
+# carry one (e.g. file:hashes.'SHA-256'). That makes the path and the
+# following quoted literal slightly ambiguous, which CodeQL flags as
+# polynomial backtracking (ReDoS). Rather than break valid paths, the input
+# is length-capped before this ever runs (MAX_STIX_PATTERN_CHARS), so the
+# match time is bounded regardless.
 _STIX_COMPARISON = re.compile(r"([a-z0-9-]+:[a-z0-9_.'\-]+)\s*=\s*'((?:[^'\\]|\\.)*)'", re.IGNORECASE)
 # Pattern operators whose meaning depends on MORE than one comparison.
 # "[a] AND [b]" is an indicator only when both hold; importing a and b
 # separately would match far more than the author meant.
+#: A real STIX comparison pattern is short; anything past this is rejected
+#: before the comparison regexes run, bounding their match time (ReDoS).
+MAX_STIX_PATTERN_CHARS = 4096
 _STIX_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'")
 _STIX_UNSUPPORTED = re.compile(r"\b(AND|FOLLOWEDBY|WITHIN|REPEATS|START|STOP|NOT)\b|!=|\bLIKE\b|\bMATCHES\b")
 
@@ -377,6 +386,12 @@ def _parse_stix(data, result, seen):
         kind = obj.get("type")
         if kind == "indicator":
             pattern = obj.get("pattern") or ""
+            if len(pattern) > MAX_STIX_PATTERN_CHARS:
+                # Bound the input the regexes below run on: a real STIX
+                # comparison is short, and capping the length keeps the
+                # match time bounded on a hostile feed (ReDoS defence).
+                result.rejected.append((pattern[:200], "pattern is too long to parse safely"))
+                continue
             if obj.get("pattern_type", "stix") != "stix":
                 result.rejected.append((pattern[:200], f"{obj.get('pattern_type')} patterns are not supported"))
                 continue

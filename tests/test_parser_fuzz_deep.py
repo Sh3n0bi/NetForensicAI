@@ -14,7 +14,6 @@ returns a list of events or raises its own declared error
 fixed RNG seed keeps a failure reproducible from the printed case id.
 """
 
-import os
 import random
 import struct
 import time
