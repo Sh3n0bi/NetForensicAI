@@ -73,7 +73,7 @@ dashboard = [
     "plotly>=5.15,<7.0",
 ]
 dev = [
-    "pytest>=8.0,<9.0",
+    "pytest>=8.0,<10.0",
 ]
 build = [
     "build>=1.0",
