@@ -70,6 +70,12 @@ REPORT_MIMETYPES = {"markdown": "text/markdown", "json": "application/json", "ht
 # with no auth in front of it.
 MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 
+# Limits on case details entered in the browser. Generous for any real
+# name or note; they exist so a pasted log file does not become a case name.
+MAX_CASE_NAME = 200
+MAX_CASE_DESCRIPTION = 2000
+MAX_INVESTIGATOR = 120
+
 # See the CSRF paragraph in the module docstring.
 CSRF_HEADER = "X-Requested-With"
 CSRF_HEADER_VALUE = "NetForensicAI"
@@ -192,7 +198,89 @@ def create_app(cases_dir="cases", auth_token=None):
 
     @app.route("/api/cases")
     def list_cases():
-        return jsonify([c.to_dict() for c in case_manager.list()])
+        """Every case, with what someone choosing between them needs to see.
+
+        The bare case record answered "which cases exist" and nothing else,
+        so the home screen could not tell a finished investigation from an
+        empty one without opening each. Counts and the story's assessment
+        are included here.
+
+        `?brief=1` skips them. The case switcher only needs names, and it
+        renders on every page - opening every case store for it would make
+        each navigation pay for the home screen.
+
+        A case whose store cannot be read still appears, marked with the
+        error, rather than taking the whole list down with it.
+        """
+        cases = case_manager.list()
+        if request.args.get("brief"):
+            return jsonify([c.to_dict() for c in cases])
+
+        from netforensicai.core import narrative as narrative_module
+
+        rows = []
+        for case in cases:
+            data = case.to_dict()
+            data.update(
+                evidence_count=0,
+                event_count=0,
+                detection_count=0,
+                severity=None,
+                headline=None,
+                assessment=None,
+                summary_error=None,
+            )
+            try:
+                data["evidence_count"] = len(EvidenceManager(_case_dir(case)).list())
+                with locked_store(_case_dir(case)) as store:
+                    data["event_count"] = store.count_events()
+                    data["detection_count"] = store.count_detections()
+                    if data["event_count"]:
+                        story = narrative_module.build(store)
+                        data.update(
+                            severity=story.severity,
+                            headline=story.headline,
+                            assessment=story.assessment,
+                        )
+            except Exception as e:
+                app.logger.warning(f"Could not summarise {case.case_id}: {e}")
+                data["summary_error"] = str(e)
+            rows.append(data)
+        return jsonify(rows)
+
+    @app.route("/api/cases", methods=["POST"])
+    def create_case():
+        """Start an investigation from the browser.
+
+        This did not exist. The home screen of the web UI told a new user to
+        open a terminal and run `netforensic case create`. The case is created
+        through CaseManager exactly as the CLI does, so the chain of custody
+        opens with the same case.created record whichever interface was used.
+        """
+        payload = request.get_json(force=True, silent=True) or {}
+        name = str(payload.get("name") or "").strip()
+        description = str(payload.get("description") or "").strip()
+        investigator = str(payload.get("investigator") or "").strip()
+
+        if not name:
+            raise ApiError("A case needs a name.")
+        if len(name) > MAX_CASE_NAME:
+            raise ApiError(f"Case name is too long (max {MAX_CASE_NAME} characters).")
+        if len(description) > MAX_CASE_DESCRIPTION:
+            raise ApiError(f"Description is too long (max {MAX_CASE_DESCRIPTION} characters).")
+        if len(investigator) > MAX_INVESTIGATOR:
+            raise ApiError(f"Investigator name is too long (max {MAX_INVESTIGATOR} characters).")
+
+        from netforensicai.core.store import GLOBAL_WRITE_LOCK
+
+        # Serialized: case IDs are allocated by scanning the directory, so
+        # two creates at once could otherwise race for the same number.
+        with GLOBAL_WRITE_LOCK:
+            try:
+                case = case_manager.create(name, description=description, investigator=investigator or "unknown")
+            except CaseError as e:
+                raise ApiError(str(e))
+        return jsonify(case.to_dict()), 201
 
     @app.route("/api/cases/<case_id>")
     def get_case(case_id):

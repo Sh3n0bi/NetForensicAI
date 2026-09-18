@@ -10,7 +10,7 @@ State-changing requests need an `X-Requested-With: NetForensicAI` header. That i
 
 | | |
 |---|---|
-| `GET /api/cases` · `GET /api/cases/<id>` | list, and one case with its counters |
+| `GET · POST /api/cases` · `GET /api/cases/<id>` | list cases with their state and story assessment (`?brief=1` for names only); create one (`name`, optional `investigator`, `description`); one case with its counters |
 | `POST /api/cases/<id>/status` | `open` / `investigating` / `closed` |
 | `DELETE /api/cases/<id>` | irreversible; body must echo `{"confirm": "<id>"}` |
 | `GET · POST /api/cases/<id>/evidence` | list and upload |
