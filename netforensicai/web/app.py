@@ -168,14 +168,25 @@ def create_app(cases_dir="cases", auth_token=None):
         return jsonify({"error": f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."}), 413
 
     # --- static frontend ---
+    # The UI is a single set of files (index.html, style.css, app.js) served
+    # by name, with no version in the URL. Without this, a browser caches
+    # them and keeps showing the OLD interface after an upgrade until the
+    # user does a hard refresh - a confusing "did it even update?" moment.
+    # `no-cache` makes the browser revalidate every time: it still gets a
+    # cheap 304 when nothing changed (send_from_directory sets ETag /
+    # Last-Modified), but the moment a file changes it fetches the new one.
+    def _serve_static(filename):
+        response = send_from_directory(STATIC_DIR, filename)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
     @app.route("/")
     def index():
-        return send_from_directory(STATIC_DIR, "index.html")
+        return _serve_static("index.html")
 
     @app.route("/<path:filename>")
     def static_files(filename):
-        return send_from_directory(STATIC_DIR, filename)
+        return _serve_static(filename)
 
     # --- cases ---
 
