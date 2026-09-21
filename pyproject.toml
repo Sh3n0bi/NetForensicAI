@@ -70,7 +70,7 @@ dashboard = [
     # back onto the vulnerable 3.0.x line (see the `web` extra). dash >=3.0
     # supports the patched Flask 3.1.x, so the two extras stay co-installable.
     "dash>=3.0,<5.0",
-    "plotly>=5.15,<7.0",
+    "plotly>=5.15,<8.0",
 ]
 dev = [
     "pytest>=8.0,<9.0",
