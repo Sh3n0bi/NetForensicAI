@@ -1,0 +1,5 @@
+# Shell scripts and the Dockerfile must use LF: a CRLF shebang breaks
+# `#!/bin/sh` inside a Linux container, and the entrypoint runs there.
+*.sh text eol=lf
+Dockerfile text eol=lf
+docker/entrypoint.sh text eol=lf

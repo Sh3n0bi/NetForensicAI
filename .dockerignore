@@ -1,0 +1,24 @@
+# Keep the build context (and image) small and reproducible.
+.git
+.github
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+build
+dist
+tests
+docs
+cases
+*.duckdb
+*.duckdb.wal
+extracted_files
+*.pcap
+*.pcapng
+.vscode
+.idea
+.DS_Store
+Thumbs.db
