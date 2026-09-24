@@ -112,6 +112,17 @@ pip install -e ".[pcap,intel,web]"
 pip install "netforensicai[pcap,intel,web]"
 ```
 
+**With Docker** — no Python, scapy or Wireshark to install; the image bundles **tshark**, so pcap parsing uses the fast engine automatically.
+
+```bash
+docker build -t netforensicai .
+docker run --rm -p 8000:8000 -v netforensic-data:/data netforensicai
+```
+
+The container prints a one-time access token and a `http://localhost:8000/?token=…` URL (the web UI requires a token when it isn't on loopback). Set your own with `-e NETFORENSIC_WEB_TOKEN=…` to keep it stable. Cases and saved settings persist in the `/data` volume. Any CLI command works too, e.g. `docker run --rm -v netforensic-data:/data netforensicai case list`.
+
+Once images are published, you can skip the build with `docker pull ghcr.io/sh3n0bi/netforensicai`.
+
 ### Python extras
 
 Everything beyond case management and the CLI core is optional.
