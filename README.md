@@ -290,7 +290,7 @@ Several classes of bug were found only by running against real evidence and real
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the parser plugin interface, and the release process.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the parser plugin interface, and the release process. Release history is in [CHANGELOG.md](CHANGELOG.md).
 
 The shape of a good contribution here: a new `BaseParser` subclass for a format, a detection rule with a specific and defensible signal, or a regression test for a bug found against real evidence.
 
@@ -299,7 +299,7 @@ The shape of a good contribution here: a new `BaseParser` subclass for a format,
 
 This is defensive tooling for evidence you are authorized to analyze. It does not exploit, attack, or scan anything.
 
-Nothing leaves your machine unless you explicitly invoke threat intel or a hosted AI provider. Live capture requires privileges the tool does not grant itself. If you find a security issue in NetForensicAI, please open an issue or contact the maintainer rather than disclosing it publicly first.
+Nothing leaves your machine unless you explicitly invoke threat intel or a hosted AI provider. Live capture requires privileges the tool does not grant itself. To report a vulnerability, please follow [SECURITY.md](SECURITY.md) (private disclosure via GitHub Security Advisories) rather than opening a public issue.
 
 
 ## License
