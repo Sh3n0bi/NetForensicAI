@@ -1,0 +1,54 @@
+# Changelog
+
+All notable changes to NetForensicAI are documented here. The format is based
+on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
+aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.3.0] — 2026-09-24
+
+First public release: a local-first DFIR investigation platform that turns
+packet captures and endpoint logs into one correlated, evidence-cited
+investigation, entirely on your own machine.
+
+### Added
+- **Investigation core** — normalized events, deterministic entity extraction
+  and correlation, a unified timeline, an entity relationship graph, bundled
+  detection rules, ATT&CK technique mapping, and investigator-owned findings.
+- **Evidence ingestion** — `.pcap`/`.pcapng` (scapy or tshark engine),
+  JSON/CSV logs, Windows Event Logs including Sysmon (`.evtx`), and live
+  network capture; each file hashed and stored read-only with a tamper-evident
+  chain of custody.
+- **Case narrative** — an assembled, deterministic "what happened" story that
+  cites the events it rests on, surfaced in both the CLI and the web UI.
+- **Threat intelligence** — import STIX 2.1 / MISP / CSV / plain-text feeds and
+  match them against a case; optional VirusTotal lookups.
+- **AI assistant (optional, opt-in)** — a grounded "Ask (cited)" chat and a
+  hedged hypothesis generator, backed by Anthropic, OpenAI, Gemini, or local
+  Ollama; every claim is checked against retrieved evidence and refused if
+  unsupported.
+- **Web UI** — a refined, accessible dark interface with a first-run onboarding
+  flow, in-browser case creation with evidence upload and analysis in one step,
+  a case list that shows each case's state, and configurable DuckDB
+  memory/threads under Settings.
+
+### Security & hardening
+- Web UI **requires a shared token** to bind off loopback and serves through a
+  production WSGI server (waitress) when exposed.
+- **SSRF guard** on the Ollama `base_url`; parsers **fail safely** on malformed
+  and non-UTF-8 evidence; **path-traversal** validation on all case / evidence /
+  finding IDs; **ReDoS** and **log-injection** hardening.
+- Structured **pcap/EVTX fuzzing** across both dissection engines.
+- Supply chain: **CodeQL**, **pip-audit**, and **Dependabot**, with every
+  GitHub Action pinned to a commit SHA; known dependency CVEs patched.
+
+### Accessibility
+- WCAG 2.1 AA pass: accessible names on controls, decorative icons hidden from
+  assistive tech, a visible keyboard-focus ring, and AA-compliant contrast.
+
+### Known limitations
+See the README's *Limitations* section. In brief: this is Beta software, not
+accredited against any forensic standard; correlation is not causality;
+ingestion is the scaling bottleneck on very large captures; and the AI paths
+have not been exercised against a live provider in CI.
+
+[0.3.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.3.0
