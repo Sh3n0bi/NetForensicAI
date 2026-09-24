@@ -92,7 +92,29 @@ def resolve_engine(engine=None):
     if requested == ENGINE_SCAPY:
         return ENGINE_SCAPY
 
-    return ENGINE_TSHARK if wireshark.available() else ENGINE_SCAPY
+    # auto: prefer tshark, fall back to the pure-Python scapy engine. That
+    # fallback is silent by default, which hides the single biggest speed
+    # lever this tool has - tshark's C dissectors parse roughly 10x faster
+    # than scapy. Say so once so a user on the slow path knows the fix.
+    if wireshark.available():
+        return ENGINE_TSHARK
+    _hint_scapy_fallback_once()
+    return ENGINE_SCAPY
+
+
+_scapy_fallback_hinted = False
+
+
+def _hint_scapy_fallback_once():
+    global _scapy_fallback_hinted
+    if _scapy_fallback_hinted:
+        return
+    _scapy_fallback_hinted = True
+    logger.info(
+        "Using the scapy pcap engine (pure Python). Install Wireshark for "
+        "roughly 10x faster parsing on large captures - it is then picked "
+        "automatically. Set NETFORENSIC_PCAP_ENGINE=scapy to silence this."
+    )
 
 
 def engine_status(engine=None):

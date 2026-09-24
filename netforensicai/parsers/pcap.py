@@ -110,8 +110,8 @@ def _iter_packets(pcap_path):
         reader.close()
 
 
-def _tcp_payload(packet):
-    """Raw application-layer bytes carried by a TCP packet, or b"".
+def _tcp_payload(tcp):
+    """Raw application-layer bytes carried by a TCP layer, or b"".
 
     Deliberately NOT `packet[Raw].load`: scapy binds known dissectors to
     well-known ports, so a payload on 443 comes back as a `TLS` layer and
@@ -122,7 +122,7 @@ def _tcp_payload(packet):
     the bytes regardless of how scapy chose to dissect them.
     """
     try:
-        return bytes(packet[TCP].payload)
+        return bytes(tcp.payload)
     except Exception:
         return b""
 
@@ -289,19 +289,26 @@ class _StreamCollector:
             logger.info(f"Parsed {packet_number:,} packets...")
 
         self._emitted = []
-        self._collect_anomaly_features(packet_number, packet)
-
+        # Resolve each layer once and thread it through, rather than letting
+        # every helper re-run packet.haslayer()/packet[...]: scapy walks the
+        # layer chain on each of those, and this packet gets touched by the
+        # anomaly collector AND a transport handler. getlayer() returns the
+        # layer or None in a single traversal.
         ip = _ip_layer(packet)
+        tcp = packet.getlayer(TCP)
+        udp = packet.getlayer(UDP) if tcp is None else None
+        self._collect_anomaly_features(packet_number, packet, ip, tcp)
+
         if ip is not None:
-            if packet.haslayer(TCP):
-                self._feed_tcp(packet_number, packet, ip)
-            elif packet.haslayer(UDP):
-                self._feed_udp(packet_number, packet, ip)
+            if tcp is not None:
+                self._feed_tcp(packet_number, packet, ip, tcp)
+            elif udp is not None:
+                self._feed_udp(packet_number, packet, ip, udp)
             elif packet.haslayer(ICMP):
                 self._feed_icmp(packet_number, packet, ip)
         return self._emitted
 
-    def _collect_anomaly_features(self, packet_number, packet):
+    def _collect_anomaly_features(self, packet_number, packet, ip, tcp):
         if self._anomaly_disabled:
             return
         if packet_number > MAX_PACKETS_FOR_ANOMALY_DETECTION:
@@ -317,12 +324,11 @@ class _StreamCollector:
             )
             return
 
-        anomaly_ip = _ip_layer(packet)
+        anomaly_ip = ip
         timestamp = float(packet.time)
         size = len(packet)
-        has_tcp = packet.haslayer(TCP)
-        src_port = int(packet[TCP].sport) if has_tcp else 0
-        dst_port = int(packet[TCP].dport) if has_tcp else 0
+        src_port = int(tcp.sport) if tcp is not None else 0
+        dst_port = int(tcp.dport) if tcp is not None else 0
         inter_arrival = timestamp - self._prev_time if self._prev_time is not None else 0.0
         self._prev_time = timestamp
         self._features.append([size, inter_arrival, src_port, dst_port])
@@ -356,20 +362,21 @@ class _StreamCollector:
         if flow["payload_preview"] is None and payload:
             flow["payload_preview"] = payload[:DPI_PREVIEW_BYTES].decode("utf-8", errors="ignore")
 
-    def _feed_udp(self, packet_number, packet, ip):
+    def _feed_udp(self, packet_number, packet, ip, udp):
         # DNS gets its own, more specific event type - recording it as a
         # generic flow as well would double-count the same packet.
-        if packet.haslayer(DNS):
-            self._feed_dns(packet_number, packet, ip, packet[DNS])
+        dns_layer = udp.getlayer(DNS)
+        if dns_layer is not None:
+            self._feed_dns(packet_number, packet, ip, dns_layer)
             return
-        payload = bytes(packet[UDP].payload)
+        payload = bytes(udp.payload)
         # scapy only dissects DNS on port 53, so anything else needs the
         # payload inspected directly - see _try_parse_dns.
         dns = _try_parse_dns(payload)
         if dns is not None:
             self._feed_dns(packet_number, packet, ip, dns)
             return
-        self._record_flow(packet, ip, "udp", int(packet[UDP].sport), int(packet[UDP].dport), payload)
+        self._record_flow(packet, ip, "udp", int(udp.sport), int(udp.dport), payload)
 
     def _feed_icmp(self, packet_number, packet, ip):
         """ICMP recorded as a flow with no ports. Worth keeping rather than
@@ -451,10 +458,10 @@ class _StreamCollector:
             })
         )
 
-    def _feed_tcp(self, packet_number, packet, ip):
-        src_port = int(packet[TCP].sport)
-        dst_port = int(packet[TCP].dport)
-        payload = _tcp_payload(packet)
+    def _feed_tcp(self, packet_number, packet, ip, tcp):
+        src_port = int(tcp.sport)
+        dst_port = int(tcp.dport)
+        payload = _tcp_payload(tcp)
         self._record_flow(packet, ip, "tcp", src_port, dst_port, payload)
         if not payload:
             return
