@@ -51,3 +51,8 @@ jobs:
         uses: pypa/gh-action-pypi-publish@15c56dba361d8335944d31a2ecd17d700fc7bcbc # v1.12.2
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+          # This action generates PEP 740 attestations by default, which
+          # need OIDC (`id-token: write`). With token auth and no such
+          # permission, that step fails before upload - so turn it off.
+          # Re-enable it (and the id-token permission) if we move to OIDC.
+          attestations: false
