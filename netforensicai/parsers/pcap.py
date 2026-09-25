@@ -272,6 +272,7 @@ class _StreamCollector:
         self._flow_order = []
         self._pending = {}
         self._streams = {}
+        self._cred_flow = credentials.CredentialFlowState()
         self._emitted = []  # events produced by the packet currently being fed
 
         self._features = []
@@ -650,8 +651,14 @@ class _StreamCollector:
         secrets, user = credentials.scan_payload(
             payload, dst_port=dst_port, is_http_request=is_http_request
         )
+        # FTP/Telnet/POP3 send the username (USER) a packet before the
+        # password (PASS), so remember it per control flow and attach it to
+        # the password's event when it arrives.
+        flow_key = (ip.src, src_port, ip.dst, dst_port)
+        self._cred_flow.remember(flow_key, user)
         if not secrets:
             return
+        user = self._cred_flow.resolve(flow_key, user)
 
         protocol = credentials.protocol_for(dst_port, "tcp")
         for field, value in secrets:

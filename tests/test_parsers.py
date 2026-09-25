@@ -796,3 +796,22 @@ def test_json_and_csv_parsers_registered_in_base_registry():
 
     assert isinstance(base.get_parser("json"), JsonParser)
     assert isinstance(base.get_parser("csv"), CsvParser)
+
+
+def test_ftp_username_from_user_command_is_attached_to_the_password_event(tmp_path):
+    # FTP sends USER then PASS in separate packets. The credential event fires
+    # on PASS, but its username was one packet earlier on the same control
+    # flow - the parser must carry it across so the user reaches the entity
+    # graph (regression for the docs/validation.md finding).
+    packets = [
+        _packet("10.0.0.5", "192.168.56.101", 50000, 21, b"USER bob\r\n", 1_700_000_000.0),
+        _packet("10.0.0.5", "192.168.56.101", 50000, 21, b"PASS s3cret\r\n", 1_700_000_000.5),
+    ]
+    pcap_path = _write_pcap(tmp_path, "ftp.pcap", packets)
+
+    events = PcapParser().parse(pcap_path, evidence_id="EV-0001")
+    creds = [e for e in events if e.event_type == "credential_exposure"]
+
+    assert creds, "expected a credential_exposure event for the cleartext FTP password"
+    assert creds[0].user == "bob"
+    assert creds[0].dst_port == 21
