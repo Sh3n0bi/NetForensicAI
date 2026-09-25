@@ -4,9 +4,15 @@ name: Publish to PyPI
 # -> pick/create a tag like v0.1.0 -> Publish). Does NOT run on every push,
 # and never touches PyPI on its own - only a maintainer creating a release
 # triggers a publish.
+#
+# workflow_dispatch lets a maintainer publish the version currently in
+# pyproject.toml on demand from the Actions tab (Run workflow), without
+# cutting a new release - used to publish a version whose release event
+# already fired before the workflow was fixed.
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -31,13 +37,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
-    permissions:
-      # Trusted Publishing (OIDC) - PyPI verifies this run came from this
-      # exact repo/workflow, so no long-lived API token needs to live in
-      # GitHub secrets at all. Must be configured once on the PyPI project
-      # page first (see CONTRIBUTING.md's Releasing section) - this
-      # workflow cannot set that up itself.
-      id-token: write
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
@@ -45,4 +44,10 @@ jobs:
           name: dist
           path: dist/
       - name: Publish to PyPI
+        # API-token auth: the token lives in the repo secret PYPI_API_TOKEN
+        # (Settings -> Secrets and variables -> Actions). Trusted Publishing
+        # (OIDC) is the longer-term goal - once a publisher is registered on
+        # PyPI, drop `with:` here and restore `permissions: id-token: write`.
         uses: pypa/gh-action-pypi-publish@15c56dba361d8335944d31a2ecd17d700fc7bcbc # v1.12.2
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
