@@ -1,6 +1,6 @@
 # Design: NetForensicAI Investigation Team (multi-agent roles)
 
-**Status:** Approved. Phases 1–2 landed (foundation + the Network Forensics and Host/DFIR roles);
+**Status:** Approved. Phases 1–3 landed (foundation, the Network + Host roles, and the coordinator that merges/ranks their findings);
 phases 2–6 follow. Defaults chosen: provider-agnostic (default `anthropic`, works
 on local Ollama); findings are *proposed* for one-click acceptance, never
 auto-written; CLI entry point will be `netforensic team`.

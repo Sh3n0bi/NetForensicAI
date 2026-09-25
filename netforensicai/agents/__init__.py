@@ -7,6 +7,7 @@ invent a finding.
 """
 
 from netforensicai.agents.base import AgentError, AgentFinding, Role, RoleResult, run_role
+from netforensicai.agents.coordinator import MergedFinding, TeamResult, investigate, merge_findings
 from netforensicai.agents.roles import ROLES, all_roles, get_role, resolve_roles
 
 __all__ = [
@@ -19,4 +20,8 @@ __all__ = [
     "all_roles",
     "get_role",
     "resolve_roles",
+    "investigate",
+    "merge_findings",
+    "MergedFinding",
+    "TeamResult",
 ]

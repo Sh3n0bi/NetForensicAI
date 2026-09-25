@@ -7,12 +7,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- **Investigation-team agents (foundation)** — `netforensicai/agents/`: a role
-  is a mission + a scoped subset of the read-only case tools, run over the same
-  grounded loop the chat assistant uses. First two specialist roles ship:
-  **Network Forensics** and **Host/DFIR**.
-  grounded loop the chat assistant uses, producing structured findings that must
-  cite a tool result or be dropped. Design: `docs/design/agent-team.md`.
+- **Investigation-team agents** — `netforensicai/agents/`: a role is a mission +
+  a scoped subset of the read-only case tools, run over the same grounded loop
+  the chat assistant uses, producing structured findings that must cite a tool
+  result or be dropped. Ships the **Network Forensics** and **Host/DFIR** roles
+  and a **Lead Investigator** coordinator that merges corroborating findings
+  (two roles on the same evidence become one) and ranks them by severity and
+  corroboration. Opt-in, provider-agnostic, findings *proposed* not auto-written.
+  Design: `docs/design/agent-team.md`.
 - **Suricata `eve.json` parser** — detected by content (JSON Lines with a
   Suricata `event_type`) and mapped from its own schema (`alert`, `dns`,
   `http`, `tls`, `flow`, `fileinfo`, `anomaly`) into the Common Event Model.
