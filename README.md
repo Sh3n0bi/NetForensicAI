@@ -21,7 +21,7 @@
 - [Installation](#installation) · [Quick start](#quick-start)
 - [Limitations](#limitations) · [Testing](#testing) · [Contributing](#contributing)
 
-**Reference:** [Capabilities](docs/capabilities.md) · [Commands](docs/commands.md) · [HTTP API](docs/api.md) · [Wireshark](docs/wireshark.md) · [Architecture & performance](docs/architecture.md) · [Deployment, sizing & compliance](docs/deployment.md) · [Worked example](docs/walkthrough.md)
+**Reference:** [Capabilities](docs/capabilities.md) · [Commands](docs/commands.md) · [HTTP API](docs/api.md) · [Wireshark](docs/wireshark.md) · [Architecture & performance](docs/architecture.md) · [Deployment, sizing & compliance](docs/deployment.md) · [Worked example](docs/walkthrough.md) · [Validation](docs/validation.md)
 
 ---
 
