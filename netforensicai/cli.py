@@ -2332,6 +2332,84 @@ def capture_cmd(
         typer.echo("Stopped.")
 
 
+def _version_string():
+    try:
+        import importlib.metadata as _md
+
+        return _md.version("netforensicai")
+    except Exception:
+        return "unknown (running from source)"
+
+
+@app.command("version")
+def version_cmd():
+    """Print the installed NetForensicAI version."""
+    typer.echo(_version_string())
+
+
+def _version_callback(value: bool):
+    if value:
+        typer.echo(_version_string())
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        None,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the version and exit.",
+    ),
+):
+    """NetForensicAI - local-first DFIR investigation platform."""
+
+
+@app.command("doctor")
+def doctor(
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR, "--cases-dir", envvar="NETFORENSIC_CASES_DIR", help="Case directory to check."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the checks as machine-readable JSON."),
+):
+    """Diagnose the environment: Python, the core and optional dependencies, the
+    Wireshark/capture tools, and AI / threat-intel configuration.
+
+    Read-only - it changes nothing. Exits non-zero only when a CORE dependency
+    is broken; a missing OPTIONAL capability (tshark, .evtx support, an AI key)
+    is reported as a note, not a failure, because a documented fallback exists.
+    """
+    import json as _json
+
+    from netforensicai.core import diagnostics
+
+    checks = diagnostics.run_checks(cases_dir)
+    has_error = any(c.status == diagnostics.ERROR for c in checks)
+
+    if as_json:
+        payload = {"overall": diagnostics.overall_status(checks), "checks": [c.to_dict() for c in checks]}
+        typer.echo(_json.dumps(payload, indent=2))
+        raise typer.Exit(code=1 if has_error else 0)
+
+    symbols = {
+        diagnostics.OK: ("OK", typer.colors.GREEN),
+        diagnostics.WARNING: ("WARN", typer.colors.YELLOW),
+        diagnostics.MISSING: ("MISSING", typer.colors.BRIGHT_BLACK),
+        diagnostics.ERROR: ("ERROR", typer.colors.RED),
+    }
+    typer.echo("")
+    for check in checks:
+        label, color = symbols.get(check.status, ("?", None))
+        badge = typer.style(f"{label:>7}", fg=color, bold=True)
+        typer.echo(f"  {badge}  {check.name}" + (f" - {check.detail}" if check.detail else ""))
+    typer.echo("")
+    if has_error:
+        typer.secho("Some CORE checks failed - fix these before relying on the tool.", fg=typer.colors.RED, bold=True)
+        raise typer.Exit(code=1)
+    typer.secho("Core environment OK. Any MISSING items are optional - a fallback exists.", fg=typer.colors.GREEN)
+
+
 def main():
     try:
         app()

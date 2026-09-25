@@ -7,6 +7,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`netforensic doctor`** — a read-only environment check: Python, the DuckDB
+  case store, the cases/config directories, each optional evidence engine (scapy,
+  scikit-learn, python-evtx, Flask, tshark, dumpcap), the active pcap engine, and
+  whether an AI provider or VirusTotal key is configured. A missing *optional*
+  capability is reported with its documented fallback, not as a failure; the
+  command exits non-zero only when a core dependency is broken. `--json` emits a
+  machine-readable report. Logic lives in `core/diagnostics.py` so it is testable
+  and reusable; the command is a thin renderer over it.
+- **`netforensic version` / `--version`** — print the installed package version.
 - **Investigation-team agents** — `netforensicai/agents/`: a role is a mission +
   a scoped subset of the read-only case tools, run over the same grounded loop
   the chat assistant uses, producing structured findings that must cite a tool
