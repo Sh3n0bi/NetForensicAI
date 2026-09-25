@@ -4,6 +4,20 @@ All notable changes to NetForensicAI are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Suricata `eve.json` parser** — detected by content (JSON Lines with a
+  Suricata `event_type`) and mapped from its own schema (`alert`, `dns`,
+  `http`, `tls`, `flow`, `fileinfo`, `anomaly`) into the Common Event Model.
+  Point NetForensicAI at the NSM log you already have.
+- **Docker image** bundling tshark (fast pcap engine by default), published to
+  the GitHub Container Registry; `docker run` the web UI in one command.
+
+### Changed
+- Faster scapy pcap parsing (layers resolved once per packet) and a one-time
+  hint to install Wireshark for the ~10x tshark engine when on the slow path.
+
 ## [0.3.0] — 2026-09-24
 
 First public release: a local-first DFIR investigation platform that turns

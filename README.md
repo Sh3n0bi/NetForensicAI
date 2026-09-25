@@ -33,7 +33,7 @@ It runs entirely on your machine. **No cloud backend, no daemon, no database ser
 
 | | |
 |---|---|
-| **Input** | `.pcap` / `.pcapng` · `.json` · `.csv` · `.evtx` · live network capture |
+| **Input** | `.pcap` / `.pcapng` · `.json` · Suricata `eve.json` · `.csv` · `.evtx` · live network capture |
 | **Output** | Timeline · entity graph · detections · ATT&CK mapping · findings · Markdown / JSON / HTML reports |
 | **Interfaces** | CLI (`netforensic`) and a local web UI — both over the same core |
 | **Requires** | Python 3.9+. Wireshark optional but recommended. |
@@ -244,7 +244,7 @@ Each of these is covered properly in [the capability reference](docs/capabilitie
 |---|---|
 | **Evidence integrity** | Copied in, SHA-256 hashed from the stored copy, set read-only, recorded in a manifest. |
 | **Chain of custody** | Every action appended to a hash-chained log. `case audit --verify` reports whether it has been altered. |
-| **Parsers** | `.pcap`/`.pcapng` (tshark or scapy), `.json`, `.csv`, `.evtx` — all normalized into one Common Event Model. |
+| **Parsers** | `.pcap`/`.pcapng` (tshark or scapy), `.json`, Suricata `eve.json`, `.csv`, `.evtx` — all normalized into one Common Event Model. |
 | **Search** | Content search over a capture's raw bytes: text, regex, or hex. ~6s across 1,000,000 packets. |
 | **Streams** | Conversations reassembled by Wireshark, ranked by volume. |
 | **Triage** | The first questions worth asking an unfamiliar capture: protocols, flags, credentials, secrets, recoverable files. |

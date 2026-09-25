@@ -22,6 +22,7 @@ All parsers normalize into one **Common Event Model**: `event_id`, `evidence_id`
 |---|---|
 | `.pcap` / `.pcapng` | Two interchangeable engines — **tshark** when Wireshark is installed, **scapy** (pure Python, no external binary) otherwise. Single streaming pass either way. |
 | `.json` | Array, `{"events": [...]}`-wrapped, or single object. Case/separator-insensitive field aliasing (`src_ip` / `SourceIP` / `source_ip` all match). |
+| Suricata `eve.json` | Detected by content (JSON Lines with a Suricata `event_type`) and mapped from its own schema: `alert` (with severity), `dns`, `http`, `tls`, `flow`, `fileinfo`, `anomaly`. Point it at the NSM log you already have. |
 | `.csv` | Same aliasing, one event per row. |
 | `.evtx` | Sysmon (ProcessCreate, NetworkConnection, ProcessTerminate, FileCreate, DNSQuery) gets rich field mapping; every other provider gets universal System fields plus full raw EventData. Pure Python, so Windows logs can be analyzed from any OS. |
 
