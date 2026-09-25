@@ -69,7 +69,7 @@ def _normalize_key(key):
 
 
 def _normalized_lookup(record):
-    return {_normalize_key(k): k for k in record.keys()}
+    return {_normalize_key(k): k for k in record}
 
 
 def _extract_field(record, lookup, canonical_field):

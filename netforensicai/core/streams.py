@@ -256,7 +256,7 @@ def _parse_follow_output(output, protocol, index, max_bytes):
     # actually went over the wire.
     for line in (output or "").split("\n"):
         stripped = line.rstrip("\r")
-        if stripped.startswith(_SEPARATOR) or stripped.startswith(("Follow:", "Filter:")):
+        if stripped.startswith((_SEPARATOR, "Follow:", "Filter:")):
             continue
         node = _HEADER_NODE.match(stripped)
         if node:

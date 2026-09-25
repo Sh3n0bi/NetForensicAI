@@ -1,6 +1,6 @@
 import pytest
 
-from netforensicai.core.finding import Finding, FindingError, FindingManager, VALID_STATUSES
+from netforensicai.core.finding import VALID_STATUSES, Finding, FindingError, FindingManager
 
 
 def test_create_finding_sets_defaults(tmp_path):

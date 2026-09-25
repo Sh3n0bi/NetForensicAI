@@ -70,7 +70,7 @@ def test_export_rejects_non_case_directory(tmp_path):
     empty_dir.mkdir()
     (empty_dir / "random.txt").write_text("hello")
 
-    with pytest.raises(ExportError, match="case.json"):
+    with pytest.raises(ExportError, match=r"case\.json"):
         export_case(empty_dir, tmp_path / "out.zip")
 
 

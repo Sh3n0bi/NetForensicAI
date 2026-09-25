@@ -17,13 +17,13 @@ import pytest
 
 pytest.importorskip("scapy")
 
-from netforensicai.core.case import CaseManager  # noqa: E402
-from netforensicai.core.detections import scan_case  # noqa: E402
-from netforensicai.core.evidence import EvidenceManager  # noqa: E402
-from netforensicai.core.store import CaseStore  # noqa: E402
-from netforensicai.core import narrative as narrative_module  # noqa: E402
-from netforensicai.integrations import wireshark  # noqa: E402
-from netforensicai.core import pipeline  # noqa: E402
+from netforensicai.core import narrative as narrative_module
+from netforensicai.core import pipeline
+from netforensicai.core.case import CaseManager
+from netforensicai.core.detections import scan_case
+from netforensicai.core.evidence import EvidenceManager
+from netforensicai.core.store import CaseStore
+from netforensicai.integrations import wireshark
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 

@@ -30,3 +30,7 @@ cases/
 # System files
 .DS_Store
 Thumbs.db
+
+# coverage data
+.coverage
+htmlcov/

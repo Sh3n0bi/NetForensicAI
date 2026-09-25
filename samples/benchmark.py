@@ -64,12 +64,13 @@ class Stage:
 
 
 def run_once(capture, engine):
+    from netforensicai.core import narrative as narrative_module
+    from netforensicai.core import pipeline
     from netforensicai.core.case import CaseManager
     from netforensicai.core.correlation import correlate_case
     from netforensicai.core.detections import scan_case
     from netforensicai.core.evidence import EvidenceManager
     from netforensicai.core.store import CaseStore
-    from netforensicai.core import narrative as narrative_module, pipeline
 
     root = Path(tempfile.mkdtemp(prefix="nfai-bench-"))
     stage = Stage()

@@ -22,8 +22,8 @@ from typer.testing import CliRunner
 from netforensicai.cli import app as cli_app
 from netforensicai.core import capture as capture_module
 from netforensicai.core.case import CaseManager
-from netforensicai.core.evidence import EvidenceManager
 from netforensicai.core.event import Event
+from netforensicai.core.evidence import EvidenceManager
 from netforensicai.integrations import wireshark
 from netforensicai.parsers import pcap_engine
 from netforensicai.web.app import create_app

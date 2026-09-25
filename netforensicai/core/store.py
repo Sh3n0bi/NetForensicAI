@@ -897,6 +897,5 @@ def locked_store(case_dir):
     """CaseStore usage serialized against GLOBAL_WRITE_LOCK. Use this
     instead of CaseStore(...) directly in the web UI and the capture
     module - see the module docstring for why."""
-    with GLOBAL_WRITE_LOCK:
-        with CaseStore(case_dir) as store:
-            yield store
+    with GLOBAL_WRITE_LOCK, CaseStore(case_dir) as store:
+        yield store

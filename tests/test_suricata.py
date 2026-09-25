@@ -6,8 +6,6 @@ The eve.json samples here are hand-written to the documented Suricata schema
 
 import json
 
-import pytest
-
 from netforensicai.core.evidence import infer_evidence_type
 from netforensicai.parsers.suricata import SuricataParser, is_suricata_eve
 

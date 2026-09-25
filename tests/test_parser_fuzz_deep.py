@@ -215,6 +215,6 @@ def test_evtx_record_xml_mutations_are_handled():
         # here (AttributeError, ValueError deep in field parsing) is the bug.
         try:
             result = record_to_event(text, evidence_id="EV-FUZZ", sequence=EventSequence())
-        except Exception as e:  # noqa: BLE001 - the whole point is to catch a leak
+        except Exception as e:
             pytest.fail(f"record_to_event raised {type(e).__name__} on mutation {i}: {e}")
         assert result is None or hasattr(result, "event_id")

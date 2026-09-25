@@ -23,7 +23,6 @@ from netforensicai.parsers.evtx import (
     record_to_event,
 )
 
-
 # Real EVTX System-section shape, generic (non-Sysmon) provider - matches
 # actual python-evtx .xml() output verified against a real exported
 # Windows System-log record during development.

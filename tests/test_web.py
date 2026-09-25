@@ -445,7 +445,7 @@ def test_ai_hypothesis_endpoint(prepared_case):
     # resolve the target, even though it's only ever mocked here.
     pytest.importorskip("anthropic")
     client, case, _cases_dir = prepared_case
-    from netforensicai.core.ai_assistant import EvidenceCitation, Hypothesis
+    from netforensicai.core.ai_assistant import Hypothesis
 
     hypothesis = Hypothesis(
         evidence_sufficient=True,
@@ -612,7 +612,7 @@ def test_ai_hypothesis_endpoint_passes_provider_and_model_through(prepared_case)
     # provider/model/base_url passthrough without needing an optional
     # provider package installed.
     client, case, _cases_dir = prepared_case
-    from netforensicai.core.ai_assistant import EvidenceCitation, Hypothesis
+    from netforensicai.core.ai_assistant import Hypothesis
 
     hypothesis = Hypothesis(
         evidence_sufficient=True,

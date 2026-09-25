@@ -304,7 +304,13 @@ pip install -e ".[dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web]"
 pytest
 ```
 
-**612 tests**, run in CI against Python 3.9 and 3.12, plus a dedicated job that installs tshark so the Wireshark integration is genuinely exercised rather than skipped, and a packaging check that installs the built wheel into a clean environment and confirms the web UI's assets are actually bundled.
+**770+ tests**, run in CI against Python 3.9 and 3.12 on Linux and against 3.12 on Windows and macOS (the analyst-workstation platforms), plus a dedicated job that installs tshark so the Wireshark integration is genuinely exercised rather than skipped, a `ruff` lint gate ([tool.ruff] in `pyproject.toml`), and a packaging check that installs the built wheel into a clean environment and confirms the web UI's assets are actually bundled.
+
+Lint locally with the same rules CI enforces:
+
+```bash
+ruff check .
+```
 
 The suite favours real fixtures over mocks: pcaps built with scapy, EVTX from hand-crafted XML matching the real schema, cases from `tmp_path`, and real tshark invocations wherever Wireshark is present. Mocks are reserved for what genuinely cannot be exercised in CI — external APIs, and opening a live network interface.
 

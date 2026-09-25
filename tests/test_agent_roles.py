@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from netforensicai.agents import ROLES, all_roles, get_role, resolve_roles, run_role
+from netforensicai.agents import all_roles, get_role, resolve_roles, run_role
 from netforensicai.agents.roles import HOST, NETWORK
 from netforensicai.core.case import CaseManager
 from netforensicai.core.chat import TOOL_SPECS

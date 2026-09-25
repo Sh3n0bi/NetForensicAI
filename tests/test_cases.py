@@ -1,4 +1,4 @@
-from netforensicai.core.case import Case, CaseError, CaseManager, SUBDIRS
+from netforensicai.core.case import SUBDIRS, Case, CaseError, CaseManager
 
 
 def test_create_case_sets_fields_and_layout(tmp_path):
