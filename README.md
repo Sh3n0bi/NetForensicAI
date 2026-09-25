@@ -177,6 +177,20 @@ Capture engine: dumpcap
 
 See [Wireshark integration](docs/wireshark.md) for what each one changes.
 
+### Verify the environment
+
+```bash
+netforensic doctor
+```
+
+`doctor` is read-only: it reports the Python version, the DuckDB case store, each
+optional evidence engine (scapy, scikit-learn, python-evtx, tshark/dumpcap), the
+active pcap engine, and whether an AI provider or VirusTotal key is configured.
+A missing *optional* capability is shown as a note with its fallback, not a
+failure — the command exits non-zero only when a core dependency is broken. Add
+`--json` for a machine-readable report. `netforensic --version` prints the
+installed version.
+
 ---
 
 
