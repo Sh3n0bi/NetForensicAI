@@ -4,6 +4,7 @@
 
 **Turn packet captures and endpoint logs into one correlated, evidence-cited investigation — entirely on your own machine.**
 
+[![PyPI](https://img.shields.io/pypi/v/netforensicai.svg)](https://pypi.org/project/netforensicai/)
 [![Tests](https://github.com/Sh3n0bi/NetForensicAI/actions/workflows/tests.yml/badge.svg)](https://github.com/Sh3n0bi/NetForensicAI/actions/workflows/tests.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -96,7 +97,13 @@ NetForensicAI does that stitching mechanically and keeps every resulting claim t
 
 ## Installation
 
-**From source**
+**From [PyPI](https://pypi.org/project/netforensicai/)** — the quickest way to get the `netforensic` command:
+
+```bash
+pip install "netforensicai[pcap,intel,web]"
+```
+
+**From source** — for development, or to run the latest unreleased code:
 
 ```bash
 git clone https://github.com/Sh3n0bi/NetForensicAI.git
@@ -104,12 +111,6 @@ cd NetForensicAI
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[pcap,intel,web]"
-```
-
-**From PyPI** *(once a release is published — see [CONTRIBUTING.md](CONTRIBUTING.md))*
-
-```bash
-pip install "netforensicai[pcap,intel,web]"
 ```
 
 **With Docker** — no Python, scapy or Wireshark to install; the image bundles **tshark**, so pcap parsing uses the fast engine automatically.
