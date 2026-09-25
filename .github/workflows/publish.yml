@@ -48,7 +48,7 @@ jobs:
         # (Settings -> Secrets and variables -> Actions). Trusted Publishing
         # (OIDC) is the longer-term goal - once a publisher is registered on
         # PyPI, drop `with:` here and restore `permissions: id-token: write`.
-        uses: pypa/gh-action-pypi-publish@15c56dba361d8335944d31a2ecd17d700fc7bcbc # v1.12.2
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           # This action generates PEP 740 attestations by default, which
