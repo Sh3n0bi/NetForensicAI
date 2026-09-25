@@ -74,6 +74,9 @@ dashboard = [
 ]
 dev = [
     "pytest>=8.0,<9.0",
+    # Coverage plugin for the CI coverage gate (see the `coverage` job in
+    # .github/workflows/tests.yml). Optional locally: `pytest --cov`.
+    "pytest-cov>=5.0,<8.0",
     # Linter; configured in [tool.ruff] below. Pinned to match the version
     # the CI lint gate uses (.github/workflows/tests.yml) so `ruff check`
     # gives contributors the same result locally as in CI.

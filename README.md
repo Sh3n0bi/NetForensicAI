@@ -322,7 +322,7 @@ Several classes of bug were found only by running against real evidence and real
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the parser plugin interface, and the release process. Release history is in [CHANGELOG.md](CHANGELOG.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and the parser plugin interface, and [RELEASING.md](RELEASING.md) for how to cut a release to PyPI. Release history is in [CHANGELOG.md](CHANGELOG.md).
 
 The shape of a good contribution here: a new `BaseParser` subclass for a format, a detection rule with a specific and defensible signal, or a regression test for a bug found against real evidence.
 

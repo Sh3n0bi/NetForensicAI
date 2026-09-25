@@ -124,6 +124,30 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  coverage:
+    # Enforces a coverage floor so it can't silently erode. Installs tshark
+    # and the full extras (incl. AI providers) so the measured percentage
+    # reflects the real, fully-exercised codebase - the same conditions the
+    # 89% baseline was measured under - rather than a partial run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install tshark
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+          tshark --version | head -1
+      - name: Install package with all test-relevant extras
+        run: pip install -e ".[dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web]"
+      - name: Run tests with coverage gate
+        # Floor set below the ~89% baseline to leave headroom for
+        # environment variance without letting coverage quietly regress.
+        run: pytest -q --cov=netforensicai --cov-report=term-missing --cov-fail-under=85
+
   build-check:
     # Separate from the test matrix: this only needs to run once and
     # exists to catch packaging regressions (e.g. a new static/data file
