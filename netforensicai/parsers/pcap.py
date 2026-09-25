@@ -43,12 +43,12 @@ Seven analyses, each producing a distinct event_type:
 
 import hashlib
 import logging
-from collections import Counter, deque
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
-from scapy.all import DNS, ICMP, IP, IPv6, TCP, UDP, PcapReader
+from scapy.all import DNS, ICMP, IP, TCP, UDP, IPv6, PcapReader
 from sklearn.ensemble import IsolationForest
 
 from netforensicai.core.event import Event, EventSequence, generate_event_id

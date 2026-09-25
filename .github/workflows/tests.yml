@@ -7,8 +7,26 @@ on:
     branches: ["**"]
 
 jobs:
-  test:
+  lint:
+    # A fast, dependency-light gate: ruff is configured in pyproject.toml
+    # ([tool.ruff]) with a curated rule set, so this fails the build on real
+    # defects (unused names, likely bugs, unsorted imports) without the
+    # stylistic churn a default config would introduce.
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        # Pinned so a future ruff release adding rules to the selected
+        # families can't fail the build without a deliberate bump here.
+        run: pip install ruff==0.16.9
+      - name: Lint
+        run: ruff check .
+
+  test:
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -20,10 +38,25 @@ jobs:
         # extras, ai-openai/ai-gemini) are only installed on 3.12 here.
         # Tests that need any of them skip cleanly on 3.9 via
         # pytest.importorskip.
+        #
+        # Windows and macOS run on 3.12 because NetForensicAI targets
+        # analyst workstations (Windows path handling, .evtx, Wireshark
+        # discovery under C:\Program Files) - the pure-Python path must be
+        # proven on those OSes, not just Linux. tshark is not installed on
+        # these runners, so the Wireshark tests skip cleanly there; the
+        # dedicated `wireshark` job below exercises that path on Linux.
         include:
-          - python-version: "3.9"
+          - os: ubuntu-latest
+            python-version: "3.9"
             extras: "dev,pcap,intel,evtx,web"
-          - python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.12"
+            extras: "dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web"
+          - os: windows-latest
+            python-version: "3.12"
+            extras: "dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web"
+          - os: macos-latest
+            python-version: "3.12"
             extras: "dev,pcap,intel,evtx,ai,ai-openai,ai-gemini,web"
 
     steps:

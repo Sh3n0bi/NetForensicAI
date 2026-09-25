@@ -36,7 +36,7 @@ import argparse
 from pathlib import Path
 
 try:
-    from scapy.all import IP, TCP, UDP, DNS, DNSQR, DNSRR, Raw, wrpcap
+    from scapy.all import DNS, DNSQR, DNSRR, IP, TCP, UDP, Raw, wrpcap
 except ImportError:  # pragma: no cover - the message is the whole point
     raise SystemExit("This script needs scapy: pip install -e '.[pcap]'")
 

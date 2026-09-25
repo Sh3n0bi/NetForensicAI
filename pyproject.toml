@@ -74,6 +74,10 @@ dashboard = [
 ]
 dev = [
     "pytest>=8.0,<9.0",
+    # Linter; configured in [tool.ruff] below. Pinned to match the version
+    # the CI lint gate uses (.github/workflows/tests.yml) so `ruff check`
+    # gives contributors the same result locally as in CI.
+    "ruff==0.16.9",
 ]
 build = [
     "build>=1.0",
@@ -95,3 +99,37 @@ include = ["netforensicai*"]
 # web/app.py serves these at runtime, but setuptools only bundles .py
 # files by default - static assets need to be listed explicitly.
 "netforensicai.web" = ["static/*"]
+
+[tool.ruff]
+# 3.9 is the supported floor (see requires-python). Pinning it here stops
+# ruff suggesting 3.10+ syntax (PEP 604 unions, PEP 585 generics, etc.)
+# that would break on the oldest interpreter we ship on.
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+# A focused, high-signal rule set rather than "everything": real defects
+# and modernizations, not stylistic churn.
+#   E,F  - pyflakes + pycodestyle errors (unused names, undefined refs, ...)
+#   I    - import sorting
+#   B    - bugbear (likely bugs)
+#   UP   - pyupgrade (kept 3.9-safe by target-version above)
+#   SIM  - simplifications
+#   PIE  - misc lints
+#   RUF  - ruff-specific
+#   UP is intentionally NOT selected: several of its fixes (PEP 585/604
+#   annotations, typing imports) change runtime behaviour on Python 3.9,
+#   the supported floor, so they are unsafe to apply project-wide.
+select = ["E", "F", "I", "B", "SIM", "PIE", "RUF"]
+ignore = [
+    "E501",    # line length is enforced by the formatter, not the linter
+    "B008",    # Typer's whole API is `= typer.Option(...)` in defaults - idiomatic here
+    "B012",    # the one finally/return is documented and deliberate (wireshark.py)
+    "B904",    # `raise ... from` chaining: domain errors deliberately hide the
+               # internal chain from users; worth revisiting but not a defect
+    "SIM105",  # `contextlib.suppress` is not clearer than a 2-line try/except in hot parsers
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately do odd things (unused unpacked fixtures, redefinitions).
+"tests/*" = ["B", "SIM", "RUF059", "F811"]

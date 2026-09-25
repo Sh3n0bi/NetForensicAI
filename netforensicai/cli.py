@@ -791,9 +791,8 @@ def investigate(
 
         if ai:
             typer.echo("\nAI Investigation Hypothesis (optional - requires investigator review):")
-            from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
-
             from netforensicai.core import audit
+            from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
 
             # An AI hypothesis sends case events to a third party and may
             # shape what the investigator looks at next, so both the request

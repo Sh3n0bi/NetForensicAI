@@ -63,7 +63,7 @@ def _merge_group(members):
     evidence. The lead is the highest-severity member; severity/confidence take
     the strongest across the group; citations are unioned."""
     members = sorted(members, key=lambda m: _sev_rank(m[1].severity), reverse=True)
-    lead_slug, lead = members[0]
+    _lead_slug, lead = members[0]
     severity = max((m[1].severity for m in members), key=_sev_rank)
     confidence = max((m[1].confidence for m in members), key=lambda c: _SEVERITY_RANK.get(str(c).lower(), 0))
 

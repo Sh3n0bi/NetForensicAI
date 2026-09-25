@@ -51,8 +51,8 @@ from werkzeug.utils import secure_filename
 
 from netforensicai.core.case import CaseError, CaseManager
 from netforensicai.core.correlation import DEFAULT_MAX_PAIRS as CORRELATION_MAX_PAIRS
-from netforensicai.core.evidence import EvidenceError, EvidenceManager
 from netforensicai.core.event import parse_timestamp
+from netforensicai.core.evidence import EvidenceError, EvidenceManager
 from netforensicai.core.finding import FindingManager
 from netforensicai.core.investigate import investigate_entity
 from netforensicai.core.report import RENDERERS, build_report
@@ -162,12 +162,11 @@ def create_app(cases_dir="cases", auth_token=None):
 
     @app.before_request
     def _require_csrf_header_on_writes():
-        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
-            if request.headers.get(CSRF_HEADER) != CSRF_HEADER_VALUE:
-                raise ApiError(
-                    f"Missing or invalid {CSRF_HEADER} header - refused to prevent cross-site request forgery.",
-                    403,
-                )
+        if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.headers.get(CSRF_HEADER) != CSRF_HEADER_VALUE:
+            raise ApiError(
+                f"Missing or invalid {CSRF_HEADER} header - refused to prevent cross-site request forgery.",
+                403,
+            )
 
     @app.errorhandler(413)
     def handle_too_large(_err):

@@ -54,9 +54,7 @@ def is_suricata_eve(path, sniff_lines=5):
                     record = json.loads(line)
                 except ValueError:
                     return False
-                if isinstance(record, dict) and record.get("event_type") in KNOWN_EVENT_TYPES:
-                    return True
-                return False
+                return isinstance(record, dict) and record.get("event_type") in KNOWN_EVENT_TYPES
     except (OSError, UnicodeDecodeError):
         return False
     return False

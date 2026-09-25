@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from generate_incident import Clock, Flow, dns  # noqa: E402
+from generate_incident import Clock, Flow, dns
 
 SUBNET = "10.20.30."
 RESOLVER = "10.20.30.1"

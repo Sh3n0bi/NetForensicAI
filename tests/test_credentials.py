@@ -16,10 +16,10 @@ from netforensicai.parsers import credentials
 
 pytest.importorskip("scapy")
 
-from scapy.all import IP, TCP, Raw, wrpcap  # noqa: E402
+from scapy.all import IP, TCP, Raw, wrpcap
 
-from netforensicai.integrations import wireshark  # noqa: E402
-from netforensicai.parsers.pcap import PcapParser  # noqa: E402
+from netforensicai.integrations import wireshark
+from netforensicai.parsers.pcap import PcapParser
 
 requires_tshark = pytest.mark.skipif(
     not wireshark.available(), reason="Wireshark/tshark is not installed on this machine"
