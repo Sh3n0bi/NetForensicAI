@@ -7,6 +7,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **CI coverage gate** — a `coverage` job runs the full suite with tshark and all
+  extras and fails under 85% line coverage (baseline ~89%), so coverage can't
+  silently erode. `RELEASING.md` documents the PyPI/Docker release process.
 - **`netforensic doctor`** — a read-only environment check: Python, the DuckDB
   case store, the cases/config directories, each optional evidence engine (scapy,
   scikit-learn, python-evtx, Flask, tshark, dumpcap), the active pcap engine, and

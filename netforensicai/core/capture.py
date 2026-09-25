@@ -199,7 +199,7 @@ class CaptureSession:
             try:
                 self._window_byte_count += len(packet)
             except Exception:
-                pass
+                logger.debug("could not measure packet size for window byte count", exc_info=True)
             self._window_protocols[_protocol_name(packet)] += 1
 
             if time.time() - self._window_started_at >= self.rotate_seconds:
@@ -223,7 +223,7 @@ class CaptureSession:
         try:
             self._writer.close()
         except Exception:
-            pass
+            logger.debug("error closing capture writer for %s", finished_file, exc_info=True)
 
         if not final:
             self._open_new_window()
@@ -258,7 +258,7 @@ class CaptureSession:
             try:
                 Path(pcap_path).unlink(missing_ok=True)
             except Exception:
-                pass
+                logger.debug("could not remove temporary pcap %s", pcap_path, exc_info=True)
 
         with locked_store(self.case_dir) as store:
             event_count, entity_count, error = parse_evidence_item(
@@ -590,7 +590,7 @@ class DumpcapCaptureSession(CaptureSession):
                 elif line.strip():
                     logger.debug(f"dumpcap: {line.strip()}")
         except Exception:
-            pass
+            logger.debug("error while reading dumpcap stderr", exc_info=True)
 
 
 def _protocol_name(packet):
@@ -608,7 +608,7 @@ def _protocol_name(packet):
         if packet.haslayer(ARP):
             return "ARP"
     except Exception:
-        pass
+        logger.debug("could not classify packet protocol; recording as 'other'", exc_info=True)
     return "other"
 
 
