@@ -56,3 +56,7 @@ jobs:
           # permission, that step fails before upload - so turn it off.
           # Re-enable it (and the id-token permission) if we move to OIDC.
           attestations: false
+          # Idempotent: a version already on PyPI is skipped rather than
+          # failing the whole run. Lets a re-run or a manual dispatch of an
+          # already-published version succeed, and makes releases safe to retry.
+          skip-existing: true
