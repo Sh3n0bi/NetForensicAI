@@ -80,6 +80,30 @@ def identity_of(pairs):
     return user
 
 
+class CredentialFlowState:
+    """Remembers the username seen on a flow so a secret arriving later on the
+    same flow can be attributed to it.
+
+    FTP, Telnet and POP3 send `USER` and `PASS` in separate packets, so at the
+    moment the password is observed its username is not in the same payload -
+    it was one packet earlier. Both dissection engines keep one of these per
+    parse and key it by the client->server 4-tuple, which is constant for a
+    control connection.
+    """
+
+    def __init__(self):
+        self._users = {}
+
+    def remember(self, flow_key, user):
+        if user:
+            self._users[flow_key] = user
+
+    def resolve(self, flow_key, user):
+        """The username for this secret: the one in the same payload if there
+        is one, else the last username seen earlier on the same flow."""
+        return user or self._users.get(flow_key)
+
+
 def secrets_in(pairs):
     """The (field, value) pairs that are secrets. Order is preserved so a
     caller reporting them keeps the order they appeared on the wire."""

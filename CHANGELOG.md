@@ -18,6 +18,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Faster scapy pcap parsing (layers resolved once per packet) and a one-time
   hint to install Wireshark for the ~10x tshark engine when on the slow path.
 
+### Fixed
+- Recovered FTP/Telnet/POP3 usernames are now attached to the cleartext-credential
+  event (the `USER` line precedes `PASS` in a separate packet), so the account
+  reaches the entity graph. Found while validating against real captures.
+
 ## [0.3.0] — 2026-09-24
 
 First public release: a local-first DFIR investigation platform that turns

@@ -57,10 +57,12 @@ None of these are crashes; they are coverage limits worth knowing.
 2. **No SMTP protocol parsing.** SMTP is treated as a generic TCP flow — no
    sender/recipient/subject extraction — unlike HTTP/DNS/TLS/FTP-credentials.
    *Recommendation:* an SMTP mapper (sender, recipients, subject, attachments).
-3. **Recovered FTP usernames are not promoted to the `user` entity field.** The
-   FTP credential *event* fires, but the username lives only in the message,
-   where HTTP Basic Auth populates `user`. So FTP usernames do not appear in the
-   entity graph. *Recommendation:* set `user` on the FTP credential event.
+3. **Recovered FTP usernames are now promoted to the `user` entity field.**
+   *(Fixed — found here.)* FTP/Telnet/POP3 send `USER` a packet before `PASS`,
+   so the parser now remembers the username per control flow and attaches it to
+   the password event; both dissection engines share the state. Re-running the
+   brute-force capture, all 30 credential events now carry the account (`bro`),
+   so the username reaches the entity graph.
 4. **Statistical anomaly volume is high on mid-size captures** (e.g. 90 anomaly
    features on the 138-event SSH capture). This is the documented IsolationForest
    behaviour — it flags a fixed fraction — and is already disabled above ~20k

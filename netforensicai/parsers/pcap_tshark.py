@@ -249,6 +249,7 @@ class _TsharkCollector:
         self.packet_count = 0
         self._flows = {}
         self._pending_requests = {}
+        self._cred_flow = credentials.CredentialFlowState()
         self._features = []
         self._meta = []
         self._anomaly_disabled = False
@@ -527,6 +528,11 @@ class _TsharkCollector:
             pairs.append(("authorization", authorization))
 
         user = credentials.identity_of(pairs)
+        # FTP/Telnet/POP3 carry USER a packet before PASS; remember the
+        # username per control flow so the password event gets it too.
+        flow_key = (common.get("src_ip"), common.get("src_port"), common.get("dst_ip"), common.get("dst_port"))
+        self._cred_flow.remember(flow_key, user)
+        user = self._cred_flow.resolve(flow_key, user)
 
         for lowered, value in credentials.secrets_in(pairs):
             protocol = credentials.protocol_for(common.get("dst_port"), common.get("protocol"))
