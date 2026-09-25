@@ -9,6 +9,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - **Investigation-team agents (foundation)** — `netforensicai/agents/`: a role
   is a mission + a scoped subset of the read-only case tools, run over the same
+  grounded loop the chat assistant uses. First two specialist roles ship:
+  **Network Forensics** and **Host/DFIR**.
   grounded loop the chat assistant uses, producing structured findings that must
   cite a tool result or be dropped. Design: `docs/design/agent-team.md`.
 - **Suricata `eve.json` parser** — detected by content (JSON Lines with a
