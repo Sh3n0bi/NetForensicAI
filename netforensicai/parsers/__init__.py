@@ -19,6 +19,7 @@ _KNOWN_PARSER_MODULES = (
     # even on a machine with Wireshark installed.
     "netforensicai.parsers.pcap_engine",
     "netforensicai.parsers.generic",
+    "netforensicai.parsers.suricata",
     "netforensicai.parsers.evtx",
 )
 

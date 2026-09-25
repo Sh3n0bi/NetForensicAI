@@ -72,8 +72,21 @@ def sha256_of_file(path):
     return digest.hexdigest()
 
 
-def infer_evidence_type(filename):
-    return EVIDENCE_TYPE_BY_EXTENSION.get(Path(filename).suffix.lower(), "unknown")
+def infer_evidence_type(filename, path=None):
+    """Evidence type for `filename`, refined by content when `path` is given.
+
+    Extension is the default signal, but a Suricata eve.json carries a plain
+    `.json` extension while needing its own parser, so a `.json` file is
+    sniffed: if it is Suricata JSON Lines it is recorded as "suricata", else
+    it stays "json". Content sniffing only runs for the ambiguous json case.
+    """
+    base_type = EVIDENCE_TYPE_BY_EXTENSION.get(Path(filename).suffix.lower(), "unknown")
+    if base_type == "json" and path is not None:
+        from netforensicai.parsers.suricata import is_suricata_eve
+
+        if is_suricata_eve(path):
+            return "suricata"
+    return base_type
 
 
 class EvidenceManager:
@@ -137,7 +150,7 @@ class EvidenceManager:
             evidence_id=evidence_id,
             case_id=case_id,
             filename=filename,
-            evidence_type=infer_evidence_type(filename),
+            evidence_type=infer_evidence_type(filename, path=dest_file),
             sha256=sha256,
             size_bytes=source_stat.st_size,
             imported_at=now,
