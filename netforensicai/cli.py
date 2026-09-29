@@ -2176,6 +2176,12 @@ def web(
         envvar="NETFORENSIC_WEB_TOKEN",
         help="Shared secret required on every request. Mandatory when --host is not loopback.",
     ),
+    allow_host: List[str] = typer.Option(
+        None,
+        "--allow-host",
+        help="Extra Host name to accept besides localhost/127.0.0.1/[::1], e.g. a trusted local "
+        "reverse proxy's name. Repeatable. Other names are refused (DNS-rebinding protection).",
+    ),
 ):
     """Launch the local web UI: browse cases, upload/analyze evidence,
     investigate entities, manage findings, run live capture, and generate
@@ -2203,7 +2209,7 @@ def web(
             "untrusted network."
         )
 
-    flask_app = create_app(cases_dir, auth_token=auth_token)
+    flask_app = create_app(cases_dir, auth_token=auth_token, allowed_hosts=allow_host or None)
     scheme = "http"
     entry = f"{scheme}://{host}:{port}"
     if auth_token and not is_loopback:

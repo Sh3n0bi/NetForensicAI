@@ -3,7 +3,8 @@ findings, reports, and live capture - a thin visualization layer over the
 same core modules the CLI uses, not a second implementation of any of it.
 
 Local-first and single-user by design: binds to 127.0.0.1 by default,
-has no authentication, and Flask's debug/reloader mode is never enabled
+has no authentication (but only answers loopback Host names - see the
+DNS-rebinding paragraph below), and Flask's debug/reloader mode is never enabled
 here (it exposes an interactive in-browser debugger capable of arbitrary
 code execution - a serious risk if this process were ever reachable from
 a network). Only pass a different --host if you understand and accept
@@ -21,6 +22,18 @@ custom header forces the browser into a CORS preflight; since this app
 never sends Access-Control-Allow-Origin, the preflight fails and the
 browser never sends the real request. The frontend (app.js) sets this
 header on every POST it makes.
+
+That header check alone does NOT survive DNS rebinding. A malicious page
+at attacker.example can re-point its own DNS name at 127.0.0.1 after
+loading; the browser then treats this app as same-origin with the page,
+so no preflight happens, the custom header is sent freely, and responses
+are readable - full read/write access to every case. What the browser
+cannot change is the Host header: it still says attacker.example. So when
+the app runs without a token (the loopback default), every request must
+name a loopback host (see LOOPBACK_HOSTS); anything else is refused
+before any route runs. With a token, rebinding is already defeated - the
+attacker's origin never holds the credential - so the check is only
+applied there if hosts are allowed explicitly.
 
 Write surface is deliberately narrow. Evidence upload and analyze mirror
 `netforensic evidence add` / `analyze` exactly (same EvidenceManager /
@@ -89,6 +102,27 @@ AUTH_HEADER = "X-Auth-Token"
 AUTH_COOKIE = "nf_auth"
 AUTH_QUERY_PARAM = "token"
 
+# Host names always accepted by the DNS-rebinding guard (see the module
+# docstring). Compared against the Host header with port and IPv6 brackets
+# stripped. Deliberately exact: "localhost." or "127.0.0.1.nip.io" are not
+# loopback as far as this check is concerned.
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _hostname(host):
+    """'Host' header value -> bare lowercase hostname, port removed.
+
+    Handles "name", "name:port", "[v6]" and "[v6]:port". A bare IPv6
+    address without brackets is not a valid Host header, so it is returned
+    as-is and simply fails to match.
+    """
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    if host.count(":") == 1:
+        return host.split(":", 1)[0]
+    return host
+
 
 class ApiError(Exception):
     def __init__(self, message, status_code=400):
@@ -97,20 +131,32 @@ class ApiError(Exception):
         self.status_code = status_code
 
 
-def create_app(cases_dir="cases", auth_token=None):
+def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
     """Build the Flask app.
 
     auth_token: when set, every request must carry this secret (via the
     X-Auth-Token header, the nf_auth cookie, or a one-time `?token=` query
     parameter). This is what makes a deliberately non-loopback deployment
     defensible - the CLI refuses to bind off-loopback without one. When it
-    is None (the default) the app stays exactly as it was: unauthenticated,
-    for local single-user use on 127.0.0.1.
+    is None (the default) the app is unauthenticated, for local single-user
+    use on 127.0.0.1, and only answers requests addressed to a loopback
+    host name (the DNS-rebinding guard - see the module docstring).
+
+    allowed_hosts: extra Host names to accept on top of LOOPBACK_HOSTS, e.g.
+    the name a local reverse proxy forwards. Passing it also turns the Host
+    check on when auth_token is set.
     """
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
     auth_token = auth_token or None
     case_manager = CaseManager(cases_dir)
+
+    if allowed_hosts:
+        permitted_hosts = LOOPBACK_HOSTS | {_hostname(h) for h in allowed_hosts}
+    elif auth_token:
+        permitted_hosts = None
+    else:
+        permitted_hosts = LOOPBACK_HOSTS
 
     def _request_is_authenticated():
         if not auth_token:
@@ -135,6 +181,18 @@ def create_app(cases_dir="cases", auth_token=None):
     @app.errorhandler(ApiError)
     def handle_api_error(err):
         return jsonify({"error": err.message}), err.status_code
+
+    @app.before_request
+    def _require_permitted_host():
+        # Registered first so it runs before auth and CSRF: a rebound
+        # request is refused before it can learn anything about either.
+        if permitted_hosts is not None and _hostname(request.host) not in permitted_hosts:
+            raise ApiError(
+                f"Refused request for host {request.host!r}: this UI only answers requests "
+                "addressed to localhost/127.0.0.1/[::1] (DNS-rebinding protection). Open it "
+                "via http://127.0.0.1:<port>/, or pass --allow-host for a trusted proxy name.",
+                403,
+            )
 
     @app.before_request
     def _require_auth_token():

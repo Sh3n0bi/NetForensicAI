@@ -97,7 +97,7 @@ netforensic report generate --case INC-0001 --format markdown|json|html [--outpu
 netforensic capture --list-interfaces
 netforensic capture --case INC-0001 --interface "\Device\NPF_{...}" --filter "tcp port 443" --rotate-seconds 30
 netforensic capture --case INC-0001 --engine dumpcap|scapy   # default: auto
-netforensic web --cases-dir cases [--host 127.0.0.1] [--port 8000]
+netforensic web --cases-dir cases [--host 127.0.0.1] [--port 8000] [--allow-host NAME]
 netforensic scan ./capture.pcap [--vt-api KEY] [--save-files] [--no-dashboard]   # legacy standalone
 ```
 
