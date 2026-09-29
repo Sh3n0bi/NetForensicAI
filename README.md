@@ -264,7 +264,7 @@ Each of these is covered properly in [the capability reference](docs/capabilitie
 | **Streams** | Conversations reassembled by Wireshark, ranked by volume. |
 | **Triage** | The first questions worth asking an unfamiliar capture: protocols, flags, credentials, secrets, recoverable files. |
 | **Entities & correlation** | Deterministic IDs join the same real-world thing across evidence sources. Links are `related` or `possible_relationship`, never "caused". |
-| **Detections** | Eight offline rules — no AI, no network — run automatically on every `analyze`. |
+| **Detections** | Offline rules — no AI, no network — for web scans, network intrusions and Windows hosts (brute force, Kerberoasting, LSASS dumps, LOLBins, log clearing, ransomware prep…), run automatically on every `analyze`. |
 | **ATT&CK** | Deterministic, evidence-cited technique suggestions with an investigator-settable status. |
 | **Assistant** | Retrieves evidence through read-only tools; every claim is checked against what it retrieved, and an answer citing anything else is refused. |
 | **Findings & reports** | Investigator-owned findings citing evidence/event pairs; Markdown, JSON and HTML output. |
