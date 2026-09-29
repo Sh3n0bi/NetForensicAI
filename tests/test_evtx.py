@@ -183,6 +183,30 @@ def test_parser_reads_records_via_mocked_evtx_library(tmp_path):
     assert len(events) == len({e.event_id for e in events})
 
 
+def test_unrenderable_record_is_skipped_not_fatal(tmp_path, caplog):
+    # Regression: a stock Windows 11 System log contains records python-evtx
+    # cannot render (KeyError on substitution type 132). One such record
+    # used to abort the whole file, so the evidence produced zero events.
+    fake_path = tmp_path / "System.evtx"
+    fake_path.write_bytes(b"mocked")
+
+    good = MagicMock()
+    good.xml.return_value = GENERIC_EVENT_XML
+    bad = MagicMock()
+    bad.xml.side_effect = KeyError(132)
+
+    mock_log = MagicMock()
+    mock_log.records.return_value = [good, bad, good]
+    mock_log.__enter__.return_value = mock_log
+    mock_log.__exit__.return_value = False
+
+    with patch("Evtx.Evtx.Evtx", return_value=mock_log), caplog.at_level("WARNING"):
+        events = list(EvtxParser().iter_parse(fake_path, evidence_id="EV-0001"))
+
+    assert len(events) == 2
+    assert "Skipped 1 record(s)" in caplog.text
+
+
 def test_parser_is_registered_in_base_registry():
     from netforensicai.parsers import base
 
