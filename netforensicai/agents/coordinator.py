@@ -124,6 +124,24 @@ def merge_findings(role_results):
     return merged
 
 
+def scope_roles(roles, evidence_types):
+    """Split `roles` into (to_run, skipped) by the evidence present in a case.
+
+    A role runs when it declares no evidence_types or shares at least one with
+    the case. Each skipped role becomes a RoleResult whose note says why, so the
+    output shows it was considered rather than silently missing.
+    """
+    present = set(evidence_types)
+    to_run, skipped = [], []
+    for role in roles:
+        if not role.evidence_types or present & set(role.evidence_types):
+            to_run.append(role)
+        else:
+            wanted = "/".join(role.evidence_types)
+            skipped.append(RoleResult(role.name, role.slug, note=f"skipped: no {wanted} evidence in this case"))
+    return to_run, skipped
+
+
 def investigate(
     case_dir,
     roles=None,
@@ -132,19 +150,31 @@ def investigate(
     model=None,
     base_url=None,
     call_for=None,
+    evidence_types=None,
+    progress=None,
 ):
     """Run `roles` (default: all registered roles) over `case_dir` and return a
     TeamResult with each role's findings and the merged, ranked set.
+
+    `evidence_types`, when given, is the set of evidence types in the case;
+    roles with nothing to read are skipped (see scope_roles) instead of spending
+    model calls. `progress(role)` is called before each role runs, so a caller
+    can show which specialist is working - a role can take a while.
 
     `call_for(role) -> call` overrides the provider call per role, so the team
     can be tested against scripted model behaviour. In production it is None and
     each role uses the shared provider settings.
     """
     roles = roles if roles is not None else all_roles()
+    skipped = []
+    if evidence_types is not None:
+        roles, skipped = scope_roles(roles, evidence_types)
     role_results = []
     for role in roles:
+        if progress is not None:
+            progress(role)
         call = call_for(role) if call_for is not None else None
         role_results.append(
             run_role(role, case_dir, provider=provider, api_key=api_key, model=model, base_url=base_url, call=call)
         )
-    return TeamResult(role_results=role_results, findings=merge_findings(role_results))
+    return TeamResult(role_results=role_results + skipped, findings=merge_findings(role_results))

@@ -53,13 +53,18 @@ class AgentFinding(BaseModel):
 @dataclass
 class Role:
     """A specialist analyst: a name, the mission that scopes its prompt, the
-    tool names it may call (a subset of TOOL_SPECS), and a step budget."""
+    tool names it may call (a subset of TOOL_SPECS), a step budget, and the
+    evidence types it can say anything about (empty = relevant to any case).
+    The coordinator uses evidence_types to skip a role whose evidence is not
+    in the case - a Host analyst on a pcap-only case costs model calls and
+    can only report that it found nothing."""
 
     name: str
     slug: str
     mission: str
     tools: tuple
     max_steps: int = DEFAULT_ROLE_STEPS
+    evidence_types: tuple = ()
 
     def __post_init__(self):
         unknown = [t for t in self.tools if t not in TOOL_SPECS]
