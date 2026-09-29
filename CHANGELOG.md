@@ -16,8 +16,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   /api/cases/<id>/team`, `POST /api/cases/<id>/team/findings/<n>/accept`.
 - **Team runs are recorded in the chain of custody** (`ai.team_run`), from the CLI
   and the web UI, as `investigate --ai` already was.
+- **Chat requests are recorded in the chain of custody** (`ai.chat_requested`): the
+  provider, model, question, tools the assistant called, what it cited, and whether
+  it answered, was refused by the citation check, or failed. CLI and web alike.
 
 ### Fixed
+- **Not every AI request reached the chain of custody**, although the docs said it
+  did: `chat` (CLI and web) and the web UI's AI-hypothesis button sent case content
+  to a provider without an audit entry. Both now record one, including refusals and
+  failures; the web hypothesis entry matches `investigate --ai`'s exactly.
 - **The saved "Default AI provider" (and model / Ollama URL) was ignored.** Every
   AI path - `chat`, `team`, `investigate --ai` and the web chat and hypothesis
   routes - defaulted to anthropic regardless of Settings. They now use an explicit

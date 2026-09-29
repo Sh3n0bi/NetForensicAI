@@ -774,7 +774,7 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
         if not entity_type or not value:
             raise ApiError("entity_type and value are required")
 
-        from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
+        from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis, record_hypothesis_request
 
         with locked_store(_case_dir(case)) as store:
             result = investigate_entity(store, entity_type, value)
@@ -783,6 +783,19 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
             events = result.events
 
         provider, model, base_url = _ai_settings(payload)
+
+        def _record(outcome, **extra):
+            record_hypothesis_request(
+                _case_dir(case),
+                provider=provider,
+                model=model,
+                entity_type=entity_type,
+                value=value,
+                events_sent=len(events),
+                outcome=outcome,
+                **extra,
+            )
+
         try:
             hypothesis = generate_hypothesis(
                 events,
@@ -792,7 +805,14 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
                 base_url=base_url,
             )
         except AssistantError as e:
+            _record("failed", error=str(e))
             raise ApiError(str(e), 502)
+        _record(
+            "returned",
+            evidence_sufficient=hypothesis.evidence_sufficient,
+            confidence=hypothesis.confidence,
+            cited_events=[c.event_id for c in hypothesis.evidence],
+        )
         return jsonify(hypothesis.model_dump())
 
     @app.route("/api/cases/<case_id>/chat", methods=["POST"])
@@ -826,7 +846,9 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
                 max_steps=int(payload.get("max_steps") or chat_module.MAX_STEPS),
             )
         except chat_module.ChatError as e:
+            chat_module.record_chat_request(_case_dir(case), question, provider, model, error=e)
             raise ApiError(str(e), 502)
+        chat_module.record_chat_request(_case_dir(case), question, provider, model, result=result)
         return jsonify(result.to_dict())
 
     # --- investigation team ---

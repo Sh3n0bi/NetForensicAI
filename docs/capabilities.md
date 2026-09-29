@@ -318,7 +318,7 @@ Every property below is enforced **in code**, identically regardless of which pr
 - Its response is a fixed schema, not free text: `evidence_sufficient`, `claim` (phrased as a possibility), `observed_evidence` (fact, kept separate from interpretation), `confidence`, `alternative_explanation`, `recommended_validation`, `evidence` (the exact evidence/event pairs cited).
 - **Every citation is checked against the events actually sent.** A hypothesis citing anything not in that set is rejected outright and never shown. This is code, not a prompt instruction.
 - **It never writes a finding.** Turning a hypothesis into one is always an explicit investigator action.
-- Every request and its outcome — including failures — is recorded in the chain of custody.
+- Every request and its outcome — including refusals and failures — is recorded in the chain of custody: `ai.hypothesis_requested` (`investigate --ai` and the web hypothesis button: provider, model, entity, events sent, confidence, cited events), `ai.chat_requested` (`chat` and web *Ask*: provider, model, the question, tools called, citations, answered / refused / failed) and `ai.team_run`. API keys are never recorded.
 
 Verified against a live API, not only mocks: a real Gemini response returned citations that passed the contract check, with all safety properties intact.
 
