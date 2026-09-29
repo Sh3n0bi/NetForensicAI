@@ -285,7 +285,7 @@ Stated plainly, because a forensics tool that hides its weaknesses is worse than
 - **HTTP request/response pairing is FIFO per flow.** Correct for ordinary keep-alive traffic; genuinely pipelined requests could mis-pair, so a response's URL is a reference rather than a certainty.
 - **Correlation memory is reduced but not constant** — it still holds one entity-link map proportional to the case.
 - **ATT&CK coverage is deliberately small** (four techniques). Each was chosen because the signal is specific, not to pad a matrix.
-- **EVTX covers five Sysmon event types richly**, everything else generically.
+- **EVTX maps five Sysmon event types and ~25 Security/System/PowerShell event IDs** (logons, process creation, account/group changes, Kerberos/NTLM, service installs, log clearing, script blocks); everything else is kept generically. Large EVTX files parse slowly (python-evtx is pure Python, a few hundred records/s).
 - **The custody hash chain** detects corruption and casual editing, not an attacker who owns the machine.
 - **Live capture needs Npcap/libpcap and elevated privileges**, which this tool does not install or grant.
 - **Ingest is the scaling limit, not dissection.** tshark reads a 1M-packet capture in 46 seconds; putting those events and their entity links into the store takes about fourteen minutes, and throughput degrades with case size (4,497 events/s at 100k against 1,907/s at 1M) because every entity-link insert probes a growing index. For very large captures the workflow is to **search and slice first, then ingest the slice** — search and `wireshark slice` read the capture file and scale to gigabytes.

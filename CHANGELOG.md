@@ -17,6 +17,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deployments (including the Docker image) are unaffected.
 
 ### Added
+- **Windows Security / System / PowerShell EVTX mapping** (`parsers/windows_events.py`).
+  Previously only five Sysmon event IDs were understood and a Security log arrived
+  as opaque `windows_event:*` records. Now ~25 event IDs map to named event types
+  (`logon_success`, `logon_failure`, `process_start`, `service_installed`,
+  `audit_log_cleared`, `kerberos_service_ticket`, `group_member_added`, …) with the
+  account, source IP/port (IPv4-mapped IPv6 unwrapped so it joins with pcap IPs),
+  process fields and a readable message (logon type, failure reason, Kerberos
+  encryption type). `-` placeholders never become entities. `<UserData>` records
+  (1102/104) are read. EVTX ingestion now streams instead of building a list.
+
 - **CI coverage gate** — a `coverage` job runs the full suite with tshark and all
   extras and fails under 85% line coverage (baseline ~89%), so coverage can't
   silently erode. `RELEASING.md` documents the PyPI/Docker release process.
@@ -49,6 +59,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hint to install Wireshark for the ~10x tshark engine when on the slow path.
 
 ### Fixed
+- **One unreadable EVTX record no longer discards the whole log.** python-evtx
+  cannot render some record types written by current Windows (e.g. substitution
+  type 132 in a stock Windows 11 System log); that used to fail the entire file,
+  so the evidence produced zero events. Such records are now skipped and counted
+  in a warning. On a real 20 MB System log: 0 → 37,601 events (636 skipped).
 - Recovered FTP/Telnet/POP3 usernames are now attached to the cleartext-credential
   event (the `USER` line precedes `PASS` in a separate packet), so the account
   reaches the entity graph. Found while validating against real captures.
