@@ -35,6 +35,13 @@ netforensic timeline show  --case INC-0001 [--user ...] [--ip ...] [--type ...] 
 netforensic detections list --case INC-0001 [--severity high]
 ```
 
+**Demo** — a fabricated incident, end to end, in one command
+```bash
+netforensic demo [--cases-dir cases] [--open] [--port 8000]
+```
+
+Builds the synthetic capture (`netforensicai/demo.py`), creates a new case for it, analyzes it and prints the story. `--open` then starts the web UI and opens the case's story. Needs the `pcap` extra.
+
 **The story** — what happened, rather than how many objects there are
 ```bash
 netforensic story --case INC-0001

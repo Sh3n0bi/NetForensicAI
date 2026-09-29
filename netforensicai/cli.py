@@ -1689,6 +1689,87 @@ def story_cmd(
     typer.echo(narrative_module.render_text(narrative))
 
 
+DEMO_CASE_NAME = "Demo incident (synthetic)"
+
+
+@app.command("demo")
+def demo_cmd(
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+    open_ui: bool = typer.Option(False, "--open", help="Then start the web UI and open the case in a browser"),
+    port: int = typer.Option(8000, "--port", help="Port for --open"),
+):
+    """See the whole tool work in one step, on a fabricated incident.
+
+    Builds a synthetic capture (a dropper download, a cleartext password
+    reused on FTP, a stolen private key, an upload, a 30-second beacon),
+    creates a case for it, analyzes it and prints the story. Every address
+    and byte is made up - nothing is captured and no host is contacted.
+    """
+    import getpass
+    import tempfile
+    import warnings
+
+    try:
+        # scapy's TLS layer imports a deprecated cryptography API at load
+        # time; the warning is scapy's to fix and means nothing to someone
+        # running a demo, so it is silenced here and only here.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*Diffie-Hellman.*")
+            from netforensicai import demo
+    except ImportError:
+        typer.echo(
+            "Error: the demo builds a packet capture, which needs scapy. Install it with:\n"
+            "  pip install 'netforensicai[pcap]'",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    from netforensicai.core.case import CaseManager
+    from netforensicai.core.evidence import EvidenceManager
+
+    case_manager = CaseManager(cases_dir)
+    case = case_manager.create(
+        name=DEMO_CASE_NAME,
+        description="Fabricated by `netforensic demo` - safe to delete.",
+        investigator=getpass.getuser(),
+    )
+    case_dir = Path(cases_dir) / case.case_id
+
+    # The evidence store copies the file in and hashes the copy, so the
+    # generated capture only has to live long enough to be added.
+    with tempfile.TemporaryDirectory() as scratch:
+        capture = Path(scratch) / "demo-incident.pcap"
+        packets = demo.write_capture(capture)
+        evidence = EvidenceManager(case_dir).add(capture, case_id=case.case_id)
+    case_manager.register_evidence(case.case_id, evidence.evidence_id)
+    typer.echo(f"Created {case.case_id} with a synthetic {packets}-packet capture ({evidence.evidence_id}).\n")
+
+    analyze_case(case_id=case.case_id, engine=None, cases_dir=cases_dir)
+    typer.echo("\n" + "-" * 72 + "\n")
+    story_cmd(case_id=case.case_id, cases_dir=cases_dir)
+
+    if not open_ui:
+        where = "" if cases_dir == DEFAULT_CASES_DIR else f" --cases-dir {cases_dir}"
+        typer.echo("\nExplore it:")
+        typer.echo(f"  netforensic detections list --case {case.case_id}{where}")
+        typer.echo(f"  netforensic timeline show --case {case.case_id}{where}")
+        typer.echo(f"  netforensic web{where}            # then open the case in your browser")
+        typer.echo(f"  netforensic case delete --case {case.case_id}{where}   # when you are done")
+        return
+
+    from netforensicai.web.app import create_app
+
+    url = f"http://127.0.0.1:{port}/#/case/{case.case_id}/story"
+    typer.echo(f"\nOpening {url} (Ctrl+C to stop)")
+    typer.launch(url)
+    create_app(cases_dir).run(host="127.0.0.1", port=port, debug=False, threaded=False)
+
+
 @app.command("chat")
 def chat_cmd(
     case_id: str = typer.Option(..., "--case", help="Case ID to ask about"),

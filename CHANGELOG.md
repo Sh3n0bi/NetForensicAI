@@ -17,6 +17,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deployments (including the Docker image) are unaffected.
 
 ### Added
+- **`netforensic demo`** — builds the synthetic incident capture, creates a case,
+  analyzes it and prints the story in one command; `--open` then opens it in the web
+  UI. The generator moved into the package (`netforensicai/demo.py`) so this works
+  from a PyPI install; `samples/generate_incident.py` remains as a thin wrapper.
+- **README screenshots** of the web UI (story, overview, detections, timeline),
+  captured from the demo case. `samples/capture_screenshots.py` regenerates them.
 - **`netforensic team`** — runs the AI investigation team over a case: the network and
   host analysts investigate with scoped read-only tools, their evidence-cited findings
   are merged and ranked, and unciteable findings are dropped. Roles with no evidence in
