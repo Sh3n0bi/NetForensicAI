@@ -17,6 +17,23 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CASES_DIR = "cases"
 
+
+def _ai_settings(provider, model, base_url):
+    """Resolve the AI provider, model and Ollama URL for a command.
+
+    An explicit flag wins; otherwise the preferences saved in the web UI's
+    Settings (core/config.py) apply, then the built-in defaults. Without
+    this, the saved "Default AI provider" was ignored everywhere and every
+    command silently used anthropic.
+    """
+    from netforensicai.core import config
+
+    return (
+        provider or config.get_plain("ai_provider"),
+        model or config.get_plain("ai_model") or None,
+        base_url or config.get_plain("ollama_base_url") or None,
+    )
+
 # Mirrors core.search / core.streams. Duplicated as literals because a
 # Typer option default is evaluated at import time, and importing those
 # modules here would make every `netforensic --help` pay for them.
@@ -679,9 +696,9 @@ def investigate(
         False, "--ai", help="Ask the optional AI assistant for one hedged hypothesis about this entity's events"
     ),
     ai_provider: str = typer.Option(
-        "anthropic",
+        None,
         "--ai-provider",
-        help="AI provider for --ai: anthropic, openai, ollama, or gemini",
+        help="AI provider for --ai: anthropic, openai, ollama, or gemini (default: your saved Settings, else anthropic)",
     ),
     api_key: str = typer.Option(
         None,
@@ -793,6 +810,8 @@ def investigate(
             typer.echo("\nAI Investigation Hypothesis (optional - requires investigator review):")
             from netforensicai.core import audit
             from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
+
+            ai_provider, ai_model, ollama_url = _ai_settings(ai_provider, ai_model, ollama_url)
 
             # An AI hypothesis sends case events to a third party and may
             # shape what the investigator looks at next, so both the request
@@ -1774,7 +1793,9 @@ def demo_cmd(
 def chat_cmd(
     case_id: str = typer.Option(..., "--case", help="Case ID to ask about"),
     question: str = typer.Argument(None, help="Your question (omit for an interactive session)"),
-    provider: str = typer.Option("anthropic", "--ai-provider", help="anthropic, openai, ollama, or gemini"),
+    provider: str = typer.Option(
+        None, "--ai-provider", help="anthropic, openai, ollama, or gemini (default: your saved Settings, else anthropic)"
+    ),
     ai_model: str = typer.Option(None, "--model", help="Override the provider's default model"),
     api_key: str = typer.Option(None, "--api-key", help="API key (falls back to env var, then saved config)"),
     base_url: str = typer.Option(None, "--ollama-url", help="Ollama base URL"),
@@ -1809,6 +1830,7 @@ def chat_cmd(
         raise typer.Exit(code=1)
 
     case_dir = Path(cases_dir) / case.case_id
+    provider, ai_model, base_url = _ai_settings(provider, ai_model, base_url)
 
     def answer_one(text):
         try:
@@ -1859,11 +1881,6 @@ def chat_cmd(
         answer_one(text)
 
 
-# AgentFinding severities -> the investigator Finding scale. "Info" has no
-# equivalent there; Low is the closest that still keeps it in view.
-_TEAM_SEVERITY_TO_FINDING = {"high": "High", "medium": "Medium", "low": "Low", "info": "Low"}
-
-
 @app.command("team")
 def team_cmd(
     case_id: str = typer.Option(..., "--case", help="Case ID to investigate"),
@@ -1872,7 +1889,9 @@ def team_cmd(
         "--roles",
         help="Comma-separated roles to run, e.g. network,host (default: every role whose evidence is in the case)",
     ),
-    provider: str = typer.Option("anthropic", "--ai-provider", help="anthropic, openai, ollama, or gemini"),
+    provider: str = typer.Option(
+        None, "--ai-provider", help="anthropic, openai, ollama, or gemini (default: your saved Settings, else anthropic)"
+    ),
     ai_model: str = typer.Option(None, "--model", help="Override the provider's default model"),
     api_key: str = typer.Option(None, "--api-key", help="API key (falls back to env var, then saved config)"),
     base_url: str = typer.Option(None, "--ollama-url", help="Ollama base URL"),
@@ -1909,9 +1928,10 @@ def team_cmd(
     import json
 
     from netforensicai.agents import investigate, resolve_roles
+    from netforensicai.agents.records import record_team_run, save_merged_finding
     from netforensicai.core.case import CaseError, CaseManager
     from netforensicai.core.evidence import EvidenceManager
-    from netforensicai.core.finding import FindingError, FindingManager
+    from netforensicai.core.finding import FindingError
 
     case_manager = CaseManager(cases_dir)
     try:
@@ -1920,6 +1940,7 @@ def team_cmd(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1)
     case_dir = Path(cases_dir) / case.case_id
+    provider, ai_model, base_url = _ai_settings(provider, ai_model, base_url)
 
     slugs = [s.strip() for s in roles.split(",") if s.strip()] if roles else None
     try:
@@ -1958,36 +1979,21 @@ def team_cmd(
 
     ran = [r for r in result.role_results if not (r.note or "").startswith("skipped")]
     failed = [r for r in ran if (r.note or "").startswith("provider failed")]
+    if ran:
+        # Case content went to a provider: that belongs in the custody record.
+        record_team_run(
+            case_dir, result, provider, ai_model, error="every role failed" if len(failed) == len(ran) else None
+        )
 
     saved = []
     if save_findings and result.findings:
-        finding_manager = FindingManager(case_dir)
         author = investigator or getpass.getuser()
         for merged in result.findings:
-            event_refs = [
-                {"evidence_id": c.evidence_id, "event_id": c.reference} for c in merged.citations if c.kind == "event"
-            ]
-            other = [f"{c.kind} {c.reference} ({c.evidence_id})" for c in merged.citations if c.kind != "event"]
-            assessment = (
-                f"{merged.assessment}\n\n"
-                f"Proposed by the investigation team ({', '.join(merged.reported_by)}; confidence "
-                f"{merged.confidence}). Review before confirming."
-                + (f"\nAlso cites: {'; '.join(other)}." if other else "")
-            )
             try:
-                finding = finding_manager.create(
-                    case_id=case.case_id,
-                    title=merged.title,
-                    created_by=author,
-                    severity=_TEAM_SEVERITY_TO_FINDING.get(str(merged.severity).lower(), "Medium"),
-                    status="Open",
-                    assessment=assessment,
-                    evidence_refs=event_refs,
-                )
+                finding = save_merged_finding(case_dir, case.case_id, case_manager, merged, author)
             except FindingError as e:
                 typer.echo(f"Warning: could not save '{merged.title}': {e}", err=True)
                 continue
-            case_manager.register_finding(case.case_id, finding.finding_id)
             saved.append(finding.finding_id)
 
     if as_json:

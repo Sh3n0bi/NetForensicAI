@@ -749,3 +749,17 @@ button.lg { padding: 10px 20px; font-size: 14px; border-radius: var(--r-md); }
 .field-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 0 12px; }
 @media (max-width: 620px) { .field-pair { grid-template-columns: 1fr; } }
 .fp-open { font-weight: 600; margin-top: 4px; }
+
+/* --- Investigation team --- */
+.team-controls { display: flex; flex-direction: column; gap: 10px; }
+.team-roles { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.team-role { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.team-role-states { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+.team-role-state { display: flex; gap: 12px; font-size: 13px; color: var(--text-dim); }
+.team-role-state .mono { min-width: 64px; }
+.team-role-state.active { color: var(--accent); }
+.team-role-state.done { color: var(--text); }
+.team-finding { margin-bottom: 10px; }
+.team-finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.team-assessment { color: var(--text-dim); margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.team-results h2 { margin-top: 18px; }

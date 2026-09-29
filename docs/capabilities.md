@@ -265,6 +265,9 @@ netforensic team --case INC-0001 --json
 - **Merged on evidence, not wording.** Findings from different roles that cite the same event become one finding that names every role that reported it, ranked by severity and then by how many roles corroborate it.
 - **Proposals, not verdicts.** Nothing is written unless you pass `--save-findings`, and even then each is recorded as an **Open** finding carrying its event citations and "Proposed by the investigation team", for you to confirm or reject.
 - **Bounded.** Each role gets a tool-call budget (`--max-steps`, default 6). Roles run one after another, so cost and logs are predictable.
+- **Recorded.** Case content goes to the provider, so every run is written to the chain of custody (`ai.team_run`: provider, model, roles run and skipped, findings, outcome), as `investigate --ai` is.
+
+**In the web UI**, *Investigation team* (under Assistant) runs the same team in the background: pick the analysts, provider and budget, watch each analyst's progress, and **Accept as finding** on the results you agree with. Each acceptance creates an Open finding; a re-run keeps findings you already accepted marked (matched on the evidence they cite, not their wording), so the same evidence is never one click from a duplicate. Model-written text is rendered as text, never as HTML.
 
 The loop is JSON the model returns rather than four native tool-calling integrations. Each provider expresses tool use differently, so native support would put the safety-critical path in four places and leave **Ollama** — the only provider that keeps an investigation entirely off the network — worst supported. The transport is not what makes this safe; the ledger is.
 
@@ -282,7 +285,7 @@ The rail groups destinations by the stage of an investigation rather than listin
 | **Dig** | Search · Streams · Triage |
 | **Analysis** | Timeline · Entities · Detections · ATT&CK |
 | **Conclude** | Findings · Reports · Chain of custody |
-| **Assistant** | Ask (cited) |
+| **Assistant** | Ask (cited) · Investigation team |
 
 The **Overview is a dashboard**: KPI tiles, an analysis runner reporting *in progress / complete / completed-with-errors* (per-evidence failures listed individually — a partially-failed analyze is not a success), an event-density chart, top entities, a one-hop entity graph, recent detections, carved files, triage matches, an ask box, and the custody trail with its verification state. Charts are inline SVG: no build step, no CDN, works offline.
 

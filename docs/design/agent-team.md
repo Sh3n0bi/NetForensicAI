@@ -1,8 +1,8 @@
 # Design: NetForensicAI Investigation Team (multi-agent roles)
 
 **Status:** Approved. Phases 1–3 landed (foundation, the Network + Host roles, and the coordinator that merges/ranks their findings),
-plus the CLI half of phase 5 (`netforensic team`, with evidence-based role scoping from §6.1). Phase 4 (remaining roles), the web
-panel and the phase 6 eval harness follow. Defaults chosen: provider-agnostic (default `anthropic`, works
+plus phase 5 (`netforensic team` and the web UI *Investigation team* panel with one-click acceptance, with evidence-based role
+scoping from §6.1). Phase 4 (remaining roles) and the phase 6 eval harness follow. Defaults chosen: provider-agnostic (default `anthropic`, works
 on local Ollama); findings are *proposed* for one-click acceptance, never
 auto-written; CLI entry point will be `netforensic team`.
 **Author:** drafted with Claude, 2026-09-25.

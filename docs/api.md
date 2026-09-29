@@ -21,11 +21,15 @@ State-changing requests need an `X-Requested-With: NetForensicAI` header. That i
 | `GET /api/cases/<id>/streams` · `/streams/<n>` | list conversations, reassemble one |
 | `GET /api/cases/<id>/triage` | protocols, candidates, files, conversations |
 | `POST /api/cases/<id>/chat` | ask a question; refusals return 502 |
+| `GET · POST /api/cases/<id>/team` | investigation team: status (live run + latest result) / start a run in the background (`202`; `409` if one is running). Body: `provider`, `model`, `api_key`, `base_url`, `roles`, `max_steps` |
+| `POST /api/cases/<id>/team/findings/<n>/accept` | record team finding `n` as an **Open** finding (`201`; `409` if already accepted, a run is in progress, or a cited event no longer exists) |
 | `GET /api/wireshark/status` · `POST /api/wireshark/check-filter` | tooling and filter validation |
 | `POST /api/cases/<id>/evidence/<eid>/slice` | carve a display-filter slice as new evidence |
 | `GET /api/cases/<id>/capture/status` · `POST .../start` · `.../stop` | live capture |
 
 `search`, `streams`, `triage` and `artifacts` are **read-only questions asked of a capture file**: none writes to the store, creates a finding, or records an audit entry — noting that somebody *looked* at evidence is not what a chain of custody is for. `triage` deliberately does not extract files, because a GET a dashboard polls must not write to disk.
+
+AI routes (`chat`, `ai-hypothesis`, `team`) use the request's `provider` / `model` / `base_url` when given, otherwise the **Settings** saved in the UI, otherwise the built-in defaults. A team run is recorded in the chain of custody (`ai.team_run`); its latest result is kept in `cases/<id>/team/latest.json` (never the API key).
 
 The entities route takes `?sort=events&limit=N`, applied after sorting so `limit` means "the top N".
 

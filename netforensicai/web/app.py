@@ -124,6 +124,20 @@ def _hostname(host):
     return host
 
 
+def _ai_settings(payload):
+    """Provider, model and Ollama URL for an AI request: what the request
+    names, else the investigator's saved Settings, else the defaults. The
+    saved "Default AI provider" used to be ignored - every request without an
+    explicit provider silently went to anthropic."""
+    from netforensicai.core import config
+
+    return (
+        payload.get("provider") or config.get_plain("ai_provider"),
+        payload.get("model") or config.get_plain("ai_model") or None,
+        payload.get("base_url") or config.get_plain("ollama_base_url") or None,
+    )
+
+
 class ApiError(Exception):
     def __init__(self, message, status_code=400):
         super().__init__(message)
@@ -768,13 +782,14 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
                 raise ApiError(f"No evidence of {entity_type} '{value}' found in this case", 404)
             events = result.events
 
+        provider, model, base_url = _ai_settings(payload)
         try:
             hypothesis = generate_hypothesis(
                 events,
-                provider=payload.get("provider") or "anthropic",
+                provider=provider,
                 api_key=payload.get("api_key"),
-                model=payload.get("model") or None,
-                base_url=payload.get("base_url") or None,
+                model=model,
+                base_url=base_url,
             )
         except AssistantError as e:
             raise ApiError(str(e), 502)
@@ -799,19 +814,124 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
 
         from netforensicai.core import chat as chat_module
 
+        provider, model, base_url = _ai_settings(payload)
         try:
             result = chat_module.ask(
                 question,
                 _case_dir(case),
-                provider=payload.get("provider") or "anthropic",
+                provider=provider,
                 api_key=payload.get("api_key"),
-                model=payload.get("model") or None,
-                base_url=payload.get("base_url") or None,
+                model=model,
+                base_url=base_url,
                 max_steps=int(payload.get("max_steps") or chat_module.MAX_STEPS),
             )
         except chat_module.ChatError as e:
             raise ApiError(str(e), 502)
         return jsonify(result.to_dict())
+
+    # --- investigation team ---
+    # A run takes minutes, so it goes on a background thread and the panel
+    # polls - see web/team_runs.py. Findings the team proposes are accepted
+    # one at a time by the investigator; nothing is written without that.
+
+    @app.route("/api/cases/<case_id>/team")
+    def team_status(case_id):
+        case = _load_case(case_id)
+        from netforensicai.agents import ROLES
+        from netforensicai.web import team_runs
+
+        body = team_runs.status(case.case_id, _case_dir(case))
+        body["available_roles"] = [{"slug": r.slug, "name": r.name} for r in ROLES.values()]
+        body["provider"], body["model"], _url = _ai_settings({})
+        return jsonify(body)
+
+    @app.route("/api/cases/<case_id>/team", methods=["POST"])
+    def team_start(case_id):
+        case = _load_case(case_id)
+        payload = request.get_json(force=True, silent=True) or {}
+        import dataclasses
+
+        from netforensicai.agents import ROLES, resolve_roles
+        from netforensicai.web import team_runs
+
+        requested = payload.get("roles") or None
+        if isinstance(requested, str):
+            requested = [s.strip() for s in requested.split(",") if s.strip()]
+        try:
+            roles = resolve_roles(requested)
+        except KeyError as e:
+            raise ApiError(f"Unknown role {e}. Choose from: {', '.join(ROLES)}")
+        if payload.get("max_steps") not in (None, ""):
+            try:
+                steps = int(payload["max_steps"])
+            except (TypeError, ValueError):
+                raise ApiError("max_steps must be an integer")
+            if steps < 1:
+                raise ApiError("max_steps must be at least 1")
+            roles = [dataclasses.replace(role, max_steps=steps) for role in roles]
+
+        items = EvidenceManager(_case_dir(case)).list()
+        if not items:
+            raise ApiError("This case has no evidence for the team to investigate.")
+
+        provider, model, base_url = _ai_settings(payload)
+        try:
+            run = team_runs.start_run(
+                case.case_id,
+                _case_dir(case),
+                roles=roles,
+                # An explicit role list is run as asked; the default is scoped
+                # to the evidence present, exactly as the CLI does.
+                evidence_types=None if requested else {item.evidence_type for item in items},
+                provider=provider,
+                api_key=payload.get("api_key") or None,
+                model=model,
+                base_url=base_url,
+                actor=payload.get("investigator") or "web-ui",
+            )
+        except team_runs.TeamRunError as e:
+            raise ApiError(str(e), 409)
+        return jsonify(run.snapshot()), 202
+
+    @app.route("/api/cases/<case_id>/team/findings/<int:index>/accept", methods=["POST"])
+    def team_accept(case_id, index):
+        """Record one proposed team finding as an Open investigator finding."""
+        case = _load_case(case_id)
+        payload = request.get_json(force=True, silent=True) or {}
+        from netforensicai.agents.records import save_merged_finding
+        from netforensicai.core.finding import FindingError
+        from netforensicai.web import team_runs
+
+        run = team_runs.get_run(case.case_id)
+        if run is not None and run.state == "running":
+            raise ApiError("Wait for the current team run to finish before accepting findings.", 409)
+        latest = team_runs.load_latest(_case_dir(case))
+        findings = (latest or {}).get("findings") or []
+        if not 0 <= index < len(findings):
+            raise ApiError("No such team finding - run the team again.", 404)
+        accepted = latest.setdefault("accepted", {})
+        if str(index) in accepted:
+            raise ApiError(f"Already accepted as {accepted[str(index)]}.", 409)
+
+        try:
+            with locked_store(_case_dir(case)) as store:
+                # Validate event citations against the case as it is now: the
+                # evidence may have been re-analyzed since the run.
+                for citation in findings[index].get("citations") or []:
+                    if citation.get("kind") == "event" and store.get_event(str(citation.get("reference"))) is None:
+                        raise ApiError(
+                            f"Event {citation.get('reference')} no longer exists in this case - run the team again.",
+                            409,
+                        )
+            finding = save_merged_finding(
+                _case_dir(case), case.case_id, case_manager, findings[index], payload.get("investigator") or "web-ui"
+            )
+        except FindingError as e:
+            raise ApiError(str(e))
+
+        accepted[str(index)] = finding.finding_id
+        team_runs.save_latest(_case_dir(case), latest)
+        return jsonify(finding.to_dict()), 201
 
     # --- findings ---
     # Creating/updating a finding remains an explicit, investigator-owned

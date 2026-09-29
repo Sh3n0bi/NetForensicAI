@@ -239,3 +239,22 @@ def test_case_without_evidence_is_an_error(tmp_path):
     result = _run(cases_dir, "--case", case.case_id)
     assert result.exit_code == 1
     assert "no evidence" in result.output
+
+
+def test_saved_settings_provider_is_the_default(json_case, monkeypatch):
+    # Regression: the Settings "Default AI provider" was ignored by the CLI.
+    from netforensicai.core import audit, config
+
+    cases_dir, case_id, evidence_id, events = json_case
+    config.save_settings({"ai_provider": "ollama"})
+    monkeypatch.setattr(ai_assistant, "call_model", _ScriptedModel(evidence_id, cite=lambda slug: events[1].event_id))
+
+    result = _run(cases_dir, "--case", case_id)
+
+    assert result.exit_code == 0, result.output
+    assert "provider: ollama" in result.output
+    entry = [e for e in audit.read_entries(cases_dir / case_id) if e["action"] == audit.AI_TEAM_RUN][-1]
+    assert entry["details"]["provider"] == "ollama"
+
+    explicit = _run(cases_dir, "--case", case_id, "--ai-provider", "gemini")
+    assert "provider: gemini" in explicit.output
