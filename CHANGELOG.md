@@ -7,6 +7,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`netforensic team`** — runs the AI investigation team over a case: the network and
+  host analysts investigate with scoped read-only tools, their evidence-cited findings
+  are merged and ranked, and unciteable findings are dropped. Roles with no evidence in
+  the case are skipped before any model call. `--roles`, `--max-steps`, `--json`, the
+  same provider options as `chat`, and `--save-findings` to record results as **Open**
+  findings (with their event citations) for the investigator to confirm. Exits non-zero
+  when every role fails to reach the provider.
 - **CI coverage gate** — a `coverage` job runs the full suite with tshark and all
   extras and fails under 85% line coverage (baseline ~89%), so coverage can't
   silently erode. `RELEASING.md` documents the PyPI/Docker release process.

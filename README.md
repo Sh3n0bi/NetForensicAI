@@ -267,6 +267,7 @@ Each of these is covered properly in [the capability reference](docs/capabilitie
 | **Detections** | Eight offline rules — no AI, no network — run automatically on every `analyze`. |
 | **ATT&CK** | Deterministic, evidence-cited technique suggestions with an investigator-settable status. |
 | **Assistant** | Retrieves evidence through read-only tools; every claim is checked against what it retrieved, and an answer citing anything else is refused. |
+| **Investigation team** | `netforensic team` — network and host AI analysts each investigate their own part of the evidence; their cited findings are merged and ranked, and can be saved as Open findings for review. |
 | **Findings & reports** | Investigator-owned findings citing evidence/event pairs; Markdown, JSON and HTML output. |
 | **Web UI** | A dashboard over the same core the CLI uses. No build step, no CDN, works offline. |
 | **Live capture** | Rotating windows auto-ingested through the same pipeline, detection rules included. |

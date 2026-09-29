@@ -221,6 +221,28 @@ It cannot see the evidence. It reaches it through eight read-only tools — cont
 
 Membership is an exact test on the `(kind, evidence_id, reference)` triple, not a substring search of the transcript: a looser check would accept the model quoting an identifier back out of *its own earlier reasoning*, which is the failure being guarded against. An unverifiable citation gets one correction pass naming exactly what failed; if it comes back unverifiable again the **whole answer is refused**, not shown with a caveat.
 
+### Investigation team
+
+`chat` answers one question. `team` runs **specialist analysts** over the whole case, each with its own mission and a scoped subset of the same read-only tools, and merges what they find:
+
+```bash
+netforensic team --case INC-0001                              # every role whose evidence is present
+netforensic team --case INC-0001 --roles network --ai-provider ollama
+netforensic team --case INC-0001 --save-findings              # record results as Open findings
+netforensic team --case INC-0001 --json
+```
+
+| Role | Reads | Looks for |
+|---|---|---|
+| `network` | pcap, Suricata, JSON/CSV | C2 and beaconing, rare/cheap-TLD domains, exfiltration-shaped transfers, cleartext credentials |
+| `host` | EVTX/Sysmon, JSON/CSV | Process chains, dropped files, persistence, logon bursts, credential access, lateral movement |
+
+- **Same contract as `chat`, per finding.** Each role reports structured findings (`title`, `severity`, `confidence`, `assessment`, `citations`). A finding citing anything its role's tools did not return is **dropped**, and the output says how many were.
+- **Scoped to the evidence.** A role with nothing to read (the host analyst on a pcap-only case) is skipped *before* any model call, and listed as skipped. An explicit `--roles` is run as asked.
+- **Merged on evidence, not wording.** Findings from different roles that cite the same event become one finding that names every role that reported it, ranked by severity and then by how many roles corroborate it.
+- **Proposals, not verdicts.** Nothing is written unless you pass `--save-findings`, and even then each is recorded as an **Open** finding carrying its event citations and "Proposed by the investigation team", for you to confirm or reject.
+- **Bounded.** Each role gets a tool-call budget (`--max-steps`, default 6). Roles run one after another, so cost and logs are predictable.
+
 The loop is JSON the model returns rather than four native tool-calling integrations. Each provider expresses tool use differently, so native support would put the safety-critical path in four places and leave **Ollama** — the only provider that keeps an investigation entirely off the network — worst supported. The transport is not what makes this safe; the ledger is.
 
 ## Findings & reporting
