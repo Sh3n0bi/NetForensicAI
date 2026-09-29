@@ -99,6 +99,8 @@ netforensic web --host 127.0.0.1 --port 8000
 
 **It binds to `127.0.0.1` by default, and that default is the security model.** On loopback there is no authentication — it assumes the only person who can reach the port is the person sitting at the machine.
 
+**Tokenless mode only answers requests addressed to `localhost`, `127.0.0.1` or `[::1]`.** Anything else gets a `403`. This blocks **DNS rebinding**: a malicious web page can re-point its own domain at `127.0.0.1` and then read and write the UI as if it were same-origin — but its requests still carry the attacker's name in the `Host` header. If a trusted local reverse proxy forwards a different name, allow it explicitly with `--allow-host <name>` (repeatable). With a token set, any host is accepted unless you pass `--allow-host`, because the attacker's origin never holds the token.
+
 **Binding off loopback now requires a shared token.** The CLI refuses to start on any non-loopback `--host` unless you set one:
 
 ```bash
