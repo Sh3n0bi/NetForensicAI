@@ -6,14 +6,18 @@ parsed on any platform) to read the binary chunked .evtx file format,
 then maps each record's XML into an Event.
 
 Windows Event Log records vary hugely by provider - there is no single
-schema. Two tiers of mapping:
+schema. Three tiers of mapping:
   - Sysmon (Microsoft-Windows-Sysmon/Operational): well-known EventData
     field names per EventID (SYSMON_EVENT_TYPES below) map onto rich
     Common Event Model fields (process/network/file details). Only the
     handful of most common Sysmon event types are covered - adding more
     (registry, pipe, WMI, etc.) follows the same SYSMON_FIELD_MAP pattern.
-  - Everything else (Security, System, Application, and any other
-    channel/provider): a generic mapping using only the universal
+  - Security / System / PowerShell: the event IDs incidents are worked
+    from (logons, process creation, account/group changes, Kerberos/NTLM,
+    service installs, log clearing, script blocks) get named event types
+    and real fields - see parsers/windows_events.py.
+  - Everything else (Application, and any other channel/provider or
+    unmapped event ID): a generic mapping using only the universal
     <System> fields (EventID, Provider, Computer, Channel, TimeCreated).
     The raw EventData is preserved in raw_event_reference rather than
     guessed at - a security log full of provider-specific fields this
@@ -28,6 +32,7 @@ from xml.etree import ElementTree
 
 from netforensicai.core.event import Event, EventSequence, generate_event_id, parse_timestamp
 from netforensicai.parsers import base
+from netforensicai.parsers.windows_events import map_windows_event
 
 logger = logging.getLogger(__name__)
 
@@ -88,14 +93,29 @@ class EvtxParseError(Exception):
 def _load_records(path):
     import Evtx.Evtx as evtx
 
+    # A record python-evtx cannot RENDER is skipped, not fatal. Real logs
+    # contain them: current Windows builds write substitution types the
+    # library has no class for (e.g. an unsigned-byte array, type 132 - seen
+    # in a stock Windows 11 System log), and one such record used to abort
+    # the whole file, which the all-or-nothing pipeline then discarded
+    # entirely. Failing to open or walk the file is still fatal.
+    skipped = 0
     try:
         with evtx.Evtx(str(path)) as log:
             for record in log.records():
-                yield record.xml()
+                try:
+                    xml_text = record.xml()
+                except Exception as e:
+                    skipped += 1
+                    logger.debug(f"Skipping EVTX record python-evtx could not render: {e!r}")
+                    continue
+                yield xml_text
     except EvtxParseError:
         raise
     except Exception as e:
         raise EvtxParseError(f"Failed to read EVTX file '{path}': {e}") from e
+    if skipped:
+        logger.warning(f"Skipped {skipped:,} record(s) in '{path}' that python-evtx could not render.")
 
 
 def _extract_sha256(hashes_value):
@@ -158,6 +178,25 @@ def _parse_event_data(event_data_elem):
     return fields
 
 
+def _parse_user_data(user_data_elem):
+    """{name: value} from a <UserData> block.
+
+    Some providers (notably the Eventlog provider's 1102/104 "log cleared"
+    records) put their fields under <UserData><SomeElement>...</SomeElement>
+    in a provider-specific namespace instead of <EventData>. The wrapper
+    element name varies, so every leaf under it is taken by local name.
+    """
+    if user_data_elem is None:
+        return {}
+    fields = {}
+    for container in user_data_elem:
+        for child in container:
+            name = child.tag.rsplit("}", 1)[-1]
+            if len(child) == 0:
+                fields[name] = child.text
+    return fields
+
+
 def _coerce_int(value):
     try:
         return int(value)
@@ -177,12 +216,13 @@ def record_to_event(xml_text, evidence_id, sequence):
 
     system_elem = root.find(f"{_NS}System")
     system_info = _parse_system(system_elem) if system_elem is not None else {}
-    event_data = _parse_event_data(root.find(f"{_NS}EventData"))
+    event_data = _parse_event_data(root.find(f"{_NS}EventData")) or _parse_user_data(root.find(f"{_NS}UserData"))
 
     provider = system_info.get("provider")
     event_id = system_info.get("event_id")
 
     fields = {"hostname": system_info.get("computer")}
+    windows_event = None if provider == SYSMON_PROVIDER else map_windows_event(provider, event_id, event_data)
 
     if provider == SYSMON_PROVIDER and event_id in SYSMON_EVENT_TYPES:
         event_type = SYSMON_EVENT_TYPES[event_id]
@@ -207,6 +247,9 @@ def record_to_event(xml_text, evidence_id, sequence):
         hashes = event_data.get("Hashes")
         if hashes:
             fields["file_hash"] = _extract_sha256(hashes)
+    elif windows_event is not None:
+        event_type, mapped_fields, fields["message"] = windows_event
+        fields.update(mapped_fields)
     else:
         event_type = f"windows_event:{provider}" if provider else "windows_event"
 
@@ -230,14 +273,19 @@ def record_to_event(xml_text, evidence_id, sequence):
 class EvtxParser(base.BaseParser):
     evidence_types = ("evtx",)
 
-    def parse(self, file_path, evidence_id, **_ignored):
+    def parse(self, file_path, evidence_id, **options):
+        return list(self.iter_parse(file_path, evidence_id, **options))
+
+    def iter_parse(self, file_path, evidence_id, **_ignored):
+        # Streams rather than using the list-wrapping default: a busy
+        # domain controller's Security.evtx is routinely hundreds of MB and
+        # millions of records, which is the scale the pipeline's batching
+        # exists for.
         sequence = EventSequence()
-        events = []
         for xml_text in _load_records(file_path):
             event = record_to_event(xml_text, evidence_id, sequence)
             if event is not None:
-                events.append(event)
-        return events
+                yield event
 
 
 base.register(EvtxParser())

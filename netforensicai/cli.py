@@ -1859,6 +1859,181 @@ def chat_cmd(
         answer_one(text)
 
 
+# AgentFinding severities -> the investigator Finding scale. "Info" has no
+# equivalent there; Low is the closest that still keeps it in view.
+_TEAM_SEVERITY_TO_FINDING = {"high": "High", "medium": "Medium", "low": "Low", "info": "Low"}
+
+
+@app.command("team")
+def team_cmd(
+    case_id: str = typer.Option(..., "--case", help="Case ID to investigate"),
+    roles: str = typer.Option(
+        None,
+        "--roles",
+        help="Comma-separated roles to run, e.g. network,host (default: every role whose evidence is in the case)",
+    ),
+    provider: str = typer.Option("anthropic", "--ai-provider", help="anthropic, openai, ollama, or gemini"),
+    ai_model: str = typer.Option(None, "--model", help="Override the provider's default model"),
+    api_key: str = typer.Option(None, "--api-key", help="API key (falls back to env var, then saved config)"),
+    base_url: str = typer.Option(None, "--ollama-url", help="Ollama base URL"),
+    max_steps: int = typer.Option(None, "--max-steps", min=1, help="Tool calls each role may make (default: 6)"),
+    save_findings: bool = typer.Option(
+        False,
+        "--save-findings",
+        help="Record each merged finding as an Open finding in the case for you to review",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the full result as JSON"),
+    investigator: str = typer.Option(
+        None, "--investigator", help="Name recorded on saved findings (defaults to the OS username)"
+    ),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Run the AI investigation team over a case.
+
+    Specialist analysts (network, host) each investigate their part of the
+    evidence with read-only tools; their findings are merged where they rest
+    on the same evidence and ranked. Every finding must cite something a tool
+    returned or it is dropped - see netforensicai/agents/.
+
+    Optional and explicitly invoked, like every AI feature here. Findings are
+    proposals: nothing is written unless you pass --save-findings, and even
+    then they are recorded as Open for you to confirm or reject.
+    """
+    import dataclasses
+    import getpass
+    import json
+
+    from netforensicai.agents import investigate, resolve_roles
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceManager
+    from netforensicai.core.finding import FindingError, FindingManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+    case_dir = Path(cases_dir) / case.case_id
+
+    slugs = [s.strip() for s in roles.split(",") if s.strip()] if roles else None
+    try:
+        selected = resolve_roles(slugs)
+    except KeyError as e:
+        from netforensicai.agents import ROLES
+
+        typer.echo(f"Error: unknown role {e}. Choose from: {', '.join(ROLES)}", err=True)
+        raise typer.Exit(code=1)
+    if max_steps is not None:
+        selected = [dataclasses.replace(role, max_steps=max_steps) for role in selected]
+
+    evidence = EvidenceManager(case_dir).list()
+    if not evidence:
+        typer.echo(f"Error: {case.case_id} has no evidence to investigate. Add some with `netforensic evidence add`.", err=True)
+        raise typer.Exit(code=1)
+
+    def progress(role):
+        if not as_json:
+            typer.echo(f"  {role.name} is investigating (up to {role.max_steps} tool calls)...")
+
+    if not as_json:
+        typer.echo(f"Investigation team on {case.case_id} ({case.name}) - provider: {provider}")
+    result = investigate(
+        case_dir,
+        roles=selected,
+        provider=provider,
+        api_key=api_key,
+        model=ai_model,
+        base_url=base_url,
+        # An explicit --roles is honoured as asked; otherwise roles with no
+        # evidence to read are skipped rather than billed for nothing.
+        evidence_types=None if slugs else {item.evidence_type for item in evidence},
+        progress=progress,
+    )
+
+    ran = [r for r in result.role_results if not (r.note or "").startswith("skipped")]
+    failed = [r for r in ran if (r.note or "").startswith("provider failed")]
+
+    saved = []
+    if save_findings and result.findings:
+        finding_manager = FindingManager(case_dir)
+        author = investigator or getpass.getuser()
+        for merged in result.findings:
+            event_refs = [
+                {"evidence_id": c.evidence_id, "event_id": c.reference} for c in merged.citations if c.kind == "event"
+            ]
+            other = [f"{c.kind} {c.reference} ({c.evidence_id})" for c in merged.citations if c.kind != "event"]
+            assessment = (
+                f"{merged.assessment}\n\n"
+                f"Proposed by the investigation team ({', '.join(merged.reported_by)}; confidence "
+                f"{merged.confidence}). Review before confirming."
+                + (f"\nAlso cites: {'; '.join(other)}." if other else "")
+            )
+            try:
+                finding = finding_manager.create(
+                    case_id=case.case_id,
+                    title=merged.title,
+                    created_by=author,
+                    severity=_TEAM_SEVERITY_TO_FINDING.get(str(merged.severity).lower(), "Medium"),
+                    status="Open",
+                    assessment=assessment,
+                    evidence_refs=event_refs,
+                )
+            except FindingError as e:
+                typer.echo(f"Warning: could not save '{merged.title}': {e}", err=True)
+                continue
+            case_manager.register_finding(case.case_id, finding.finding_id)
+            saved.append(finding.finding_id)
+
+    if as_json:
+        payload = result.to_dict()
+        payload["saved_findings"] = saved
+        typer.echo(json.dumps(payload, indent=2, default=str))
+    else:
+        typer.echo("")
+        for role_result in result.role_results:
+            summary = f"{len(role_result.findings)} finding(s), {len(role_result.tool_calls)} tool call(s)"
+            if role_result.note:
+                summary = role_result.note if not role_result.findings else f"{summary} - {role_result.note}"
+            typer.echo(f"  {role_result.role:<24} {summary}")
+
+        if result.findings:
+            typer.echo(f"\nFindings ({len(result.findings)}), most severe first:")
+            for number, merged in enumerate(result.findings, 1):
+                typer.echo(
+                    f"\n {number}. [{merged.severity}] {merged.title}"
+                    f"   (confidence {merged.confidence} - {', '.join(merged.reported_by)})"
+                )
+                typer.echo(f"    {merged.assessment}")
+                cited = ", ".join(f"{c.kind} {c.reference}" for c in merged.citations[:6])
+                more = f" (+{len(merged.citations) - 6} more)" if len(merged.citations) > 6 else ""
+                typer.echo(f"    Evidence: {cited}{more}")
+        elif ran and not failed:
+            typer.echo("\nNo cited findings. The team found nothing it could support with evidence.")
+        elif not ran:
+            types = ", ".join(sorted({item.evidence_type for item in evidence}))
+            typer.echo(f"\nNo role has evidence it can read in this case ({types}). Nothing was sent to the provider.")
+
+        if saved:
+            typer.echo(f"\nSaved as Open findings for review: {', '.join(saved)}")
+        elif result.findings:
+            typer.echo("\nThese are proposals - nothing was written. Re-run with --save-findings to record them.")
+
+    if ran and len(failed) == len(ran):
+        if not as_json:
+            typer.echo(
+                "\nError: every role failed to reach the AI provider. Check the API key "
+                "(--api-key, the provider's env var, or Settings in the web UI) or use --ai-provider ollama.",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+
+
 def _compact(arguments):
     if not arguments:
         return ""
@@ -2257,6 +2432,12 @@ def web(
         envvar="NETFORENSIC_WEB_TOKEN",
         help="Shared secret required on every request. Mandatory when --host is not loopback.",
     ),
+    allow_host: List[str] = typer.Option(
+        None,
+        "--allow-host",
+        help="Extra Host name to accept besides localhost/127.0.0.1/[::1], e.g. a trusted local "
+        "reverse proxy's name. Repeatable. Other names are refused (DNS-rebinding protection).",
+    ),
 ):
     """Launch the local web UI: browse cases, upload/analyze evidence,
     investigate entities, manage findings, run live capture, and generate
@@ -2284,7 +2465,7 @@ def web(
             "untrusted network."
         )
 
-    flask_app = create_app(cases_dir, auth_token=auth_token)
+    flask_app = create_app(cases_dir, auth_token=auth_token, allowed_hosts=allow_host or None)
     scheme = "http"
     entry = f"{scheme}://{host}:{port}"
     if auth_token and not is_loopback:

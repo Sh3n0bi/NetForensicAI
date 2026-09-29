@@ -37,6 +37,8 @@ NETWORK = Role(
         "follow_stream",
         "search_packets",
     ),
+    # json/csv are generic logs that may hold either kind of event.
+    evidence_types=("pcap", "suricata", "json", "csv"),
 )
 
 HOST = Role(
@@ -58,6 +60,7 @@ HOST = Role(
         "list_entities",
         "search_events",
     ),
+    evidence_types=("evtx", "json", "csv"),
 )
 
 # Registry, in dispatch order. Later phases append their roles here.
