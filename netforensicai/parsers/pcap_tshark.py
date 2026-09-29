@@ -788,8 +788,10 @@ def _readable_export_name(raw_name):
     if "=?" in name:
         try:
             name = str(make_header(decode_header(name)))
-        except (ValueError, LookupError, UnicodeDecodeError):
-            pass
+        except (ValueError, LookupError, UnicodeDecodeError) as e:
+            # A malformed encoded-word (or an unknown charset) keeps the
+            # percent-decoded form: still usable, just not pretty.
+            logger.debug(f"Could not MIME-decode export name {name!r}: {e}")
     return name
 
 
