@@ -6,6 +6,28 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Investigation team in the web UI** — *Investigation team* under Assistant runs the
+  AI analysts in the background (the page polls, like live capture), shows each
+  analyst's progress, and offers **Accept as finding** on each merged result, which
+  records it as an Open finding. The latest result persists in
+  `cases/<id>/team/latest.json` (never the API key); a re-run keeps already-accepted
+  findings marked by the evidence they cite. New endpoints: `GET/POST
+  /api/cases/<id>/team`, `POST /api/cases/<id>/team/findings/<n>/accept`.
+- **Team runs are recorded in the chain of custody** (`ai.team_run`), from the CLI
+  and the web UI, as `investigate --ai` already was.
+
+### Fixed
+- **The saved "Default AI provider" (and model / Ollama URL) was ignored.** Every
+  AI path - `chat`, `team`, `investigate --ai` and the web chat and hypothesis
+  routes - defaulted to anthropic regardless of Settings. They now use an explicit
+  choice, then the saved Settings, then the default.
+- **The chat assistant's tools read the case store without the shared lock**, so
+  asking a question during a live capture could collide with the capture's writes.
+  They now go through `locked_store()`.
+- The test suite read the developer's real `~/.netforensicai` settings; it now
+  runs against an isolated config directory.
+
 ## [0.4.0] — 2026-09-29
 
 Windows host forensics and the AI investigation team: Security/System/PowerShell

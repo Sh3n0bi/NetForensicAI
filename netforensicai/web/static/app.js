@@ -377,6 +377,7 @@ async function renderSettings(app) {
 
 async function renderCaseTab(app, c, tab, rest) {
   stopCapturePolling(); // leaving (or re-rendering) any tab cancels a live capture-status poll loop
+  stopTeamPolling(); // same for a team run; the run itself carries on server-side
   if (tab === "story") return renderStory(app, c);
   if (tab === "evidence") return renderEvidence(app, c);
   if (tab === "timeline") return renderTimeline(app, c);
@@ -392,6 +393,7 @@ async function renderCaseTab(app, c, tab, rest) {
   if (tab === "streams") return renderStreams(app, c, rest[0]);
   if (tab === "triage") return renderTriage(app, c);
   if (tab === "chat") return renderChat(app, c);
+  if (tab === "team") return renderTeam(app, c);
   return renderOverview(app, c);
 }
 
@@ -3416,6 +3418,245 @@ async function renderChat(app, c) {
   };
 }
 
+// --- Investigation team ------------------------------------------------
+//
+// Runs the specialist analysts (agents/) over the case and shows their
+// merged, cited findings, each of which the investigator can accept as an
+// Open finding. A run takes minutes, so it happens server-side on a thread
+// (web/team_runs.py) and this view polls, as the capture view does.
+//
+// Everything a model wrote - titles, assessments, notes - is rendered with
+// textContent via el({text}), never as HTML: it is untrusted output.
+
+let _teamPollTimer = null;
+
+function stopTeamPolling() {
+  if (_teamPollTimer) {
+    clearInterval(_teamPollTimer);
+    _teamPollTimer = null;
+  }
+}
+
+function teamSeverityBadge(severity) {
+  const s = String(severity || "").toLowerCase();
+  return el("span", { class: "badge badge-" + (s === "info" ? "none" : cssClass(s)), text: severity || "?" });
+}
+
+async function renderTeam(app, c) {
+  app.appendChild(el("h1", { text: "Investigation team" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Specialist AI analysts investigate the case with read-only tools. Findings that rest on the same evidence are merged, and any finding that cites something its analyst did not actually retrieve is dropped. Nothing is written to the case until you accept a finding.",
+    })
+  );
+
+  const controls = el("div", { class: "panel team-controls" });
+  const progress = el("div", { class: "team-progress", "aria-live": "polite" });
+  const results = el("div", { class: "team-results" });
+  app.appendChild(controls);
+  app.appendChild(progress);
+  app.appendChild(results);
+
+  let status;
+  try {
+    status = await apiGet(`/cases/${c.case_id}/team`);
+  } catch (e) {
+    controls.appendChild(el("div", { class: "error-box", text: "Could not load the team: " + e.message }));
+    return;
+  }
+
+  let providerInfo = { providers: ["anthropic", "openai", "ollama", "gemini"] };
+  try {
+    providerInfo = await apiGet("/ai-providers");
+  } catch (e) {
+    /* the fallback list above is fine */
+  }
+
+  // --- controls ---
+  const roleBoxes = [];
+  const roleRow = el("div", { class: "team-roles" });
+  roleRow.appendChild(el("span", { class: "dim", text: "Analysts:" }));
+  for (const role of status.available_roles || []) {
+    const box = el("input", { type: "checkbox", id: `team-role-${role.slug}`, value: role.slug });
+    box.checked = true;
+    roleBoxes.push(box);
+    roleRow.appendChild(el("label", { class: "team-role", for: `team-role-${role.slug}` }, [box, document.createTextNode(" " + role.name)]));
+  }
+  controls.appendChild(roleRow);
+
+  const bar = el("div", { class: "filter-bar" });
+  const providerSelect = selectEl(providerInfo.providers, status.provider);
+  providerSelect.setAttribute("aria-label", "AI provider");
+  const steps = el("input", { type: "number", min: "1", max: "20", value: "6", style: "width:90px", placeholder: "Steps per analyst" });
+  const runBtn = el("button", { text: "Run the team" });
+  bar.appendChild(el("label", { class: "dim", text: "Provider" }));
+  bar.appendChild(providerSelect);
+  bar.appendChild(el("label", { class: "dim", text: "Tool calls per analyst" }));
+  bar.appendChild(steps);
+  bar.appendChild(runBtn);
+  controls.appendChild(bar);
+
+  const privacy = el("div", { class: "dim" });
+  function updatePrivacy() {
+    privacy.textContent =
+      providerSelect.value === "ollama"
+        ? "Ollama runs locally: case content stays on this machine."
+        : `Case content the analysts retrieve is sent to ${providerSelect.value}. The run is recorded in the chain of custody. Choose Ollama to keep it local.`;
+  }
+  providerSelect.addEventListener("change", updatePrivacy);
+  updatePrivacy();
+  controls.appendChild(privacy);
+
+  // --- progress ---
+  function renderProgress(run) {
+    progress.innerHTML = "";
+    if (!run || run.state !== "running") return;
+    const panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "loading", text: `The team is investigating with ${run.provider}…` }));
+    const list = el("div", { class: "team-role-states" });
+    for (const name of run.roles) {
+      const done = run.completed_roles.includes(name);
+      const active = run.current_role === name;
+      list.appendChild(
+        el("div", { class: "team-role-state" + (active ? " active" : done ? " done" : "") }, [
+          el("span", { class: "mono", text: done ? "done" : active ? "working" : "queued" }),
+          el("span", { text: name }),
+        ])
+      );
+    }
+    panel.appendChild(list);
+    panel.appendChild(el("div", { class: "dim", text: "You can leave this page; the run continues and its result will be here." }));
+    progress.appendChild(panel);
+  }
+
+  // --- results ---
+  function citationChip(cit) {
+    const label = `${cit.kind} ${cit.reference}`;
+    if (cit.kind === "stream") {
+      return el("a", { class: "cite", href: `#/case/${c.case_id}/streams/${encodeURIComponent(cit.reference)}`, text: label });
+    }
+    return el("span", { class: "cite", text: label, title: cit.evidence_id });
+  }
+
+  function renderResults(latest) {
+    results.innerHTML = "";
+    if (!latest) {
+      results.appendChild(el("div", { class: "empty", text: "The team has not investigated this case yet." }));
+      return;
+    }
+    const when = String(latest.finished_at || "").replace("T", " ").slice(0, 19);
+    results.appendChild(el("h2", { text: "Latest run" }));
+    results.appendChild(el("div", { class: "dim", text: `${when} UTC - ${latest.provider}${latest.model ? " / " + latest.model : ""}` }));
+
+    if (latest.error) {
+      results.appendChild(el("div", { class: "error-box", text: "The run did not complete: " + latest.error }));
+    }
+
+    const roles = el("div", { class: "panel team-role-results" });
+    for (const r of latest.role_results || []) {
+      const summary = r.note && !(r.findings || []).length ? r.note : `${(r.findings || []).length} finding(s), ${(r.tool_calls || []).length} tool call(s)${r.note ? " - " + r.note : ""}`;
+      roles.appendChild(el("div", { class: "step" }, [el("span", { text: r.role }), el("span", { class: "dim right", text: summary })]));
+    }
+    results.appendChild(roles);
+
+    const findings = latest.findings || [];
+    if (!findings.length) {
+      if (!latest.error) results.appendChild(el("div", { class: "empty", text: "No cited findings. The team found nothing it could support with evidence." }));
+      return;
+    }
+    results.appendChild(el("h2", { text: `Findings (${findings.length}), most severe first` }));
+    const accepted = latest.accepted || {};
+    findings.forEach((f, index) => {
+      const card = el("div", { class: "panel team-finding" });
+      const head = el("div", { class: "team-finding-head" }, [
+        teamSeverityBadge(f.severity),
+        el("b", { text: f.title }),
+        el("span", { class: "dim", text: `confidence ${f.confidence} - ${(f.reported_by || []).join(", ")}` }),
+      ]);
+      card.appendChild(head);
+      card.appendChild(el("div", { class: "team-assessment", text: f.assessment }));
+      const cites = el("div", { class: "cites" }, [el("span", { class: "dim", text: "Evidence:" })]);
+      for (const cit of f.citations || []) cites.appendChild(citationChip(cit));
+      card.appendChild(cites);
+
+      const actions = el("div", { class: "filter-bar" });
+      if (accepted[String(index)]) {
+        actions.appendChild(el("a", { href: `#/case/${c.case_id}/findings`, text: `Accepted as ${accepted[String(index)]} →` }));
+      } else {
+        const accept = el("button", { class: "secondary", text: "Accept as finding" });
+        accept.addEventListener("click", async () => {
+          accept.disabled = true;
+          try {
+            const saved = await apiPost(`/cases/${c.case_id}/team/findings/${index}/accept`, {});
+            toast(`Recorded as ${saved.finding_id} (Open) - confirm or reject it under Findings.`);
+            accepted[String(index)] = saved.finding_id;
+            actions.innerHTML = "";
+            actions.appendChild(el("a", { href: `#/case/${c.case_id}/findings`, text: `Accepted as ${saved.finding_id} →` }));
+          } catch (e) {
+            toast("Could not accept: " + e.message, true);
+            accept.disabled = false;
+          }
+        });
+        actions.appendChild(accept);
+        actions.appendChild(el("span", { class: "dim", text: "Saved as Open for your review - never as Confirmed." }));
+      }
+      card.appendChild(actions);
+      results.appendChild(card);
+    });
+  }
+
+  function applyStatus(s) {
+    const running = s.run && s.run.state === "running";
+    runBtn.disabled = running;
+    runBtn.textContent = running ? "Running…" : "Run the team";
+    renderProgress(s.run);
+    if (!running) renderResults(s.latest);
+    return running;
+  }
+
+  function startPolling() {
+    stopTeamPolling();
+    _teamPollTimer = setInterval(async () => {
+      try {
+        const s = await apiGet(`/cases/${c.case_id}/team`);
+        if (!applyStatus(s)) {
+          stopTeamPolling();
+          if (s.run && s.run.state === "failed") toast("The team run failed: " + (s.run.error || "unknown error"), true);
+          else toast("The investigation team has finished.");
+        }
+      } catch (e) {
+        stopTeamPolling();
+        toast("Lost track of the team run: " + e.message, true);
+      }
+    }, 2000);
+  }
+
+  runBtn.addEventListener("click", async () => {
+    const roles = roleBoxes.filter((b) => b.checked).map((b) => b.value);
+    if (!roles.length) {
+      toast("Choose at least one analyst.", true);
+      return;
+    }
+    runBtn.disabled = true;
+    try {
+      const body = { provider: providerSelect.value, max_steps: Number(steps.value) || 6 };
+      // Only name roles when the investigator narrowed the set; otherwise the
+      // server skips analysts with no evidence to read, like the CLI does.
+      if (roles.length !== roleBoxes.length) body.roles = roles;
+      const run = await apiPost(`/cases/${c.case_id}/team`, body);
+      applyStatus({ run, latest: null });
+      startPolling();
+    } catch (e) {
+      toast("Could not start the team: " + e.message, true);
+      runBtn.disabled = false;
+    }
+  });
+
+  if (applyStatus(status)) startPolling();
+}
+
 // --- Application shell: rail, case switcher, status bar --------------
 //
 // The rail, the switcher and the status bar are chrome: they persist
@@ -3454,6 +3695,7 @@ const ICONS = {
   findings: '<path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h5"/>',
   reports: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   audit: '<path d="M6 3h12v18l-6-3-6 3z"/>',
+  team: '<circle cx="8" cy="8" r="3"/><circle cx="16" cy="8" r="3"/><path d="M2.5 20a5.5 5.5 0 0 1 11 0M10.5 20a5.5 5.5 0 0 1 11 0"/>',
   chat: '<path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z"/>',
   check: '<path d="M5 12l5 5L20 7"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
@@ -3486,6 +3728,7 @@ const RAIL = [
   [null, "reports", "Reports", "reports"],
   [null, "audit", "Chain of custody", "audit"],
   ["Assistant", "chat", "Ask (cited)", "chat"],
+  [null, "team", "Investigation team", "team"],
 ];
 
 // Surfaces that cannot work without tshark. Disabled with a reason

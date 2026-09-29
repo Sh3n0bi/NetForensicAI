@@ -40,3 +40,28 @@ def _reset_capture_sessions():
     capture._SESSIONS.clear()
     yield
     capture._SESSIONS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_config(tmp_path_factory, monkeypatch):
+    """Point core/config.py at an empty, per-test directory.
+
+    Without this the suite read the developer's real ~/.netforensicai: saved
+    AI provider preferences changed which provider a test's command resolved
+    to, and a test that saves settings could overwrite real API keys. Tests
+    that exercise config set their own directory on top of this.
+    """
+    from netforensicai.core import config
+
+    monkeypatch.setenv(config.CONFIG_DIR_ENV, str(tmp_path_factory.mktemp("nf-config")))
+
+
+@pytest.fixture(autouse=True)
+def _reset_team_runs():
+    """web/team_runs._RUNS is module-level and keyed by case_id, like capture
+    sessions above - clear it so one test's run never leaks into the next."""
+    from netforensicai.web import team_runs
+
+    team_runs._RUNS.clear()
+    yield
+    team_runs._RUNS.clear()

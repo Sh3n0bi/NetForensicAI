@@ -226,10 +226,10 @@ class CaseTools:
         returning unfiltered results, which it would then reason about as
         though they were filtered.
         """
-        from netforensicai.core.store import CaseStore
+        from netforensicai.core.store import locked_store
         from netforensicai.core.timeline import build_timeline, filter_timeline
 
-        with CaseStore(self.case_dir) as store:
+        with locked_store(self.case_dir) as store:
             entries = build_timeline(store)
         entries = filter_timeline(
             entries,
@@ -259,9 +259,9 @@ class CaseTools:
         return rows
 
     def list_detections(self):
-        from netforensicai.core.store import CaseStore
+        from netforensicai.core.store import locked_store
 
-        with CaseStore(self.case_dir) as store:
+        with locked_store(self.case_dir) as store:
             detections = store.list_detections()
 
         rows = []
@@ -278,9 +278,9 @@ class CaseTools:
         return rows
 
     def list_entities(self, entity_type=None, limit=MAX_ROWS):
-        from netforensicai.core.store import CaseStore
+        from netforensicai.core.store import locked_store
 
-        with CaseStore(self.case_dir) as store:
+        with locked_store(self.case_dir) as store:
             entities = store.list_entities(entity_type=entity_type)
         return [
             {"entity_id": e["entity_id"], "type": e["entity_type"], "value": e["value"]}
