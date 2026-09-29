@@ -93,7 +93,6 @@ def test_token_deployment_with_allowed_hosts_enforces_them(tmp_path):
 def test_cli_passes_allow_host_through(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    import netforensicai.web.app as web_app
     from netforensicai.cli import app
 
     seen = {}
@@ -106,7 +105,7 @@ def test_cli_passes_allow_host_through(monkeypatch, tmp_path):
         seen["allowed_hosts"] = allowed_hosts
         return _FakeApp()
 
-    monkeypatch.setattr(web_app, "create_app", fake_create_app)
+    monkeypatch.setattr("netforensicai.web.app.create_app", fake_create_app)
     result = CliRunner().invoke(
         app,
         ["web", "--cases-dir", str(tmp_path), "--allow-host", "a.lan", "--allow-host", "b.lan"],
