@@ -558,3 +558,42 @@ def _finalize(raw, question, ledger, steps, transcript, call):
         f"({listed}), and the citation could not be corrected. Nothing is shown rather than showing "
         "a claim that cannot be traced to evidence."
     )
+
+
+# Long enough to recognise the question later, short enough that a pasted
+# wall of text does not bloat every custody entry.
+AUDIT_QUESTION_CHARS = 500
+AUDIT_MAX_CITATIONS = 20
+
+
+def record_chat_request(case_dir, question, provider, model, result=None, error=None, actor=None):
+    """Append a chat request to the case's chain of custody.
+
+    Asking the assistant sends case content (whatever its tools retrieve) to
+    the provider, so - like `investigate --ai` and team runs - the request and
+    its outcome belong in the custody record, including refusals and failures:
+    they show an attempt was made. Outcome is "answered", "refused" (the
+    citation check rejected the answer) or "failed". The API key is never
+    recorded.
+    """
+    from netforensicai.core import audit
+
+    question = question or ""
+    details = {
+        "provider": provider,
+        "model": model or "(provider default)",
+        "question": question[:AUDIT_QUESTION_CHARS] + ("…" if len(question) > AUDIT_QUESTION_CHARS else ""),
+    }
+    if error is not None:
+        message = str(error)
+        details["outcome"] = "refused" if message.startswith("Answer refused") else "failed"
+        details["error"] = message
+    else:
+        details["outcome"] = "answered"
+    if result is not None:
+        details["evidence_sufficient"] = result.evidence_sufficient
+        details["tool_calls"] = [step.tool for step in result.steps]
+        details["cited"] = [
+            f"{c.kind}:{c.evidence_id}/{c.reference}" for c in result.citations[:AUDIT_MAX_CITATIONS]
+        ]
+    return audit.record(case_dir, audit.AI_CHAT_REQUESTED, details, actor=actor)

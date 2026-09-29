@@ -532,3 +532,30 @@ def _call_ollama(system_prompt, user_prompt, model, base_url):
         return json.loads(content)
     except json.JSONDecodeError as e:
         raise AssistantError(f"AI response could not be parsed into the expected format: {e}") from e
+
+
+def record_hypothesis_request(case_dir, *, provider, model, entity_type, value, events_sent, outcome, actor=None,
+                              **extra):
+    """Append an AI-hypothesis request to the case's chain of custody.
+
+    A hypothesis sends case events to a third party and may shape what the
+    investigator looks at next, so both the request and its outcome belong
+    in the custody record - including failures. Shared by `investigate --ai`
+    and the web UI so both write the same entry.
+    """
+    from netforensicai.core import audit
+
+    return audit.record(
+        case_dir,
+        audit.AI_HYPOTHESIS_REQUESTED,
+        {
+            "provider": provider,
+            "model": model or "(provider default)",
+            "entity_type": entity_type,
+            "value": value,
+            "events_sent": events_sent,
+            "outcome": outcome,
+            **extra,
+        },
+        actor=actor,
+    )

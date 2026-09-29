@@ -808,8 +808,11 @@ def investigate(
 
         if ai:
             typer.echo("\nAI Investigation Hypothesis (optional - requires investigator review):")
-            from netforensicai.core import audit
-            from netforensicai.core.ai_assistant import AssistantError, generate_hypothesis
+            from netforensicai.core.ai_assistant import (
+                AssistantError,
+                generate_hypothesis,
+                record_hypothesis_request,
+            )
 
             ai_provider, ai_model, ollama_url = _ai_settings(ai_provider, ai_model, ollama_url)
 
@@ -818,18 +821,15 @@ def investigate(
             # and its outcome belong in the custody record - including the
             # failures, which show an attempt was made.
             def _record_ai(outcome, **extra):
-                audit.record(
+                record_hypothesis_request(
                     case_dir,
-                    audit.AI_HYPOTHESIS_REQUESTED,
-                    {
-                        "provider": ai_provider,
-                        "model": ai_model or "(provider default)",
-                        "entity_type": entity_type,
-                        "value": value,
-                        "events_sent": len(result.events),
-                        "outcome": outcome,
-                        **extra,
-                    },
+                    provider=ai_provider,
+                    model=ai_model,
+                    entity_type=entity_type,
+                    value=value,
+                    events_sent=len(result.events),
+                    outcome=outcome,
+                    **extra,
                 )
 
             try:
@@ -1844,8 +1844,10 @@ def chat_cmd(
                 max_steps=max_steps,
             )
         except chat_module.ChatError as e:
+            chat_module.record_chat_request(case_dir, text, provider, ai_model, error=e)
             typer.echo(f"Error: {e}", err=True)
             return False
+        chat_module.record_chat_request(case_dir, text, provider, ai_model, result=result)
 
         if show_steps and result.steps:
             typer.echo("\nRetrieved:")
