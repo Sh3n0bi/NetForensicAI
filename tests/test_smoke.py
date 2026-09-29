@@ -9,9 +9,12 @@ import sys
 
 
 def test_package_importable():
+    import importlib.metadata
+
     import netforensicai
 
-    assert netforensicai.__version__ == "0.1.0"
+    # One source of truth: pyproject.toml, via the installed metadata.
+    assert netforensicai.__version__ == importlib.metadata.version("netforensicai")
 
 
 def test_cli_help_runs():

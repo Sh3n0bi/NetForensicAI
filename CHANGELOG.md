@@ -6,6 +6,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-29
+
+Windows host forensics and the AI investigation team: Security/System/PowerShell
+event logs are now understood and have their own detection rules, `netforensic
+team` runs the specialist AI analysts, and `netforensic demo` shows the whole tool
+on a fabricated incident in one command.
+
 ### Security
 - **Web UI: DNS-rebinding protection.** In the default tokenless loopback mode the
   UI accepted any `Host` header, so a malicious web page that rebound its domain to
@@ -94,6 +101,8 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Recovered FTP/Telnet/POP3 usernames are now attached to the cleartext-credential
   event (the `USER` line precedes `PASS` in a separate packet), so the account
   reaches the entity graph. Found while validating against real captures.
+- `netforensicai.__version__` reported `0.1.0` regardless of the installed version;
+  it is now read from the package metadata.
 
 ## [0.3.0] — 2026-09-24
 
@@ -142,4 +151,6 @@ accredited against any forensic standard; correlation is not causality;
 ingestion is the scaling bottleneck on very large captures; and the AI paths
 have not been exercised against a live provider in CI.
 
+[Unreleased]: https://github.com/Sh3n0bi/NetForensicAI/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.3.0
