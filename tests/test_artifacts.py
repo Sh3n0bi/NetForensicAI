@@ -309,7 +309,9 @@ def test_hash_cache_tracks_changes(tmp_path):
 
 
 def test_fs_path_long_form_only_on_windows_long_paths(monkeypatch):
-    monkeypatch.setattr(artifacts.os, "name", "nt")
+    # Never patch os.name itself: pathlib reads it globally, and on Python 3.9
+    # Linux that made every later Path() a WindowsPath and crashed pytest.
+    monkeypatch.setattr(artifacts, "_IS_WINDOWS", True)
     # Raw strings throughout: these are Windows paths, backslashes and all.
     long_path = r"C:\data" + "a" * 300
     assert str(artifacts._long_form(long_path)).startswith(r"\\?\C:\data")

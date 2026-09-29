@@ -33,6 +33,9 @@ ARTIFACTS_DIRNAME = "artifacts"
 # Recovered file names are bounded, but a case kept somewhere deep (OneDrive,
 # a network share) plus artifacts/<EV>/<protocol>/<name> can still get there.
 _WINDOWS_PATH_BUDGET = 240
+# Module-level so a test can exercise the Windows branch on any OS without
+# touching os.name, which pathlib consults globally.
+_IS_WINDOWS = os.name == "nt"
 
 
 def fs_path(path):
@@ -47,7 +50,7 @@ def _long_form(absolute):
     """An already absolute, normalised path string, \\\\?\\-prefixed on
     Windows when it is long. Split out so a caller holding many paths under
     one resolved directory can skip resolving each one."""
-    if os.name == "nt" and len(absolute) >= _WINDOWS_PATH_BUDGET and not absolute.startswith("\\\\?\\"):
+    if _IS_WINDOWS and len(absolute) >= _WINDOWS_PATH_BUDGET and not absolute.startswith("\\\\?\\"):
         if absolute.startswith("\\\\"):  # UNC share: \\server\share -> \\?\UNC\server\share
             return Path("\\\\?\\UNC\\" + absolute[2:])
         return Path("\\\\?\\" + absolute)
@@ -114,19 +117,22 @@ class ArtifactError(Exception):
 def resolve(case_dir, case, relative_path):
     """The on-disk path for a registered artifact, or ArtifactError.
 
-    Two checks, both required. The path must be one the case itself
-    registered (so a request can only name files the tool recovered), and it
-    must resolve inside the case's artifacts/ directory (so a tampered
-    case.json cannot point it at anything else on the machine).
+    Two checks, both required. The requested value only SELECTS one of the
+    paths the case itself registered - the path that is built is the
+    registered one, never the request's string - so a request can only reach
+    files the tool recovered. And that path must still normalise to inside
+    the case's artifacts/ directory, so a tampered case.json cannot point it
+    at anything else on the machine.
     """
-    relative_path = (relative_path or "").replace("\\", "/")
-    if relative_path not in (case.artifacts or []):
+    wanted = (relative_path or "").replace("\\", "/")
+    registered = next((entry for entry in (case.artifacts or []) if entry == wanted), None)
+    if registered is None:
         raise ArtifactError("Not a recovered file in this case.")
-    root = (Path(case_dir) / ARTIFACTS_DIRNAME).resolve()
-    path = (Path(case_dir) / relative_path).resolve()
-    if root not in path.parents:
+    root = os.path.realpath(os.path.join(str(case_dir), ARTIFACTS_DIRNAME))
+    candidate = os.path.realpath(os.path.join(str(case_dir), registered))
+    if not candidate.startswith(root + os.sep):
         raise ArtifactError("Not a recovered file in this case.")
-    path = fs_path(path)
+    path = _long_form(candidate)
     if not path.is_file():
         raise ArtifactError("This recovered file is missing from the case directory.")
     return path
