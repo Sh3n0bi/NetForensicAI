@@ -64,8 +64,11 @@ import re
 import tempfile
 from collections import Counter
 from datetime import datetime, timezone
+from email.header import decode_header, make_header
 from pathlib import Path
+from urllib.parse import unquote
 
+from netforensicai.core.artifacts import fs_path
 from netforensicai.core.event import Event, EventSequence, generate_event_id
 from netforensicai.integrations import wireshark
 from netforensicai.parsers import base, credentials
@@ -740,53 +743,125 @@ def _export_objects(file_path, output_dir, evidence_id, sequence):
                 data = exported.read_bytes()
                 if not data:
                     continue
-                destination = output_dir / protocol / exported.name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(data)
+                readable = _readable_export_name(exported.name)
+                name = _export_name(exported.name, protocol)
+                target_dir = output_dir / protocol
+                try:
+                    fs_path(target_dir).mkdir(parents=True, exist_ok=True)
+                    destination = _unique_path(target_dir, name)
+                    fs_path(destination).write_bytes(data)
+                except OSError as e:
+                    # One file that cannot be written must not discard the
+                    # whole capture - the pipeline is all-or-nothing, so an
+                    # exception here would throw away every event with it.
+                    logger.warning(f"Could not save recovered {protocol} object '{name}': {e}")
+                    continue
                 logger.info(f"Exported {protocol} object: {destination} ({len(data)} bytes)")
+                reference = {"export_protocol": protocol, "size": len(data), "engine": "tshark"}
+                if destination.name != exported.name:
+                    # Both forms: exactly what Wireshark reported, and the
+                    # decoded text a person can read (an email's full subject).
+                    reference["original_name"] = exported.name
+                    reference["original_name_readable"] = readable
                 events.append(
                     Event(
                         event_id=generate_event_id(evidence_id, sequence.next()),
                         evidence_id=evidence_id,
                         source="pcap",
                         event_type="file_transfer",
-                        file_name=exported.name,
+                        file_name=destination.name,
                         file_path=str(destination),
                         file_hash=hashlib.sha256(data).hexdigest(),
                         message=(
-                            f"Recovered {len(data):,}-byte file '{exported.name}' from {protocol.upper()} "
+                            f"Recovered {len(data):,}-byte file '{destination.name}' from {protocol.upper()} "
                             "traffic via Wireshark object export"
                         ),
-                        raw_event_reference={
-                            "export_protocol": protocol,
-                            "size": len(data),
-                            "engine": "tshark",
-                        },
+                        raw_event_reference=reference,
                     )
                 )
     return events
+
+
+def _readable_export_name(raw_name):
+    """Wireshark's export name, percent- and MIME-decoded into plain text."""
+    name = unquote(raw_name or "")
+    if "=?" in name:
+        try:
+            name = str(make_header(decode_header(name)))
+        except (ValueError, LookupError, UnicodeDecodeError):
+            pass
+    return name
+
+
+_TSHARK_COPY_SUFFIX = re.compile(r"(\(\d+\))$")
+_PATH_SEPARATORS = re.compile(r"\s*[\\/]+\s*")
+
+
+def _export_name(raw_name, protocol):
+    """A readable, safe file name for an object Wireshark exported.
+
+    tshark names exports after what the protocol carried: a URL's last
+    segment, an SMB path, or - for email (IMF) - the message subject,
+    percent-escaped and often MIME-encoded ("=?utf-8?B?SGF3a0V5ZS...?="). Seen
+    on a real HawkEye keylogger capture, that name ran to ~200 characters and
+    pushed the path past Windows' limit, so the write failed and the whole
+    capture was discarded. Decoding first also makes the name mean something
+    ("HawkEye Keylogger - Reborn v9 - Passwords Logs ...").
+
+    What the name IS differs by protocol. For email it is a subject, so the
+    whole decoded subject is kept and any slash in it is just a character.
+    For HTTP and SMB it is a URL or share path, so its last segment is the
+    file name (the full path is kept in the event as original_name). An HTTP
+    object at the site root ("/", which tshark writes as "%5c") is the
+    site's index page; tshark's "(1)", "(2)" copy suffixes are kept.
+    """
+    name = _readable_export_name(raw_name)
+    if protocol == "imf":
+        # A subject, not a path: a slash or backslash in it is punctuation.
+        name = _PATH_SEPARATORS.sub(" - ", name).strip(" -")
+        if not name.lower().endswith(".eml"):
+            name += ".eml"
+    else:
+        copy = _TSHARK_COPY_SUFFIX.search(name)
+        suffix = copy.group(1) if copy else ""
+        last = _PATH_SEPARATORS.split(name[: len(name) - len(suffix)])[-1].strip()
+        name = (last or "index") + suffix
+    return _safe_file_name(name, f"{protocol}-object.bin")
 
 
 # Transfer commands and which side sends the file's bytes: the client for an
 # upload, the server for a download.
 _FTP_UPLOAD_COMMANDS = {"STOR", "APPE", "STOU"}
 _FTP_DOWNLOAD_COMMANDS = {"RETR"}
-_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]")
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._ ()-]")
+
+
+# Short enough that cases/<id>/artifacts/<EV>/<protocol>/<name> stays well
+# inside Windows' 260-character path limit from a typical case location.
+MAX_RECOVERED_NAME = 64
 
 
 def _safe_file_name(name, fallback):
     """A name that is safe to create on disk: no directories, no traversal,
-    no characters Windows rejects. Evidence controls this string."""
+    no characters Windows rejects, and bounded in length with its extension
+    kept. Evidence controls this string."""
     base = posixpath.basename(ntpath.basename((name or "").strip()))
     base = _UNSAFE_NAME.sub("_", base).strip(" .")
-    return base[:150] or fallback
+    if not base:
+        return fallback
+    if len(base) > MAX_RECOVERED_NAME:
+        suffix = Path(base).suffix
+        if len(suffix) > 10 or not suffix[1:].isalnum():
+            suffix = ""
+        base = base[: MAX_RECOVERED_NAME - len(suffix)].rstrip(" ._") + suffix
+    return base
 
 
 def _unique_path(directory, name):
     candidate = directory / name
     stem, suffix = Path(name).stem, Path(name).suffix
     n = 2
-    while candidate.exists():
+    while fs_path(candidate).exists():
         candidate = directory / f"{stem}-{n}{suffix}"
         n += 1
     return candidate
@@ -866,9 +941,9 @@ def _recover_ftp_transfers(file_path, output_dir, evidence_id, sequence):
         if not data:
             continue
 
-        target_dir.mkdir(parents=True, exist_ok=True)
+        fs_path(target_dir).mkdir(parents=True, exist_ok=True)
         destination = _unique_path(target_dir, _safe_file_name(command["arg"], f"ftp-stream-{stream}.bin"))
-        destination.write_bytes(data)
+        fs_path(destination).write_bytes(data)
         action = "uploaded" if upload else "downloaded"
         logger.info(f"Recovered FTP file: {destination} ({len(data)} bytes)")
         events.append(

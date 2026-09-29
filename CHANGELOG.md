@@ -24,6 +24,25 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recovery does not cover. Backed by a byte-exact raw-mode stream reader.
 
 ### Fixed
+- **A capture with emailed files could fail to analyze at all.** Wireshark names an
+  exported email after its subject, percent-escaped and MIME-encoded; on a real HawkEye
+  keylogger capture that name ran to ~200 characters, the write failed on Windows'
+  path limit, and the all-or-nothing pipeline discarded the whole capture (0 events).
+  Exported names are now decoded, made safe and bounded (64 characters, extension
+  kept; the full original is kept and shown), long paths use Windows' `\\?\` form, and
+  a single file that still cannot be written is skipped with a warning instead of
+  failing the capture. The same capture now yields 585 events, the malware, and 7
+  exfiltration emails.
+- Exported object names are readable: a site's root page is `index` (not `%5c`), an SMB
+  file keeps its name, an email is named after its subject.
+- **Recovered files view: emails are shown decoded** (From / To / Date / Subject, the
+  message text, attachments) - stealers mail their loot out base64-encoded - with hints
+  and risk judged on the decoded body and attachments.
+- The recovered-files list was quadratic in the number of files (273 s for a real case
+  with 12,327); it is now linear with cached hashes (about 3 s warm), and the view
+  pages 200 at a time with a name and risk filter.
+- Files named as an archive, document or image whose content is not that format are
+  flagged ("may be encrypted, corrupted, or disguised"); TAR archives are recognised.
 - Stream rows could only be opened with a mouse; they are now keyboard-operable.
 
 ## [0.5.0] — 2026-09-30

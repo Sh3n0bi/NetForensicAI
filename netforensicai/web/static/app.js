@@ -3786,8 +3786,33 @@ async function renderFiles(app, c, focusPath) {
     showDetail(f);
   }
 
-  for (const f of rows) {
-    const item = el("button", { type: "button", class: "file-item", role: "listitem" });
+  // A real capture can yield thousands of files (one test case had 12,327),
+  // so the list is filtered and drawn a page at a time rather than all at once.
+  const PAGE = 200;
+  const tools = el("div", { class: "files-tools" });
+  const search = el("input", { type: "search", placeholder: "Filter by name…", autocomplete: "off", spellcheck: "false" });
+  const riskFilter = el("select", { "aria-label": "Filter by risk" }, [
+    el("option", { value: "", text: "Any risk" }),
+    el("option", { value: "high", text: RISK_LABEL.high }),
+    el("option", { value: "medium", text: RISK_LABEL.medium }),
+    el("option", { value: "low", text: RISK_LABEL.low }),
+  ]);
+  const count = el("div", { class: "dim", "aria-live": "polite" });
+  tools.appendChild(search);
+  tools.appendChild(riskFilter);
+  // Toolbar, count and list share the left grid column.
+  const column = el("div", { class: "files-column" });
+  layout.insertBefore(column, list);
+  column.appendChild(tools);
+  column.appendChild(count);
+  column.appendChild(list);
+  const more = el("button", { type: "button", class: "secondary", text: "Show more" });
+
+  let visible = [];
+  let shown = 0;
+  function fileItem(f) {
+    const wrap = el("div", { role: "listitem" });
+    const item = el("button", { type: "button", class: "file-item" });
     const top = el("div", { class: "file-item-top" }, [
       el("span", { class: "file-name", text: f.name, title: f.name }),
       f.missing ? el("span", { class: "badge badge-none", text: "Missing" }) : el("span", { class: "badge badge-" + RISK_BADGE[f.risk], text: RISK_LABEL[f.risk] }),
@@ -3797,10 +3822,42 @@ async function renderFiles(app, c, focusPath) {
     item.appendChild(el("div", { class: "file-journey", text: fileJourney(f) }));
     for (const note of f.notes || []) item.appendChild(el("div", { class: "file-note", text: note }));
     item.addEventListener("click", () => select(f, item));
-    list.appendChild(item);
-    if (focusPath && focusPath === f.path) setTimeout(() => select(f, item), 0);
+    wrap.appendChild(item);
+    return { wrap, item };
   }
-  if (!focusPath) select(rows[0], list.firstChild);
+  function drawMore() {
+    more.remove();
+    for (const f of visible.slice(shown, shown + PAGE)) list.appendChild(fileItem(f).wrap);
+    shown = Math.min(shown + PAGE, visible.length);
+    if (shown < visible.length) {
+      more.textContent = `Show ${Math.min(PAGE, visible.length - shown)} more (${visible.length - shown} not shown)`;
+      list.appendChild(more);
+    }
+  }
+  function applyFilter() {
+    const q = search.value.trim().toLowerCase();
+    const risk = riskFilter.value;
+    visible = rows.filter((f) => (!q || f.name.toLowerCase().includes(q)) && (!risk || f.risk === risk));
+    list.innerHTML = "";
+    shown = 0;
+    count.textContent = visible.length === rows.length ? `${rows.length} file${rows.length === 1 ? "" : "s"}` : `${visible.length} of ${rows.length} files`;
+    if (!visible.length) list.appendChild(el("div", { class: "empty", text: "No recovered file matches that filter." }));
+    else drawMore();
+  }
+  more.addEventListener("click", drawMore);
+  search.addEventListener("input", applyFilter);
+  riskFilter.addEventListener("change", applyFilter);
+  applyFilter();
+
+  // A deep link can name a file beyond the first page; show it regardless.
+  const focused = focusPath ? rows.find((f) => f.path === focusPath) : null;
+  if (focused) {
+    const onPage = [...list.querySelectorAll(".file-item")][visible.indexOf(focused)];
+    if (onPage) select(focused, onPage);
+    else select(focused, fileItem(focused).item);
+  } else {
+    select(rows[0], list.querySelector(".file-item"));
+  }
 
   function showDetail(f) {
     detail.innerHTML = "";
@@ -3841,6 +3898,7 @@ async function renderFiles(app, c, focusPath) {
     });
     add("SHA-256", el("span", { class: "hash-row" }, [hash, copy]));
     const src = f.source || {};
+    add(f.protocol === "imf" ? "Email subject" : "Original name", src.original_name || "");
     add("Web address", src.url || "");
     add("Seen", src.timestamp ? fmtUtc(src.timestamp) : "");
     add("How it was recovered", src.recovered_by === "ftp-command-pairing"
@@ -3894,6 +3952,26 @@ async function renderFiles(app, c, focusPath) {
         wrap.appendChild(t);
         box.appendChild(wrap);
         box.appendChild(el("div", { class: "dim", text: `${p.rows.length} row${p.rows.length === 1 ? "" : "s"} shown${p.truncated ? " - the file has more; download it to see everything." : "."}` }));
+      } else if (p.mode === "email") {
+        // Decoded for reading; still text only - an HTML body is shown as
+        // its source, never rendered.
+        const head = el("dl", { class: "facts email-head" });
+        const labels = { from: "From", to: "To", cc: "Cc", date: "Date", subject: "Subject" };
+        for (const key of ["from", "to", "cc", "date", "subject"]) {
+          if (!p.headers[key]) continue;
+          head.appendChild(el("dt", { text: labels[key] }));
+          head.appendChild(el("dd", { text: p.headers[key] }));
+        }
+        box.appendChild(head);
+        if (p.body_type === "text/html") box.appendChild(el("div", { class: "dim", text: "This message is HTML; it is shown as source, not rendered." }));
+        box.appendChild(el("pre", { class: "file-text", text: p.body || "(no message text)" }));
+        if (p.truncated) box.appendChild(el("div", { class: "dim", text: "Only the start of the message is shown." }));
+        if (p.attachments.length) {
+          box.appendChild(el("h3", { text: `Attachments (${p.attachments.length})` }));
+          const ul = el("ul", { class: "email-attachments" });
+          for (const a of p.attachments) ul.appendChild(el("li", { text: `${a.name} - ${a.type}, ${fmtBytes(a.size)}` }));
+          box.appendChild(ul);
+        }
       } else {
         if (p.mode === "hex") box.appendChild(el("div", { class: "dim", text: "Not text, so it is shown byte by byte (hex on the left, readable characters on the right)." }));
         box.appendChild(el("pre", { class: "file-text", text: p.text }));

@@ -23,10 +23,37 @@ changes it or the case.
 import csv
 import hashlib
 import io
+import os
 import re
 from pathlib import Path
 
 ARTIFACTS_DIRNAME = "artifacts"
+
+# Windows refuses paths past 260 characters unless they use the \\?\ form.
+# Recovered file names are bounded, but a case kept somewhere deep (OneDrive,
+# a network share) plus artifacts/<EV>/<protocol>/<name> can still get there.
+_WINDOWS_PATH_BUDGET = 240
+
+
+def fs_path(path):
+    """`path`, absolute and normalised, in a form the OS can open whatever
+    its length. On Windows a long path gets the \\\\?\\ prefix (which also
+    requires it to be absolute and free of '..' - hence resolve()); elsewhere
+    this is just the resolved path."""
+    return _long_form(str(Path(path).resolve()))
+
+
+def _long_form(absolute):
+    """An already absolute, normalised path string, \\\\?\\-prefixed on
+    Windows when it is long. Split out so a caller holding many paths under
+    one resolved directory can skip resolving each one."""
+    if os.name == "nt" and len(absolute) >= _WINDOWS_PATH_BUDGET and not absolute.startswith("\\\\?\\"):
+        if absolute.startswith("\\\\"):  # UNC share: \\server\share -> \\?\UNC\server\share
+            return Path("\\\\?\\UNC\\" + absolute[2:])
+        return Path("\\\\?\\" + absolute)
+    return Path(absolute)
+
+
 SNIFF_BYTES = 8192
 PREVIEW_TEXT_BYTES = 64 * 1024
 PREVIEW_HEX_BYTES = 2048
@@ -59,11 +86,22 @@ _MAGIC = (
 _OFFICE_ZIP_EXTENSIONS = {".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm"}
 _MACRO_EXTENSIONS = {".docm", ".xlsm", ".pptm", ".doc", ".xls", ".ppt"}
 _EXECUTABLE_EXTENSIONS = {".exe", ".dll", ".scr", ".com", ".pif", ".msi", ".sys", ".cpl"}
+# Extensions that promise a specific, recognisable format - the kinds
+# identify() returns for it. A file named like this whose content matches none
+# of them (identify() says "binary") is worth a warning.
+_CLAIMED_KINDS = {
+    ".gz": {"archive"}, ".tgz": {"archive"}, ".tar": {"archive"}, ".rar": {"archive"}, ".7z": {"archive"},
+    ".zip": {"zip", "office"}, ".pdf": {"pdf"}, ".png": {"png"}, ".jpg": {"jpeg"}, ".jpeg": {"jpeg"},
+    ".gif": {"gif"}, ".webp": {"webp"}, ".docx": {"office"}, ".xlsx": {"office"}, ".pptx": {"office"},
+    ".doc": {"office-legacy"}, ".xls": {"office-legacy"}, ".ppt": {"office-legacy"},
+}
+
 # What a disguised program pretends to be, as in "invoice.pdf.exe".
 _DECOY_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".rtf", ".csv",
                      ".jpg", ".jpeg", ".png", ".gif", ".mp3", ".mp4", ".zip"}
 _SCRIPT_EXTENSIONS = {".ps1", ".vbs", ".js", ".jse", ".bat", ".cmd", ".hta", ".wsf", ".sh", ".py"}
 
+_EXPORT_EMAIL_SUFFIX = re.compile(r"\s*(\(\d+\))?\.eml$", re.IGNORECASE)
 _EMAIL = re.compile(rb"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PRIVATE_KEY = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _PASSWORDISH = re.compile(rb"(?i)\b(pass(word|wd)?|pwd)\s*[=:]")
@@ -88,6 +126,7 @@ def resolve(case_dir, case, relative_path):
     path = (Path(case_dir) / relative_path).resolve()
     if root not in path.parents:
         raise ArtifactError("Not a recovered file in this case.")
+    path = fs_path(path)
     if not path.is_file():
         raise ArtifactError("This recovered file is missing from the case directory.")
     return path
@@ -126,10 +165,14 @@ def identify(path, head=None):
             return {"kind": kind, "label": label, "mime": SAFE_IMAGE_MIME.get(kind, "application/octet-stream")}
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return {"kind": "webp", "label": "WebP image", "mime": "image/webp"}
+    if head[257:262] == b"ustar":  # tar's signature sits at offset 257, not 0
+        return {"kind": "archive", "label": "TAR archive", "mime": "application/octet-stream"}
     if _looks_like_text(head):
         lowered = head[:512].lstrip().lower()
         if lowered.startswith(b"#!") or extension in _SCRIPT_EXTENSIONS:
             return {"kind": "script", "label": "Script", "mime": "text/plain"}
+        if extension == ".eml" or lowered.startswith(_EMAIL_HEADER_STARTS):
+            return {"kind": "email", "label": "Email message", "mime": "text/plain"}
         # SVG before HTML: an SVG carrying <script> is still an SVG, just a
         # hostile one - both are only ever shown as text.
         if b"<svg" in lowered:
@@ -158,9 +201,54 @@ def _content_notes(head, kind):
     emails = len(set(_EMAIL.findall(head)))
     if emails >= 3:
         notes.append(f"Contains {emails}+ email addresses - may be personal data.")
-    if kind in ("text", "csv") and _PASSWORDISH.search(head):
+    if kind in ("text", "csv", "email") and _PASSWORDISH.search(head):
         notes.append("Mentions a password field - may contain credentials.")
     return notes
+
+
+# Where a stored email usually starts. Matched lower-cased.
+_EMAIL_HEADER_STARTS = (b"mime-version:", b"received:", b"return-path:", b"from:", b"delivered-to:", b"message-id:")
+EMAIL_PARSE_BYTES = 5 * 1024 * 1024
+
+
+def _parse_email(path):
+    """The message as a person reads it: decoded headers, the text body, and
+    the attachments. Email bodies are routinely base64 or quoted-printable,
+    so the raw file is unreadable - and for exfiltration by email (HawkEye
+    and similar stealers mail their loot out), the decoded body IS the
+    evidence."""
+    from email import policy
+    from email.parser import BytesParser
+
+    with open(path, "rb") as handle:
+        message = BytesParser(policy=policy.default).parsebytes(handle.read(EMAIL_PARSE_BYTES))
+    body_part = message.get_body(preferencelist=("plain", "html"))
+    try:
+        body = body_part.get_content() if body_part is not None else ""
+    except (LookupError, ValueError):
+        body = body_part.get_payload(decode=True).decode("utf-8", errors="replace") if body_part is not None else ""
+    attachments = []
+    for part in message.iter_attachments():
+        payload = part.get_payload(decode=True) or b""
+        attachments.append({
+            "name": part.get_filename() or "(unnamed)",
+            "type": part.get_content_type(),
+            "size": len(payload),
+        })
+    headers = {}
+    for key in ("from", "to", "cc", "date", "subject"):
+        try:
+            value = message.get(key)
+        except (ValueError, IndexError):  # a malformed header must not stop the preview
+            value = None
+        if value:
+            headers[key] = str(value)
+    return {
+        "headers": headers,
+        "body": body if isinstance(body, str) else str(body),
+        "body_type": body_part.get_content_type() if body_part is not None else None,
+        "attachments": attachments,
+    }
 
 
 def _risk(name, identity):
@@ -186,6 +274,17 @@ def _risk(name, identity):
         level = "medium"
         reasons.append("Archive - the files inside have not been checked.")
 
+    claimed = _CLAIMED_KINDS.get(extension)
+    if claimed and kind == "binary" and kind not in claimed:
+        # The name promises a format the content does not have: typical of
+        # encrypted data given an innocent name, or a file damaged in transit.
+        if level == "low":
+            level = "medium"
+        reasons.append(
+            f"Named '{extension}' but the content is not that format - it may be encrypted, "
+            "corrupted, or disguised."
+        )
+
     claimed_program = extension in _EXECUTABLE_EXTENSIONS
     if kind == "executable" and extension and not claimed_program and extension not in {".jar", ".apk"}:
         level = "high"
@@ -197,6 +296,27 @@ def _risk(name, identity):
         level = "high"
         reasons.insert(0, f"Double extension ('{stem_extension}{extension}') - a common way to disguise malware.")
     return level, reasons
+
+
+_HASH_CACHE = {}  # resolved path -> (size, mtime_ns, sha256)
+
+
+def cached_sha256(path, stat=None):
+    """sha256_of(), remembered while the file is unchanged.
+
+    The list view hashes every recovered file so the hash shown is the hash
+    of the file as it is NOW, not as recorded at recovery. Re-reading every
+    file on every page load is what makes a case with thousands of files
+    slow; keying on size + modification time re-hashes only what changed.
+    """
+    stat = stat or os.stat(path)
+    key = str(path)
+    cached = _HASH_CACHE.get(key)
+    if cached and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
+        return cached[2]
+    digest = sha256_of(path)
+    _HASH_CACHE[key] = (stat.st_size, stat.st_mtime_ns, digest)
+    return digest
 
 
 def sha256_of(path):
@@ -215,16 +335,19 @@ def _sources(store, artifact_paths):
     relative path against that process's working directory), so relpath()
     from here would only match when both happened to run from the same place.
     """
-    wanted = {path: "/" + path.lstrip("/") for path in artifact_paths}
+    # One dictionary lookup per event. An artifact path is always
+    # artifacts/<EV>/<protocol>/<name> - four components - so the recorded
+    # path's last four components ARE the key. Comparing every event against
+    # every path instead was quadratic: 273 s for a case with 12,327 files.
+    wanted = {path.strip("/"): path for path in artifact_paths}
     found = {}
     for event in store.iter_events("WHERE event_type = ?", ("file_transfer",)):
         if not event.file_path:
             continue
-        recorded = "/" + event.file_path.replace("\\", "/").lstrip("/")
-        for path, tail in wanted.items():
-            if path not in found and recorded.endswith(tail):
-                found[path] = event
-                break
+        parts = event.file_path.replace("\\", "/").split("/")
+        path = wanted.get("/".join(parts[-4:]))
+        if path is not None and path not in found:
+            found[path] = event
     return found
 
 
@@ -253,17 +376,29 @@ def _http_origins(store):
 
 def describe_all(case_dir, case, store):
     """Every registered artifact, described. Missing files are listed, not hidden."""
+    import stat as stat_module
+
     case_dir = Path(case_dir)
+    # Resolved once: resolving each file (a system call per path on Windows)
+    # was 40% of listing a 12,000-file case. The listing never serves file
+    # contents - that goes through resolve()'s containment check - so a
+    # normalised join under the resolved case directory is enough here.
+    base = str(case_dir.resolve())
     sources = _sources(store, case.artifacts or [])
     http_origins = None
     rows = []
     for relative in case.artifacts or []:
-        path = case_dir / relative
+        path = _long_form(os.path.normpath(os.path.join(base, relative)))
+        try:
+            info = os.stat(path)
+            present = stat_module.S_ISREG(info.st_mode)
+        except OSError:
+            info, present = None, False
         row = {
             "path": relative,
             "name": Path(relative).name,
             "protocol": Path(relative).parent.name,
-            "missing": not path.is_file(),
+            "missing": not present,
             "size_bytes": None,
         }
         event = sources.get(relative)
@@ -278,7 +413,13 @@ def describe_all(case_dir, case, store):
                 "summary": event.message,
                 "stream": reference.get("stream"),
                 "recovered_by": reference.get("recovered_by") or "wireshark-export",
+                # The full name as sent - for email, the whole subject - when
+                # the saved file name had to be shortened or made safe.
+                "original_name": reference.get("original_name_readable"),
             }
+            if row["protocol"] == "imf" and row["source"]["original_name"]:
+                # An email's "name" is its subject; drop Wireshark's "(2).eml".
+                row["source"]["original_name"] = _EXPORT_EMAIL_SUFFIX.sub("", row["source"]["original_name"])
             if row["protocol"] == "http" and not event.src_ip:
                 if http_origins is None:
                     http_origins = _http_origins(store)
@@ -289,17 +430,44 @@ def describe_all(case_dir, case, store):
             head = _head(path)
             identity = identify(path, head)
             level, reasons = _risk(row["name"], identity)
+            notes_source = head
+            if identity["kind"] == "email":
+                level, reasons, notes_source = _email_risk(path, level, reasons, head)
             row.update(
-                size_bytes=path.stat().st_size,
-                sha256=sha256_of(path),
+                size_bytes=info.st_size,
+                sha256=cached_sha256(path, info),
                 type=identity,
                 risk=level,
                 risk_reasons=reasons,
-                notes=_content_notes(head, identity["kind"]),
+                notes=_content_notes(notes_source, identity["kind"]),
                 previewable_image=identity["kind"] in SAFE_IMAGE_MIME,
             )
         rows.append(row)
     return rows
+
+
+def _email_risk(path, level, reasons, head):
+    """Risk and note text for an email: judged on its attachments and its
+    DECODED body, since the raw file is usually base64 a hint cannot read."""
+    try:
+        parsed = _parse_email(path)
+    except Exception:  # a malformed message is still listed, just unassessed
+        return level, reasons, head
+    attachments = parsed["attachments"]
+    dangerous = [
+        a["name"] for a in attachments
+        if Path(a["name"]).suffix.lower() in _EXECUTABLE_EXTENSIONS | _SCRIPT_EXTENSIONS
+        or _risk(a["name"], {"kind": "unknown", "label": a["type"]})[0] == "high"
+    ]
+    if dangerous:
+        level = "high"
+        reasons = [f"Carries an attachment that can run code: {', '.join(dangerous)}", *reasons]
+    elif attachments and level == "low":
+        level = "medium"
+        reasons = [f"Carries {len(attachments)} attachment(s) that have not been checked.", *reasons]
+    body = parsed["body"].encode("utf-8", errors="replace")[:SNIFF_BYTES]
+    subject = parsed["headers"].get("subject", "").encode("utf-8", errors="replace")
+    return level, reasons, subject + b"\n" + body
 
 
 def _hexdump(data):
@@ -338,7 +506,23 @@ def preview(path):
             "rows": rows[1:],
             "truncated": size > PREVIEW_TEXT_BYTES or len(rows) > PREVIEW_CSV_ROWS,
         }
-    if kind in ("text", "script", "html", "svg"):
+    if kind == "email":
+        try:
+            parsed = _parse_email(path)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            body = parsed["body"]
+            return {
+                "mode": "email",
+                "type": identity,
+                "headers": parsed["headers"],
+                "body": body[:PREVIEW_TEXT_BYTES],
+                "body_type": parsed["body_type"],
+                "attachments": parsed["attachments"],
+                "truncated": len(body) > PREVIEW_TEXT_BYTES,
+            }
+    if kind in ("text", "script", "html", "svg", "email"):
         return {
             "mode": "text",
             "type": identity,

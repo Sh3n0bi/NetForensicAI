@@ -91,3 +91,79 @@ def test_stream_data_route_serves_the_same_bytes(incident, tmp_path, monkeypatch
 def test_safe_file_name(raw, expected):
     # The name comes from the evidence; it must never escape the output folder.
     assert _safe_file_name(raw, "fallback.bin") == expected
+
+
+# --- names Wireshark gives exported objects (seen on real captures) ---------
+
+HAWKEYE_SUBJECT = (
+    "=%3futf-8%3fB%3fSGF3a0V5ZSBLZXlsb2dnZXIgLSBSZWJvcm4gdjkgLSBQYXNzd29yZHMgTG9ncyAtIHJvbWFuLm1jZ3VpcmUg"
+    "XCBCRUlKSU5HLTVDRDEtUEMgLSAxNzMuNjYuMTQ2LjExMg==%3f=(1).eml"
+)
+
+
+@pytest.mark.parametrize(
+    "raw, protocol, expected",
+    [
+        ("%5c", "http", "index"),  # the site root
+        ("%5c(3)", "http", "index(3)"),  # tshark's copy suffix is kept
+        ("%5cpizzajukebox.com%5cPolicies%5c{31B2F340-016D-11D2-945F-00C04FB984F9}%5cgpt.ini", "smb", "gpt.ini"),
+        ("tkraw_Protected99.exe", "http", "tkraw_Protected99.exe"),
+        ("..%2f..%2fetc%2fpasswd", "http", "passwd"),
+        ("", "http", "index"),
+    ],
+)
+def test_export_names(raw, protocol, expected):
+    from netforensicai.parsers.pcap_tshark import _export_name
+
+    assert _export_name(raw, protocol) == expected
+
+
+def test_mime_encoded_email_subject_becomes_a_short_readable_name():
+    # Regression: this ~200-character encoded name pushed the path past
+    # Windows' limit, the write failed, and the whole capture was discarded.
+    from netforensicai.parsers.pcap_tshark import MAX_RECOVERED_NAME, _export_name, _readable_export_name
+
+    name = _export_name(HAWKEYE_SUBJECT, "imf")
+    assert name.startswith("HawkEye Keylogger - Reborn v9 - Passwords Logs")
+    assert name.endswith(".eml")
+    assert len(name) <= MAX_RECOVERED_NAME
+    assert "\\" not in name and "/" not in name
+    assert "roman.mcguire \\ BEIJING-5CD1-PC" in _readable_export_name(HAWKEYE_SUBJECT)
+
+
+def test_long_names_keep_their_extension():
+    from netforensicai.parsers.pcap_tshark import MAX_RECOVERED_NAME
+
+    name = _safe_file_name("x" * 300 + ".docx", "f.bin")
+    assert len(name) == MAX_RECOVERED_NAME and name.endswith(".docx")
+
+
+def test_one_unwritable_export_does_not_discard_the_capture(tmp_path, monkeypatch):
+    from netforensicai.core.event import EventSequence
+    from netforensicai.parsers import pcap_tshark
+
+    staging = tmp_path / "staged"
+    staging.mkdir()
+    (staging / "good.txt").write_bytes(b"fine")
+    (staging / "bad.txt").write_bytes(b"cannot be written")
+    monkeypatch.setattr(pcap_tshark, "EXPORT_OBJECT_PROTOCOLS", ("http",))
+    monkeypatch.setattr(pcap_tshark.wireshark, "export_objects", lambda *a: sorted(staging.iterdir()))
+
+    real_fs_path = pcap_tshark.fs_path
+
+    class _Refuses:
+        def __init__(self, path):
+            self.path = path
+
+        def exists(self):
+            return False
+
+        def write_bytes(self, _data):
+            raise OSError("path too long")
+
+    monkeypatch.setattr(
+        pcap_tshark, "fs_path", lambda p: _Refuses(p) if str(p).endswith("bad.txt") else real_fs_path(p)
+    )
+    events = pcap_tshark._export_objects("capture.pcap", tmp_path / "out", "EV-0001", EventSequence())
+
+    assert [e.file_name for e in events] == ["good.txt"]

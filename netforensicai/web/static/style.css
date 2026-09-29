@@ -794,3 +794,7 @@ button.small { padding: 3px 9px; font-size: 12px; }
 .file-image { max-width: 100%; max-height: 420px; border-radius: var(--r-sm); border: 1px solid var(--border); }
 .empty-state { max-width: 640px; }
 @media (max-width: 860px) { .files-layout { grid-template-columns: 1fr; } }
+.files-column { min-width: 0; }
+.files-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.files-tools input[type="search"] { flex: 1 1 200px; min-width: 0; }
+.file-item-top .badge { flex-shrink: 0; white-space: nowrap; }

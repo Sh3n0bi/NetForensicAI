@@ -226,3 +226,109 @@ def test_raw_follow_cap_and_missing_stream():
 
     with pytest.raises(StreamError):
         _parse_raw_follow("Follow: tcp,raw\nNode 0: :0\nNode 1: :0\n", "tcp", 99, max_bytes=1024)
+
+
+# --- email (exfiltration by mail is common; its body is usually base64) ------
+
+import base64  # noqa: E402
+
+EML = (
+    b"MIME-Version: 1.0\r\nFrom: thief@example.org\r\nTo: drop@example.org\r\n"
+    b"Date: Wed, 10 Apr 2019 20:48:18 +0000\r\n"
+    b"Subject: =?utf-8?B?" + base64.b64encode("Passwords Logs - victim".encode()) + b"?=\r\n"
+    b"Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+    + base64.b64encode(b"Application : Outlook\r\nPassword    : hunter2\r\n") + b"\r\n"
+)
+
+
+def test_email_is_identified_decoded_and_hinted(tmp_path):
+    path = _write(tmp_path, "loot.eml", EML)
+    assert artifacts.identify(path)["kind"] == "email"
+    level, reasons, text = artifacts._email_risk(path, "low", [], EML[:100])
+    assert level == "low"
+    assert any("password field" in n for n in artifacts._content_notes(text, "email"))
+
+    preview = artifacts.preview(path)
+    assert preview["mode"] == "email"
+    assert preview["headers"]["subject"] == "Passwords Logs - victim"  # MIME-decoded
+    assert preview["headers"]["from"] == "thief@example.org"
+    assert "Password    : hunter2" in preview["body"]  # base64-decoded
+    assert preview["attachments"] == []
+
+
+def test_email_carrying_a_program_is_high_risk(tmp_path):
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["From"], message["To"], message["Subject"] = "a@example.org", "b@example.org", "invoice"
+    message.set_content("see attached")
+    message.add_attachment(MZ, maintype="application", subtype="octet-stream", filename="invoice.pdf.exe")
+    path = _write(tmp_path, "mail.eml", message.as_bytes())
+
+    level, reasons, _text = artifacts._email_risk(path, "low", [], b"")
+    assert level == "high"
+    assert "invoice.pdf.exe" in reasons[0]
+    assert artifacts.preview(path)["attachments"][0]["name"] == "invoice.pdf.exe"
+
+
+# --- scale and path handling ---------------------------------------------------
+
+
+def test_sources_match_by_path_tail_in_one_pass(tmp_path):
+    # Events record file_path as seen from wherever analysis ran - absolute,
+    # relative, Windows or POSIX separators. All must match their artifact.
+    from netforensicai.core.event import Event
+    from netforensicai.core.store import CaseStore
+
+    paths = [f"artifacts/EV-0001/http/f{i}.bin" for i in range(3)]
+    recorded = [
+        r"C:\cases\INC-0001\artifacts\EV-0001\http\f0.bin",
+        "../cases/INC-0001/artifacts/EV-0001/http/f1.bin",
+        "/srv/nf/cases/INC-0001/artifacts/EV-0001/http/f2.bin",
+    ]
+    events = [
+        Event(event_id=f"E{i}", evidence_id="EV-0001", source="pcap", event_type="file_transfer", file_path=p)
+        for i, p in enumerate(recorded)
+    ]
+    with CaseStore(tmp_path) as store:
+        store.replace_events_for_evidence("EV-0001", events)
+        found = artifacts._sources(store, paths)
+    assert {path: found[path].event_id for path in paths} == {paths[0]: "E0", paths[1]: "E1", paths[2]: "E2"}
+
+
+def test_hash_cache_tracks_changes(tmp_path):
+    path = _write(tmp_path, "f.bin", b"one")
+    first = artifacts.cached_sha256(path)
+    assert artifacts.cached_sha256(path) == first
+    import os
+    import time
+
+    path.write_bytes(b"two!")  # different size -> recomputed
+    os.utime(path, ns=(time.time_ns(), time.time_ns()))
+    assert artifacts.cached_sha256(path) == artifacts.sha256_of(path) != first
+
+
+def test_fs_path_long_form_only_on_windows_long_paths(monkeypatch):
+    monkeypatch.setattr(artifacts.os, "name", "nt")
+    # Raw strings throughout: these are Windows paths, backslashes and all.
+    long_path = r"C:\data" + "a" * 300
+    assert str(artifacts._long_form(long_path)).startswith(r"\\?\C:\data")
+    assert str(artifacts._long_form(r"C:\short")) == r"C:\short"
+    unc = r"\\server\share" + "\\" + "b" * 300
+    assert str(artifacts._long_form(unc)).startswith(r"\\?\UNC\server\share")
+
+
+def test_tar_is_recognised_at_its_real_offset(tmp_path):
+    data = b"\x00" * 257 + b"ustar\x0000" + b"\x00" * 300
+    assert artifacts.identify(_write(tmp_path, "a.tar", data))["label"] == "TAR archive"
+
+
+def test_name_promising_a_format_the_content_lacks_is_flagged(tmp_path):
+    # Seen on a real capture: backup.sql.gz and archive.tar holding random bytes.
+    path = _write(tmp_path, "backup.sql.gz", bytes(range(256)) * 4)
+    level, reasons = artifacts._risk(path.name, artifacts.identify(path))
+    assert level == "medium"
+    assert "may be encrypted, corrupted, or disguised" in reasons[-1]
+    # A genuine archive of the named type is not flagged.
+    gz = _write(tmp_path, "real.gz", b"\x1f\x8b\x08\x00" + b"\x00" * 20)
+    assert not any("not that format" in r for r in artifacts._risk(gz.name, artifacts.identify(gz))[1])
