@@ -32,6 +32,7 @@ pattern - see CONTRIBUTING.md.
 
 import itertools
 import logging
+import ntpath
 import re
 from urllib.parse import unquote_plus
 
@@ -180,7 +181,10 @@ def _double_extension_match(file_name):
 
 def _rules_for_event(event):
     if event.event_type == "process_start" and event.process_name:
-        name = event.process_name.lower()
+        # Basename, not the raw value: Sysmon's Image and Security 4688's
+        # NewProcessName are full paths, so an exact match against
+        # "mimikatz.exe" never fired on real Windows evidence.
+        name = ntpath.basename(event.process_name).lower()
         if name in _OFFENSIVE_TOOL_NAMES:
             yield (
                 "OFFENSIVE-TOOL-NAME",
@@ -739,8 +743,13 @@ def scan_case(store):
     # cost hundreds of megabytes on a real capture, and nothing here needs
     # random access - the per-event rules are stateless and the aggregate
     # ones keep their own small accumulators.
+    # Imported here, not at module top: host_detections is a sibling rule
+    # set that scan_case drives, and nothing else in this module needs it.
+    from netforensicai.core.host_detections import _HostAggregateState, host_rules_for_event
+
     aggregate = _AggregateState()
     network = _NetworkAggregateState()
+    host = _HostAggregateState()
     # Imported indicators are matched in this same pass rather than
     # written to detections from outside it: replace_detections below
     # rebuilds the table from scratch, so a match stored any other way
@@ -752,9 +761,10 @@ def scan_case(store):
     for event in store.iter_events():
         aggregate.feed(event)
         network.feed(event)
+        host.feed(event)
         indicators.feed(event)
         for rule_id, rule_name, severity, description in itertools.chain(
-            _rules_for_event(event), _network_rules_for_event(event)
+            _rules_for_event(event), _network_rules_for_event(event), host_rules_for_event(event)
         ):
             detections.append(
                 {
@@ -770,7 +780,7 @@ def scan_case(store):
             )
 
     for rule_id, rule_name, severity, description, event in itertools.chain(
-        aggregate.results(), network.results()
+        aggregate.results(), network.results(), host.results()
     ):
         detections.append(
             {

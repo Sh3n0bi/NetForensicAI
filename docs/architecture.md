@@ -40,7 +40,7 @@ flowchart TD
     DB[("case.duckdb<br/>events · entities · entity_events<br/>correlation_links · detections · attack · threat_intel")]
 
     DB --> CORR["correlate_case()<br/>shared entity + time window"]
-    DB --> DET["scan_detections()<br/>8 offline rules, no AI, no network"]
+    DB --> DET["scan_detections()<br/>network + host rules, no AI, no network"]
     CORR --> OUT
     DET --> OUT
     OUT["Timeline · Entity graph · Investigate<br/>Findings · Reports"]
@@ -93,6 +93,7 @@ netforensicai/
 │   ├── correlation.py   Sliding-window pairing, shared-entity links
 │   ├── timeline.py      Chronological view and filters
 │   ├── detections.py    Bundled offline rules (per-event + aggregate)
+│   ├── host_detections.py  Windows host rules (logons, LOLBins, persistence…)
 │   ├── attack.py        MITRE ATT&CK technique mapping
 │   ├── investigate.py   Entity-scoped investigation and leads
 │   ├── threat_intel.py  Opt-in enrichment with caching

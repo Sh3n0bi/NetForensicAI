@@ -264,7 +264,7 @@ Each of these is covered properly in [the capability reference](docs/capabilitie
 | **Streams** | Conversations reassembled by Wireshark, ranked by volume. |
 | **Triage** | The first questions worth asking an unfamiliar capture: protocols, flags, credentials, secrets, recoverable files. |
 | **Entities & correlation** | Deterministic IDs join the same real-world thing across evidence sources. Links are `related` or `possible_relationship`, never "caused". |
-| **Detections** | Eight offline rules — no AI, no network — run automatically on every `analyze`. |
+| **Detections** | Offline rules — no AI, no network — for web scans, network intrusions and Windows hosts (brute force, Kerberoasting, LSASS dumps, LOLBins, log clearing, ransomware prep…), run automatically on every `analyze`. |
 | **ATT&CK** | Deterministic, evidence-cited technique suggestions with an investigator-settable status. |
 | **Assistant** | Retrieves evidence through read-only tools; every claim is checked against what it retrieved, and an answer citing anything else is refused. |
 | **Investigation team** | `netforensic team` — network and host AI analysts each investigate their own part of the evidence; their cited findings are merged and ranked, and can be saved as Open findings for review. |
@@ -286,7 +286,7 @@ Stated plainly, because a forensics tool that hides its weaknesses is worse than
 - **HTTP request/response pairing is FIFO per flow.** Correct for ordinary keep-alive traffic; genuinely pipelined requests could mis-pair, so a response's URL is a reference rather than a certainty.
 - **Correlation memory is reduced but not constant** — it still holds one entity-link map proportional to the case.
 - **ATT&CK coverage is deliberately small** (four techniques). Each was chosen because the signal is specific, not to pad a matrix.
-- **EVTX covers five Sysmon event types richly**, everything else generically.
+- **EVTX maps five Sysmon event types and ~25 Security/System/PowerShell event IDs** (logons, process creation, account/group changes, Kerberos/NTLM, service installs, log clearing, script blocks); everything else is kept generically. Large EVTX files parse slowly (python-evtx is pure Python, a few hundred records/s).
 - **The custody hash chain** detects corruption and casual editing, not an attacker who owns the machine.
 - **Live capture needs Npcap/libpcap and elevated privileges**, which this tool does not install or grant.
 - **Ingest is the scaling limit, not dissection.** tshark reads a 1M-packet capture in 46 seconds; putting those events and their entity links into the store takes about fourteen minutes, and throughput degrades with case size (4,497 events/s at 100k against 1,907/s at 1M) because every entity-link insert probes a growing index. For very large captures the workflow is to **search and slice first, then ingest the slice** — search and `wireshark slice` read the capture file and scale to gigabytes.

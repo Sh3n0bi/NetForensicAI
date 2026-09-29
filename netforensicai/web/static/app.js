@@ -1481,11 +1481,18 @@ async function loadInto(panel, fetcher, build, degradedNote) {
 // labelled rather than simply left out.
 const STAGES = [
   ["reconnaissance", "Recon"],
+  ["initial-access", "Access"],
   ["delivery", "Delivery"],
+  ["execution", "Execution"],
+  ["persistence", "Persistence"],
+  ["privilege-escalation", "Priv-esc"],
+  ["defense-evasion", "Evasion"],
   ["credential-access", "Credentials"],
+  ["lateral-movement", "Lateral"],
   ["collection", "Collection"],
   ["exfiltration", "Exfiltration"],
   ["command-and-control", "C2"],
+  ["impact", "Impact"],
 ];
 
 function beatTime(iso) {

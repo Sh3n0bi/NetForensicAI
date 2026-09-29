@@ -24,7 +24,7 @@ All parsers normalize into one **Common Event Model**: `event_id`, `evidence_id`
 | `.json` | Array, `{"events": [...]}`-wrapped, or single object. Case/separator-insensitive field aliasing (`src_ip` / `SourceIP` / `source_ip` all match). |
 | Suricata `eve.json` | Detected by content (JSON Lines with a Suricata `event_type`) and mapped from its own schema: `alert` (with severity), `dns`, `http`, `tls`, `flow`, `fileinfo`, `anomaly`. Point it at the NSM log you already have. |
 | `.csv` | Same aliasing, one event per row. |
-| `.evtx` | Sysmon (ProcessCreate, NetworkConnection, ProcessTerminate, FileCreate, DNSQuery) gets rich field mapping; every other provider gets universal System fields plus full raw EventData. Pure Python, so Windows logs can be analyzed from any OS. |
+| `.evtx` | Sysmon (ProcessCreate, NetworkConnection, ProcessTerminate, FileCreate, DNSQuery) gets rich field mapping. **Security log**: logon success/failure with logon type, source IP and failure reason (4624/4625), logoff (4634/4647), explicit credentials (4648), privileged logon (4672), process creation/exit (4688/4689), service and scheduled-task creation (4697/4698/4702), account create/enable/reset/delete (4720/4722/4724/4726), group membership (4728/4732/4756), lockout (4740), Kerberos TGT/service ticket/pre-auth failure with encryption type (4768/4769/4771), NTLM validation (4776), audit log cleared (1102). **System**: service installed (7045), log cleared (104). **PowerShell**: script blocks (4104). Every other record gets universal System fields plus full raw EventData. Records the reader cannot decode are skipped and counted, never fatal. Pure Python, so Windows logs can be analyzed from any OS. |
 
 Adding a fifth format means one `BaseParser` subclass — entity extraction, correlation, timeline, detections, and reporting need no changes.
 
@@ -128,7 +128,7 @@ Local, deterministic, zero-cost pattern matches. **No AI, no network call.** The
 
 | Rule | Fires on |
 |---|---|
-| `OFFENSIVE-TOOL-NAME` | Process names of credential-access / lateral-movement tooling |
+| `OFFENSIVE-TOOL-NAME` | Process names of credential-access / lateral-movement tooling (matched on the basename, so full Sysmon/4688 paths match) |
 | `SUSPICIOUS-PORT` | Ports historically associated with C2 frameworks |
 | `DOUBLE-EXTENSION-FILE` | Executables disguised as documents (`invoice.pdf.exe`) |
 | `CREDENTIAL-ARTIFACT` | SAM hive, `ntds.dit`, lsass dumps |
@@ -153,6 +153,29 @@ Local, deterministic, zero-cost pattern matches. **No AI, no network call.** The
 | `OUTBOUND-BULK-TRANSFER` | Volume to an **external** host. Internal-to-internal is a file copy, and flagging it would bury the case that isn't |
 | `PERIODIC-BEACON` | Repeated low-volume contact at a machine-regular interval |
 | `CREDENTIAL-REUSE` | The **same** password observed on more than one protocol — a join no single-event rule can make |
+
+**Host rules** (`core/host_detections.py`) — over Windows Security/System/PowerShell EVTX and Sysmon. Each description names its ATT&CK technique.
+
+| Rule | Fires on |
+|---|---|
+| `LOG-CLEARED` | Security log cleared (1102) or any event log cleared (104) |
+| `OFFICE-SPAWNED-SHELL` | Word/Excel/Outlook/… starting a shell, script host or LOLBin — the classic malicious-macro tell |
+| `ENCODED-POWERSHELL` | `powershell -EncodedCommand <base64>` |
+| `SUSPICIOUS-POWERSHELL` | Script-block (4104) content: AMSI bypass, download cradle, download-and-execute, Mimikatz, known offensive modules, in-memory shellcode loading |
+| `LOLBIN-DOWNLOAD` / `LOLBIN-DECODE` / `LOLBIN-EXECUTION` | The *abusive* use of built-in tools, not the tool: `certutil -urlcache`/`-decode`, `bitsadmin /transfer`, `mshta http…`, `regsvr32 /i:http` (Squiblydoo), `rundll32 javascript:`, `wmic process call create` |
+| `LSASS-DUMP` | `rundll32 comsvcs.dll MiniDump`, `procdump … lsass` |
+| `CREDENTIAL-HIVE-EXPORT` | `reg save HKLM\SAM/SECURITY/SYSTEM`, `ntdsutil ifm` |
+| `INHIBIT-RECOVERY` | Shadow copies / backups deleted, recovery disabled (`vssadmin`, `wmic shadowcopy`, `wbadmin`, `bcdedit`) — ransomware preparation |
+| `SUSPICIOUS-SERVICE` | Service installed (7045/4697) whose command is an interpreter, `PSEXESVC`, or a binary in a user-writable path |
+| `SUSPICIOUS-SCHEDULED-TASK` | Scheduled task (4698/4702) whose action is the same kind of command |
+| `PRIVILEGED-GROUP-CHANGE` | Member added to Administrators, Domain/Enterprise/Schema Admins, operators groups (*high*) or Remote Desktop Users (*medium*) |
+| `EXTERNAL-RDP-LOGON` | RDP logon (type 10) from an internet-routable address |
+| `NEW-CREDENTIALS-LOGON` | Logon type 9 via `seclogo` — `runas /netonly`, and also pass-the-hash tooling |
+| `BRUTE-FORCE` / `BRUTE-FORCE-SUCCESS` | ≥10 failed logons (4625, 4771) for one account; *high* when a successful logon for it follows |
+| `PASSWORD-SPRAY` | One source failing logons as ≥5 different accounts; *high* if a logon from it then succeeds |
+| `KERBEROASTING` | RC4 service tickets (4769) for user service accounts; *high* at ≥3 services from one requester |
+
+Host-rule suppressions: no generic "service installed" rule (drivers and updates install weekly); machine accounts (`NAME$`) and service logons never complete a brute force; RC4 tickets for machine accounts and `krbtgt` are routine; a success *before* the failures is not a brute-force success. On a real Windows 11 workstation's System and PowerShell logs (46 service installs, 120 script blocks) the host rules raised nothing.
 
 Three deliberate suppressions, because a rule that cries wolf is worse than no rule:
 

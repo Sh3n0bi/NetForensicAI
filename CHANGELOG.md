@@ -6,6 +6,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **Web UI: DNS-rebinding protection.** In the default tokenless loopback mode the
+  UI accepted any `Host` header, so a malicious web page that rebound its domain to
+  `127.0.0.1` could read every case and create, modify or delete cases and evidence
+  as same-origin (the `X-Requested-With` CSRF check does not stop a same-origin
+  request). Tokenless mode now refuses any request not addressed to
+  `localhost`/`127.0.0.1`/`[::1]` with `403`. New `netforensic web --allow-host
+  <name>` (repeatable) admits a trusted reverse-proxy name. Token-protected
+  deployments (including the Docker image) are unaffected.
+
 ### Added
 - **`netforensic team`** — runs the AI investigation team over a case: the network and
   host analysts investigate with scoped read-only tools, their evidence-cited findings
@@ -14,6 +24,27 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   same provider options as `chat`, and `--save-findings` to record results as **Open**
   findings (with their event citations) for the investigator to confirm. Exits non-zero
   when every role fails to reach the provider.
+- **Windows host detection rules** (`core/host_detections.py`), driven from the same
+  streaming pass as the existing rules: `LOG-CLEARED`, `OFFICE-SPAWNED-SHELL`,
+  `ENCODED-POWERSHELL`, `SUSPICIOUS-POWERSHELL` (script-block content), `LOLBIN-*`,
+  `LSASS-DUMP`, `CREDENTIAL-HIVE-EXPORT`, `INHIBIT-RECOVERY`, `SUSPICIOUS-SERVICE`,
+  `SUSPICIOUS-SCHEDULED-TASK`, `PRIVILEGED-GROUP-CHANGE`, `EXTERNAL-RDP-LOGON`,
+  `NEW-CREDENTIALS-LOGON`, and aggregate `BRUTE-FORCE`/`BRUTE-FORCE-SUCCESS`,
+  `PASSWORD-SPRAY`, `KERBEROASTING`. Each names its ATT&CK technique. No false
+  positives on a real Windows 11 System/PowerShell log.
+- **Narrative stages for host activity**: initial access, execution, persistence,
+  privilege escalation, defense evasion, lateral movement and impact, with matching
+  assessments (shadow-copy deletion leads as likely ransomware preparation) and
+  stage chips in the web UI.
+- **Windows Security / System / PowerShell EVTX mapping** (`parsers/windows_events.py`).
+  Previously only five Sysmon event IDs were understood and a Security log arrived
+  as opaque `windows_event:*` records. Now ~25 event IDs map to named event types
+  (`logon_success`, `logon_failure`, `process_start`, `service_installed`,
+  `audit_log_cleared`, `kerberos_service_ticket`, `group_member_added`, …) with the
+  account, source IP/port (IPv4-mapped IPv6 unwrapped so it joins with pcap IPs),
+  process fields and a readable message (logon type, failure reason, Kerberos
+  encryption type). `-` placeholders never become entities. `<UserData>` records
+  (1102/104) are read. EVTX ingestion now streams instead of building a list.
 - **CI coverage gate** — a `coverage` job runs the full suite with tshark and all
   extras and fails under 85% line coverage (baseline ~89%), so coverage can't
   silently erode. `RELEASING.md` documents the PyPI/Docker release process.
@@ -46,6 +77,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hint to install Wireshark for the ~10x tshark engine when on the slow path.
 
 ### Fixed
+- **`OFFENSIVE-TOOL-NAME` never fired on real Windows evidence.** It compared the whole
+  `process_name` against bare names like `mimikatz.exe`, but Sysmon `Image` and
+  Security 4688 `NewProcessName` are full paths. It now matches the basename.
+- **One unreadable EVTX record no longer discards the whole log.** python-evtx
+  cannot render some record types written by current Windows (e.g. substitution
+  type 132 in a stock Windows 11 System log); that used to fail the entire file,
+  so the evidence produced zero events. Such records are now skipped and counted
+  in a warning. On a real 20 MB System log: 0 → 37,601 events (636 skipped).
 - Recovered FTP/Telnet/POP3 usernames are now attached to the cleartext-credential
   event (the `USER` line precedes `PASS` in a separate packet), so the account
   reaches the entity graph. Found while validating against real captures.

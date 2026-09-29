@@ -47,11 +47,18 @@ PHASES = (
     # evidence touching something a threat feed already named.
     ("known-indicators", "Known indicators from threat intelligence"),
     ("reconnaissance", "Reconnaissance and infrastructure"),
+    ("initial-access", "Initial access"),
     ("delivery", "Delivery"),
+    ("execution", "Execution"),
+    ("persistence", "Persistence"),
+    ("privilege-escalation", "Privilege escalation"),
+    ("defense-evasion", "Defense evasion"),
     ("credential-access", "Credential access"),
+    ("lateral-movement", "Lateral movement"),
     ("collection", "Collection and staging"),
     ("exfiltration", "Exfiltration"),
     ("command-and-control", "Command and control"),
+    ("impact", "Impact"),
     ("other", "Other observations"),
 )
 
@@ -72,6 +79,26 @@ RULE_PHASE = {
     "OUTBOUND-BULK-TRANSFER": "exfiltration",
     "PERIODIC-BEACON": "command-and-control",
     "SUSPICIOUS-PORT": "command-and-control",
+    # Host rules (core/host_detections.py).
+    "EXTERNAL-RDP-LOGON": "initial-access",
+    "LOLBIN-DOWNLOAD": "delivery",
+    "OFFICE-SPAWNED-SHELL": "execution",
+    "ENCODED-POWERSHELL": "execution",
+    "SUSPICIOUS-POWERSHELL": "execution",
+    "LOLBIN-EXECUTION": "execution",
+    "SUSPICIOUS-SERVICE": "persistence",
+    "SUSPICIOUS-SCHEDULED-TASK": "persistence",
+    "PRIVILEGED-GROUP-CHANGE": "privilege-escalation",
+    "LOG-CLEARED": "defense-evasion",
+    "LOLBIN-DECODE": "defense-evasion",
+    "BRUTE-FORCE": "credential-access",
+    "BRUTE-FORCE-SUCCESS": "credential-access",
+    "PASSWORD-SPRAY": "credential-access",
+    "KERBEROASTING": "credential-access",
+    "LSASS-DUMP": "credential-access",
+    "CREDENTIAL-HIVE-EXPORT": "credential-access",
+    "NEW-CREDENTIALS-LOGON": "lateral-movement",
+    "INHIBIT-RECOVERY": "impact",
 }
 
 SEVERITY_RANK = {"high": 3, "medium": 2, "low": 1}
@@ -88,6 +115,12 @@ PER_DETECTION_RULES = frozenset({"IOC-MATCH"})
 # strongest supported statement wins - and each says what it rests on
 # rather than asserting a conclusion the evidence does not carry.
 ASSESSMENTS = (
+    (
+        ("impact",),
+        "critical",
+        "Recovery on a host was deliberately disabled (shadow copies or backups removed) - the "
+        "step that typically comes immediately before ransomware encryption.",
+    ),
     (
         ("exfiltration", "credential-access"),
         "critical",
@@ -107,7 +140,39 @@ ASSESSMENTS = (
     (
         ("credential-access",),
         "high",
-        "One or more credentials crossed the network where they could be read.",
+        "One or more credentials were exposed, guessed, or dumped.",
+    ),
+    (
+        ("credential-access", "lateral-movement"),
+        "critical",
+        "Credentials were compromised and alternate-credential logons followed - consistent with "
+        "an attacker moving between hosts.",
+    ),
+    (
+        ("defense-evasion",),
+        "high",
+        "Activity consistent with hiding tracks was observed; evidence from before that point may "
+        "be incomplete.",
+    ),
+    (
+        ("execution",),
+        "high",
+        "Code ran on a host in a way commonly associated with attacker tooling.",
+    ),
+    (
+        ("persistence",),
+        "high",
+        "A mechanism that would keep code running across reboots was created.",
+    ),
+    (
+        ("privilege-escalation",),
+        "high",
+        "An account was given elevated or remote-access rights.",
+    ),
+    (
+        ("initial-access",),
+        "high",
+        "A remote interactive logon arrived from the internet.",
     ),
     (
         ("command-and-control",),
