@@ -6,6 +6,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **Web UI: DNS-rebinding protection.** In the default tokenless loopback mode the
+  UI accepted any `Host` header, so a malicious web page that rebound its domain to
+  `127.0.0.1` could read every case and create, modify or delete cases and evidence
+  as same-origin (the `X-Requested-With` CSRF check does not stop a same-origin
+  request). Tokenless mode now refuses any request not addressed to
+  `localhost`/`127.0.0.1`/`[::1]` with `403`. New `netforensic web --allow-host
+  <name>` (repeatable) admits a trusted reverse-proxy name. Token-protected
+  deployments (including the Docker image) are unaffected.
+
 ### Added
 - **Windows Security / System / PowerShell EVTX mapping** (`parsers/windows_events.py`).
   Previously only five Sysmon event IDs were understood and a Security log arrived
