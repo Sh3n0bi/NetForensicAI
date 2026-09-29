@@ -6,6 +6,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **Web UI: DNS-rebinding protection.** In the default tokenless loopback mode the
+  UI accepted any `Host` header, so a malicious web page that rebound its domain to
+  `127.0.0.1` could read every case and create, modify or delete cases and evidence
+  as same-origin (the `X-Requested-With` CSRF check does not stop a same-origin
+  request). Tokenless mode now refuses any request not addressed to
+  `localhost`/`127.0.0.1`/`[::1]` with `403`. New `netforensic web --allow-host
+  <name>` (repeatable) admits a trusted reverse-proxy name. Token-protected
+  deployments (including the Docker image) are unaffected.
+
 ### Added
 - **Windows host detection rules** (`core/host_detections.py`), driven from the same
   streaming pass as the existing rules: `LOG-CLEARED`, `OFFICE-SPAWNED-SHELL`,
@@ -28,16 +38,6 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   process fields and a readable message (logon type, failure reason, Kerberos
   encryption type). `-` placeholders never become entities. `<UserData>` records
   (1102/104) are read. EVTX ingestion now streams instead of building a list.
-
-### Fixed
-- **`OFFENSIVE-TOOL-NAME` never fired on real Windows evidence.** It compared the whole
-  `process_name` against bare names like `mimikatz.exe`, but Sysmon `Image` and
-  Security 4688 `NewProcessName` are full paths. It now matches the basename.
-- **One unreadable EVTX record no longer discards the whole log.** python-evtx
-  cannot render some record types written by current Windows (e.g. substitution
-  type 132 in a stock Windows 11 System log); that used to fail the entire file,
-  so the evidence produced zero events. Such records are now skipped and counted
-  in a warning. On a real 20 MB System log: 0 → 37,601 events (636 skipped).
 
 - **CI coverage gate** — a `coverage` job runs the full suite with tshark and all
   extras and fails under 85% line coverage (baseline ~89%), so coverage can't
@@ -71,6 +71,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hint to install Wireshark for the ~10x tshark engine when on the slow path.
 
 ### Fixed
+- **`OFFENSIVE-TOOL-NAME` never fired on real Windows evidence.** It compared the whole
+  `process_name` against bare names like `mimikatz.exe`, but Sysmon `Image` and
+  Security 4688 `NewProcessName` are full paths. It now matches the basename.
+- **One unreadable EVTX record no longer discards the whole log.** python-evtx
+  cannot render some record types written by current Windows (e.g. substitution
+  type 132 in a stock Windows 11 System log); that used to fail the entire file,
+  so the evidence produced zero events. Such records are now skipped and counted
+  in a warning. On a real 20 MB System log: 0 → 37,601 events (636 skipped).
 - Recovered FTP/Telnet/POP3 usernames are now attached to the cleartext-credential
   event (the `USER` line precedes `PASS` in a separate packet), so the account
   reaches the entity graph. Found while validating against real captures.
