@@ -1231,6 +1231,53 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
         data["evidence_id"] = evidence.evidence_id
         return jsonify(data)
 
+    @app.route("/api/cases/<case_id>/streams/<int:index>/data")
+    def stream_data(case_id, index):
+        """Save what one side of a conversation sent, byte for byte - the way
+        to get a file out of any protocol the automatic recovery does not
+        cover. `direction=a` is what the first endpoint sent, `b` the reply.
+        Recorded in the chain of custody, like a recovered-file download."""
+        case = _load_case(case_id)
+        from io import BytesIO
+
+        from flask import send_file
+
+        from netforensicai.core import audit
+        from netforensicai.core import streams as streams_module
+
+        direction = request.args.get("direction", "a")
+        if direction not in ("a", "b"):
+            raise ApiError("direction must be 'a' or 'b'.")
+        protocol = request.args.get("protocol") or streams_module.TCP
+        evidence, path = _capture_path(case, request.args.get("evidence"))
+        try:
+            payload = streams_module.stream_bytes(path, protocol=protocol, index=index)
+        except streams_module.StreamError as e:
+            raise ApiError(str(e), 404)
+        data = payload.a_to_b if direction == "a" else payload.b_to_a
+        if not data:
+            raise ApiError("That side of the conversation sent no data.", 404)
+
+        import hashlib
+
+        audit.record(
+            _case_dir(case),
+            audit.STREAM_EXPORTED,
+            {
+                "evidence_id": evidence.evidence_id,
+                "protocol": protocol,
+                "stream": index,
+                "direction": direction,
+                "sender": payload.node_a if direction == "a" else payload.node_b,
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            },
+        )
+        name = f"{evidence.evidence_id}-{protocol}-stream{index}-{direction}.bin"
+        return _harden(
+            send_file(BytesIO(data), mimetype="application/octet-stream", as_attachment=True, download_name=name)
+        )
+
     @app.route("/api/cases/<case_id>/triage")
     def triage_case(case_id):
         """Run the triage presets over a capture.
@@ -1259,30 +1306,77 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
 
     @app.route("/api/cases/<case_id>/artifacts")
     def list_artifacts(case_id):
-        """Files carved out of evidence, with the sizes the dashboard shows.
+        """Files recovered from evidence: what each really is (by content,
+        not name), how risky it is to open, and where it came from. A file
+        registered but since removed is listed as missing, not hidden - see
+        core/artifacts.py."""
+        case = _load_case(case_id)
+        from netforensicai.core import artifacts as artifacts_module
 
-        case.artifacts holds paths relative to the case directory; the
-        names and sizes have to come from the files themselves. A path
-        registered for a file that has since been removed is reported with
-        a null size rather than skipped - a missing artifact is something
-        an investigator needs to see, not something to hide.
+        with locked_store(_case_dir(case)) as store:
+            return jsonify(artifacts_module.describe_all(_case_dir(case), case, store))
+
+    def _artifact_path(case):
+        from netforensicai.core import artifacts as artifacts_module
+
+        try:
+            return artifacts_module.resolve(_case_dir(case), case, request.args.get("path"))
+        except artifacts_module.ArtifactError as e:
+            raise ApiError(str(e), 404)
+
+    def _harden(response):
+        # A recovered file is attacker-controlled bytes. nosniff stops the
+        # browser second-guessing the declared type, and a sandboxing CSP
+        # means that even if one were ever rendered it could run nothing.
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; sandbox"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.route("/api/cases/<case_id>/artifacts/preview")
+    def preview_artifact(case_id):
+        """A safe look at a recovered file: text, a CSV table, a raster image,
+        or a hex dump. Never HTML - see core/artifacts.preview()."""
+        case = _load_case(case_id)
+        from netforensicai.core import artifacts as artifacts_module
+
+        return jsonify(artifacts_module.preview(_artifact_path(case)))
+
+    @app.route("/api/cases/<case_id>/artifacts/content")
+    def artifact_content(case_id):
+        """The file itself. Always a download (octet-stream, attachment),
+        except `?inline=1` for formats that cannot carry script (PNG, JPEG,
+        GIF, WebP), which the preview shows as an image.
+
+        A download takes a copy of evidence out of the case, so it is
+        recorded in the chain of custody; an inline image preview is not.
         """
         case = _load_case(case_id)
-        case_dir = _case_dir(case)
+        from flask import send_file
 
-        rows = []
-        for relative in case.artifacts:
-            path = case_dir / relative
-            rows.append(
-                {
-                    "path": relative,
-                    "name": Path(relative).name,
-                    "protocol": Path(relative).parent.name,
-                    "size_bytes": path.stat().st_size if path.is_file() else None,
-                    "missing": not path.is_file(),
-                }
-            )
-        return jsonify(rows)
+        from netforensicai.core import artifacts as artifacts_module
+        from netforensicai.core import audit
+
+        path = _artifact_path(case)
+        identity = artifacts_module.identify(path)
+        if request.args.get("inline"):
+            if identity["kind"] not in artifacts_module.SAFE_IMAGE_MIME:
+                raise ApiError("Only PNG, JPEG, GIF and WebP images can be shown inline.", 400)
+            return _harden(send_file(path, mimetype=identity["mime"]))
+
+        audit.record(
+            _case_dir(case),
+            audit.ARTIFACT_EXPORTED,
+            {
+                "path": request.args.get("path"),
+                "sha256": artifacts_module.sha256_of(path),
+                "size": path.stat().st_size,
+                "type": identity["label"],
+            },
+        )
+        return _harden(
+            send_file(path, mimetype="application/octet-stream", as_attachment=True, download_name=path.name)
+        )
 
     # --- Wireshark integration ---
     #

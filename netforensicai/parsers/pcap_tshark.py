@@ -58,6 +58,9 @@ Event types produced:
 
 import hashlib
 import logging
+import ntpath
+import posixpath
+import re
 import tempfile
 from collections import Counter
 from datetime import datetime, timezone
@@ -764,6 +767,142 @@ def _export_objects(file_path, output_dir, evidence_id, sequence):
     return events
 
 
+# Transfer commands and which side sends the file's bytes: the client for an
+# upload, the server for a download.
+_FTP_UPLOAD_COMMANDS = {"STOR", "APPE", "STOU"}
+_FTP_DOWNLOAD_COMMANDS = {"RETR"}
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]")
+
+
+def _safe_file_name(name, fallback):
+    """A name that is safe to create on disk: no directories, no traversal,
+    no characters Windows rejects. Evidence controls this string."""
+    base = posixpath.basename(ntpath.basename((name or "").strip()))
+    base = _UNSAFE_NAME.sub("_", base).strip(" .")
+    return base[:150] or fallback
+
+
+def _unique_path(directory, name):
+    candidate = directory / name
+    stem, suffix = Path(name).stem, Path(name).suffix
+    n = 2
+    while candidate.exists():
+        candidate = directory / f"{stem}-{n}{suffix}"
+        n += 1
+    return candidate
+
+
+def _recover_ftp_transfers(file_path, output_dir, evidence_id, sequence):
+    """Recover files moved over FTP when Wireshark's own exporter cannot.
+
+    tshark's `--export-objects ftp-data` only names a data connection it can
+    tie to a PASV/PORT negotiation. When that step is missing from the
+    capture - it started mid-session, or the client used the default port 20
+    data channel - the exporter recovers nothing, even though the control
+    channel plainly says `STOR customers-export.csv` and the bytes are sitting
+    in the data stream. This pairs them itself: each FTP data connection is
+    matched to the most recent unused transfer command between the same two
+    hosts that preceded it, and the file is read back byte-exact from that
+    stream. Every recovered file says how it was recovered.
+    """
+    if output_dir is None:
+        return []
+    from netforensicai.core import streams
+
+    commands = []
+    for layers in wireshark.iter_dissected_packets(
+        file_path,
+        ["frame.number", "ip.src", "ip.dst", "ftp.request.command", "ftp.request.arg"],
+        display_filter="ftp.request.command",
+    ):
+        command = (_first(layers, "ftp.request.command") or "").upper()
+        if command in _FTP_UPLOAD_COMMANDS | _FTP_DOWNLOAD_COMMANDS:
+            commands.append({
+                "frame": int(_first(layers, "frame.number") or 0),
+                "client": _first(layers, "ip.src"),
+                "server": _first(layers, "ip.dst"),
+                "command": command,
+                "arg": _first(layers, "ftp.request.arg"),
+                "used": False,
+            })
+    if not commands:
+        return []
+
+    data_streams = {}
+    for layers in wireshark.iter_dissected_packets(
+        file_path, ["frame.number", "tcp.stream", "ip.src", "ip.dst"], display_filter="ftp-data"
+    ):
+        stream = _first(layers, "tcp.stream")
+        if stream is None or stream in data_streams:
+            continue
+        data_streams[stream] = {
+            "frame": int(_first(layers, "frame.number") or 0),
+            "hosts": {_first(layers, "ip.src"), _first(layers, "ip.dst")},
+        }
+
+    events = []
+    target_dir = Path(output_dir) / "ftp-data"
+    for stream, info in sorted(data_streams.items(), key=lambda item: item[1]["frame"]):
+        candidates = [
+            c for c in commands
+            if not c["used"] and c["frame"] < info["frame"] and {c["client"], c["server"]} == info["hosts"]
+        ]
+        if not candidates:
+            continue
+        command = max(candidates, key=lambda c: c["frame"])
+        command["used"] = True
+        upload = command["command"] in _FTP_UPLOAD_COMMANDS
+        sender, receiver = (command["client"], command["server"]) if upload else (command["server"], command["client"])
+        try:
+            payload = streams.stream_bytes(file_path, "tcp", stream)
+        except streams.StreamError as e:
+            logger.info(f"FTP data stream {stream} could not be read: {e}")
+            continue
+        # The side that sent the file is the one whose address matches; fall
+        # back to whichever direction carried bytes.
+        node_a_ip = (payload.node_a or "").rsplit(":", 1)[0].strip("[]")
+        data = payload.a_to_b if node_a_ip == sender else payload.b_to_a
+        data = data or payload.a_to_b or payload.b_to_a
+        if not data:
+            continue
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        destination = _unique_path(target_dir, _safe_file_name(command["arg"], f"ftp-stream-{stream}.bin"))
+        destination.write_bytes(data)
+        action = "uploaded" if upload else "downloaded"
+        logger.info(f"Recovered FTP file: {destination} ({len(data)} bytes)")
+        events.append(
+            Event(
+                event_id=generate_event_id(evidence_id, sequence.next()),
+                evidence_id=evidence_id,
+                source="pcap",
+                event_type="file_transfer",
+                src_ip=sender,
+                dst_ip=receiver,
+                protocol="FTP-DATA",
+                file_name=destination.name,
+                file_path=str(destination),
+                file_hash=hashlib.sha256(data).hexdigest(),
+                message=(
+                    f"Recovered {len(data):,}-byte file '{destination.name}' {action} over FTP from {sender} "
+                    f"to {receiver} ({command['command']} paired with its data connection, TCP stream {stream})"
+                ),
+                raw_event_reference={
+                    "export_protocol": "ftp-data",
+                    "size": len(data),
+                    "engine": "tshark",
+                    "recovered_by": "ftp-command-pairing",
+                    "ftp_command": command["command"],
+                    "ftp_argument": command["arg"],
+                    "control_frame": command["frame"],
+                    "stream": int(stream),
+                    "truncated": payload.truncated,
+                },
+            )
+        )
+    return events
+
+
 def iter_parse(
     file_path,
     evidence_id,
@@ -795,9 +934,21 @@ def iter_parse(
     for event in collector.finish():
         emitted += 1
         yield event
-    for event in _export_objects(file_path, output_dir, evidence_id, collector.sequence):
+    exported = _export_objects(file_path, output_dir, evidence_id, collector.sequence)
+    for event in exported:
         emitted += 1
         yield event
+    # Only when Wireshark's exporter found no FTP files itself: the two would
+    # otherwise recover the same transfer twice.
+    if not any((e.raw_event_reference or {}).get("export_protocol") == "ftp-data" for e in exported):
+        try:
+            recovered = _recover_ftp_transfers(file_path, output_dir, evidence_id, collector.sequence)
+        except wireshark.WiresharkError as e:
+            logger.info(f"FTP file recovery did not run: {e}")
+            recovered = []
+        for event in recovered:
+            emitted += 1
+            yield event
 
     logger.info(
         f"tshark engine parsed {collector.packet_count:,} packets into {emitted:,} events"

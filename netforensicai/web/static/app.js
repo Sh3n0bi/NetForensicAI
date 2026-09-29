@@ -380,6 +380,7 @@ async function renderCaseTab(app, c, tab, rest) {
   stopTeamPolling(); // same for a team run; the run itself carries on server-side
   if (tab === "story") return renderStory(app, c);
   if (tab === "evidence") return renderEvidence(app, c);
+  if (tab === "files") return renderFiles(app, c, rest.length ? decodeURIComponent(rest.join("/")) : undefined);
   if (tab === "timeline") return renderTimeline(app, c);
   if (tab === "entities") return renderEntities(app, c, rest[0]);
   if (tab === "findings") return renderFindings(app, c);
@@ -1054,7 +1055,7 @@ async function renderOverview(app, c) {
     ["Entities", c.entity_count, "deterministic IDs across sources", "k-violet", ICONS.entities, "#b07cff"],
     ["Detections", c.detection_count, "offline rules, no AI", "k-red", ICONS.detections, "#e05a4e"],
     ["Correlations", c.correlation_count ?? 0, `${corr.related || 0} related · ${corr.possible_relationship || 0} possible`, "k-amber", ICONS.attack, "#e0a030"],
-    ["Files carved", c.artifact_count ?? 0, "hashed into artifacts/", "k-green", ICONS.file, "#4caf50"],
+    ["Files recovered", c.artifact_count ?? 0, "open them under Recovered files", "k-green", ICONS.file, "#4caf50"],
     ["Findings", c.finding_count, "investigator-owned", "k-blue", ICONS.findings, "#5b9dff"],
   ];
   const row = el("div", { class: "kpis" });
@@ -1141,7 +1142,12 @@ async function renderOverview(app, c) {
   const detCard = el("div", { class: "card" });
   detCard.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Recent detections" })]));
   const fileCard = el("div", { class: "card" });
-  fileCard.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Files carved" })]));
+  fileCard.appendChild(
+    el("div", { class: "card-head" }, [
+      el("h3", { text: "Recovered files" }),
+      el("span", { class: "right" }, [el("a", { href: `#/case/${c.case_id}/files`, text: "Open and preview" })]),
+    ])
+  );
   const triCard = el("div", { class: "card" });
   triCard.appendChild(
     el("div", { class: "card-head" }, [el("h3", { text: "Triage matches" }), el("span", { class: "dim", text: "leads, not verdicts" })])
@@ -1223,15 +1229,15 @@ async function renderOverview(app, c) {
   });
 
   loadInto(fileCard, () => apiGet(`/cases/${c.case_id}/artifacts`), (rows) => {
-    if (!rows.length) return el("div", { class: "empty", text: "No files carved." });
+    if (!rows.length) return el("div", { class: "empty", text: "No files recovered." });
     const t = el("table", { class: "mini" });
     const tb = el("tbody");
     for (const f of rows.slice(0, 6)) {
       tb.appendChild(
         el("tr", {}, [
-          el("td", { class: "mono", text: f.name }),
-          el("td", { class: "dim", text: f.protocol }),
-          el("td", { class: "mono dim", text: f.missing ? "missing" : `${f.size_bytes} B` }),
+          el("td", {}, [el("a", { class: "mono", href: `#/case/${c.case_id}/files/${encodeURIComponent(f.path)}`, text: f.name })]),
+          el("td", { class: "dim", text: f.missing ? "missing" : (f.type && f.type.label) || f.protocol }),
+          el("td", { class: "mono dim", text: fmtBytes(f.size_bytes) }),
         ])
       );
     }
@@ -3189,6 +3195,12 @@ async function renderStreams(app, c, focus) {
       reader.innerHTML = "";
       reader.appendChild(el("h3", { text: `tcp stream ${s.stream}` }));
       reader.appendChild(el("div", { class: "mono dim", text: `${s.node_a} ↔ ${s.node_b}` }));
+      const saveBar = el("div", { class: "filter-bar" });
+      const dataUrl = (dir) => `${API}/cases/${c.case_id}/streams/${s.stream}/data?direction=${dir}`;
+      saveBar.appendChild(el("a", { class: "button-link secondary", href: dataUrl("a"), download: "", text: `Save what ${s.node_a} sent` }));
+      saveBar.appendChild(el("a", { class: "button-link secondary", href: dataUrl("b"), download: "", text: `Save what ${s.node_b} sent` }));
+      saveBar.appendChild(el("span", { class: "dim", text: "Exact bytes, for files the automatic recovery missed." }));
+      reader.appendChild(saveBar);
       for (const turn of s.turns) {
         const fromA = turn.sender === "a";
         const box = el("div", { class: "turn " + (fromA ? "turn-a" : "turn-b") });
@@ -3227,6 +3239,17 @@ async function renderStreams(app, c, focus) {
         el("td", { text: (s.applications || []).join(", ") }),
       ]);
       row.onclick = () => follow(s.stream);
+      // Rows are the only way into a conversation, so they must work from the
+      // keyboard too, not just with a mouse.
+      row.setAttribute("tabindex", "0");
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-label", `Open conversation ${s.stream}: ${s.endpoint_a} to ${s.endpoint_b}`);
+      row.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          follow(s.stream);
+        }
+      });
       tbody.appendChild(row);
     }
     table.appendChild(tbody);
@@ -3285,7 +3308,10 @@ async function renderTriage(app, c) {
     }
     if (r.files.length) {
       filePanel.appendChild(
-        el("div", { class: "dim", text: "Reported, not written. Save them with `netforensic ctf triage --extract-to`." })
+        el("div", { class: "dim" }, [
+          document.createTextNode("Analyzed evidence keeps these files. "),
+          el("a", { href: `#/case/${c.case_id}/files`, text: "Open, preview and download them under Recovered files" }),
+        ])
       );
     }
 
@@ -3657,6 +3683,229 @@ async function renderTeam(app, c) {
   if (applyStatus(status)) startPolling();
 }
 
+// --- Recovered files -----------------------------------------------------
+//
+// Files the analysis pulled out of network traffic (HTTP, SMB shares, FTP,
+// TFTP, email). The point of this view is that someone new can see what
+// each file really is, where it came from, and look inside it - safely.
+// Nothing from a file is rendered as HTML or run: previews are text, a
+// table, a raster image the server has verified, or a hex dump (see
+// core/artifacts.py). Everything a file contains is shown via textContent.
+
+const RISK_LABEL = { high: "Could run code", medium: "Handle with care", low: "Low risk" };
+const RISK_BADGE = { high: "high", medium: "medium", low: "low" };
+
+function fmtBytes(n) {
+  if (n == null) return "missing";
+  const units = ["bytes", "KB", "MB", "GB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  const num = new Intl.NumberFormat(undefined, { maximumFractionDigits: i ? 1 : 0 }).format(v);
+  return `${num} ${units[i]}`;
+}
+
+function fmtUtc(iso) {
+  if (!iso) return "unknown time";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium", timeZone: "UTC" }).format(d) + " UTC";
+}
+
+function fileJourney(f) {
+  const proto = (f.protocol || "").toUpperCase().replace("FTP-DATA", "FTP");
+  const src = f.source || {};
+  if (src.from && src.to) return `Sent from ${src.from} to ${src.to} over ${proto}`;
+  return `Recovered from ${proto} traffic`;
+}
+
+function fileUrl(c, f, extra) {
+  const q = new URLSearchParams({ path: f.path, ...(extra || {}) });
+  return `${API}/cases/${c.case_id}/artifacts/content?${q}`;
+}
+
+async function renderFiles(app, c, focusPath) {
+  app.appendChild(el("h1", { text: "Recovered files" }));
+  app.appendChild(
+    el("div", {
+      class: "subtitle",
+      text:
+        "Files pulled out of this case's network traffic. Look inside them here safely - nothing is opened or run. Download a copy only when you need one, and open programs only on an isolated analysis machine.",
+    })
+  );
+
+  const layout = el("div", { class: "files-layout" });
+  const list = el("div", { class: "files-list", role: "list" });
+  const detail = el("div", { class: "panel files-detail", "aria-live": "polite" });
+  layout.appendChild(list);
+  layout.appendChild(detail);
+  app.appendChild(layout);
+
+  list.appendChild(el("div", { class: "loading", text: "Loading recovered files…" }));
+  let rows;
+  try {
+    rows = await apiGet(`/cases/${c.case_id}/artifacts`);
+  } catch (e) {
+    list.innerHTML = "";
+    list.appendChild(el("div", { class: "error-box", text: "Could not load recovered files: " + e.message }));
+    return;
+  }
+  list.innerHTML = "";
+
+  if (!rows.length) {
+    layout.remove();
+    const tshark = await wiresharkStatus();
+    app.appendChild(
+      el("div", { class: "panel empty-state" }, [
+        el("h2", { text: "No files were recovered from this case" }),
+        el("p", {
+          text:
+            "Files are recovered from web downloads and uploads (HTTP), Windows file shares (SMB), FTP, TFTP and email. None of those carried a file in this evidence, or it has not been analyzed yet.",
+        }),
+        tshark && !tshark.available
+          ? el("p", { text: "Install Wireshark to recover files from SMB, FTP, TFTP and email - without it only HTTP files are recovered." })
+          : el("span"),
+        el("a", { class: "button-link", href: `#/case/${c.case_id}/evidence`, text: "Go to Evidence" }),
+      ])
+    );
+    return;
+  }
+
+  const order = { high: 0, medium: 1, low: 2 };
+  rows.sort((a, b) => (order[a.risk] ?? 3) - (order[b.risk] ?? 3) || a.name.localeCompare(b.name));
+
+  let selected = null;
+  function select(f, item) {
+    if (selected) selected.classList.remove("active");
+    selected = item;
+    item.classList.add("active");
+    history.replaceState(null, "", `#/case/${c.case_id}/files/${encodeURIComponent(f.path)}`);
+    showDetail(f);
+  }
+
+  for (const f of rows) {
+    const item = el("button", { type: "button", class: "file-item", role: "listitem" });
+    const top = el("div", { class: "file-item-top" }, [
+      el("span", { class: "file-name", text: f.name, title: f.name }),
+      f.missing ? el("span", { class: "badge badge-none", text: "Missing" }) : el("span", { class: "badge badge-" + RISK_BADGE[f.risk], text: RISK_LABEL[f.risk] }),
+    ]);
+    item.appendChild(top);
+    item.appendChild(el("div", { class: "dim", text: `${f.missing ? "File missing" : f.type.label} · ${fmtBytes(f.size_bytes)}` }));
+    item.appendChild(el("div", { class: "file-journey", text: fileJourney(f) }));
+    for (const note of f.notes || []) item.appendChild(el("div", { class: "file-note", text: note }));
+    item.addEventListener("click", () => select(f, item));
+    list.appendChild(item);
+    if (focusPath && focusPath === f.path) setTimeout(() => select(f, item), 0);
+  }
+  if (!focusPath) select(rows[0], list.firstChild);
+
+  function showDetail(f) {
+    detail.innerHTML = "";
+    detail.appendChild(el("h2", { class: "file-title", text: f.name }));
+    detail.appendChild(el("div", { class: "file-journey", text: fileJourney(f) }));
+
+    if (f.missing) {
+      detail.appendChild(el("div", { class: "error-box", text: "This file was recovered but is no longer in the case folder, so it cannot be shown or downloaded." }));
+      return;
+    }
+
+    if (f.risk_reasons && f.risk_reasons.length) {
+      const warn = el("div", { class: "risk-box risk-" + f.risk });
+      warn.appendChild(el("b", { text: RISK_LABEL[f.risk] }));
+      const ul = el("ul");
+      for (const r of f.risk_reasons) ul.appendChild(el("li", { text: r }));
+      warn.appendChild(ul);
+      detail.appendChild(warn);
+    }
+
+    const facts = el("dl", { class: "facts" });
+    const add = (k, v) => {
+      if (v == null || v === "") return;
+      facts.appendChild(el("dt", { text: k }));
+      facts.appendChild(typeof v === "string" ? el("dd", { text: v }) : el("dd", {}, [v]));
+    };
+    add("What it really is", f.type.label);
+    add("Size", fmtBytes(f.size_bytes));
+    const hash = el("span", { class: "mono hash", text: f.sha256, translate: "no" });
+    const copy = el("button", { type: "button", class: "secondary small", text: "Copy SHA-256" });
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(f.sha256);
+        toast("SHA-256 copied.");
+      } catch (e) {
+        toast("Could not copy: " + e.message, true);
+      }
+    });
+    add("SHA-256", el("span", { class: "hash-row" }, [hash, copy]));
+    const src = f.source || {};
+    add("Web address", src.url || "");
+    add("Seen", src.timestamp ? fmtUtc(src.timestamp) : "");
+    add("How it was recovered", src.recovered_by === "ftp-command-pairing"
+      ? "Rebuilt by NetForensicAI from the FTP command and its data connection (Wireshark could not export it)"
+      : "Exported by Wireshark");
+    if (src.stream != null) {
+      add("Conversation", el("a", { href: `#/case/${c.case_id}/streams/${src.stream}`, text: `Open the conversation it travelled in` }));
+    }
+    detail.appendChild(facts);
+    for (const note of f.notes || []) detail.appendChild(el("div", { class: "file-note", text: note }));
+
+    const actions = el("div", { class: "filter-bar" });
+    const download = el("a", { class: "button-link", href: fileUrl(c, f), download: f.name, text: "Download a copy" });
+    if (f.risk === "high") {
+      download.addEventListener("click", (ev) => {
+        if (!download.dataset.confirmed) {
+          ev.preventDefault();
+          download.dataset.confirmed = "1";
+          download.textContent = "Download anyway";
+          toast("This file can run code if opened. Download it only to an isolated analysis machine - click again to download.", true);
+        }
+      });
+    }
+    actions.appendChild(download);
+    actions.appendChild(el("span", { class: "dim", text: "The download is recorded in the chain of custody." }));
+    detail.appendChild(actions);
+
+    const previewBox = el("div", { class: "file-preview" });
+    detail.appendChild(el("h3", { text: "Look inside" }));
+    detail.appendChild(previewBox);
+    loadPreview(f, previewBox);
+  }
+
+  async function loadPreview(f, box) {
+    box.appendChild(el("div", { class: "loading", text: "Reading the file…" }));
+    try {
+      const p = await apiGet(`/cases/${c.case_id}/artifacts/preview?${new URLSearchParams({ path: f.path })}`);
+      box.innerHTML = "";
+      if (p.mode === "empty") {
+        box.appendChild(el("div", { class: "empty", text: "This file is empty." }));
+      } else if (p.mode === "image") {
+        box.appendChild(el("img", { src: fileUrl(c, f, { inline: "1" }), alt: `Preview of ${f.name}`, class: "file-image", loading: "lazy" }));
+      } else if (p.mode === "table") {
+        const wrap = el("div", { class: "table-wrap" });
+        const t = el("table", { class: "mini" });
+        const head = el("tr", {}, p.header.map((h) => el("th", { text: h })));
+        t.appendChild(el("thead", {}, [head]));
+        const tb = el("tbody");
+        for (const r of p.rows) tb.appendChild(el("tr", {}, r.map((v) => el("td", { text: v }))));
+        t.appendChild(tb);
+        wrap.appendChild(t);
+        box.appendChild(wrap);
+        box.appendChild(el("div", { class: "dim", text: `${p.rows.length} row${p.rows.length === 1 ? "" : "s"} shown${p.truncated ? " - the file has more; download it to see everything." : "."}` }));
+      } else {
+        if (p.mode === "hex") box.appendChild(el("div", { class: "dim", text: "Not text, so it is shown byte by byte (hex on the left, readable characters on the right)." }));
+        box.appendChild(el("pre", { class: "file-text", text: p.text }));
+        if (p.truncated) box.appendChild(el("div", { class: "dim", text: "Only the start of the file is shown." }));
+      }
+    } catch (e) {
+      box.innerHTML = "";
+      box.appendChild(el("div", { class: "error-box", text: "Could not read the file: " + e.message }));
+    }
+  }
+}
+
 // --- Application shell: rail, case switcher, status bar --------------
 //
 // The rail, the switcher and the status bar are chrome: they persist
@@ -3715,6 +3964,7 @@ const RAIL = [
   [null, "overview", "Overview", "overview"],
   [null, "story", "What happened", "story"],
   ["Evidence", "evidence", "Evidence", "evidence"],
+  [null, "files", "Recovered files", "file"],
   [null, "capture", "Live capture", "capture"],
   ["Dig", "search", "Search", "search"],
   [null, "streams", "Streams", "streams"],

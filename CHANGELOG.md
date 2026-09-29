@@ -6,6 +6,26 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Recovered files you can open.** A new *Recovered files* view lists every file pulled
+  from traffic with what it really is (by content, not name - a disguised program is
+  called out), where it came from ("Sent from A to B over FTP", the URL, a link to the
+  conversation), how risky it is to open and why, and hints such as "contains email
+  addresses". **Look inside** safely (text, CSV table, raster image, or hex - never
+  HTML, never run) and **download a copy** (attachment + nosniff + sandbox CSP; a second
+  confirmation for programs). Downloads are recorded in the chain of custody
+  (`artifact.exported`). Overview and Triage now link here instead of pointing at the CLI.
+- **FTP files are recovered even when Wireshark cannot.** Without a PASV/PORT exchange in
+  the capture, Wireshark's exporter recovers nothing from an FTP data connection. The
+  tshark engine now pairs each `STOR`/`RETR` with its data connection and recovers the
+  file byte-exact (the demo incident's stolen `customers-export.csv` now appears).
+- **Save any conversation's data** - *Save what … sent* on Streams downloads one side's
+  exact bytes (audited as `stream.exported`), for files in protocols the automatic
+  recovery does not cover. Backed by a byte-exact raw-mode stream reader.
+
+### Fixed
+- Stream rows could only be opened with a mouse; they are now keyboard-operable.
+
 ## [0.5.0] — 2026-09-30
 
 The investigation team comes to the web UI, with one-click acceptance of its

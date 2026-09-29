@@ -53,7 +53,11 @@ None of these are crashes; they are coverage limits worth knowing.
    file over a separate PASV/PORT data connection; the tool recovers FTP
    *credentials* (control channel) but object carving is HTTP-only, so the
    transferred file did not appear. *Recommendation:* carve FTP data streams,
-   or document the limit.
+   or document the limit. *Partly addressed since:* the **tshark** engine now
+   recovers FTP transfers - through Wireshark's exporter, and by pairing each
+   `STOR`/`RETR` command with its data connection when the exporter cannot (no
+   PASV/PORT in the capture). The scapy engine still carves HTTP only, and
+   `ftp/bigtransfer` has not been re-run since.
 2. **No SMTP protocol parsing.** SMTP is treated as a generic TCP flow — no
    sender/recipient/subject extraction — unlike HTTP/DNS/TLS/FTP-credentials.
    *Recommendation:* an SMTP mapper (sender, recipients, subject, attachments).
