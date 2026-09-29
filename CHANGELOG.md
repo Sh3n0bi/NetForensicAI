@@ -6,6 +6,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-30
+
+The investigation team comes to the web UI, with one-click acceptance of its
+findings, and every AI request now reaches the chain of custody. Also fixes the
+saved "Default AI provider" setting, which had been ignored everywhere.
+
 ### Added
 - **Investigation team in the web UI** — *Investigation team* under Assistant runs the
   AI analysts in the background (the page polls, like live capture), shows each
@@ -180,6 +186,7 @@ accredited against any forensic standard; correlation is not causality;
 ingestion is the scaling bottleneck on very large captures; and the AI paths
 have not been exercised against a live provider in CI.
 
-[Unreleased]: https://github.com/Sh3n0bi/NetForensicAI/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Sh3n0bi/NetForensicAI/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.3.0
