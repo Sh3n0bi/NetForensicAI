@@ -7,6 +7,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Windows host detection rules** (`core/host_detections.py`), driven from the same
+  streaming pass as the existing rules: `LOG-CLEARED`, `OFFICE-SPAWNED-SHELL`,
+  `ENCODED-POWERSHELL`, `SUSPICIOUS-POWERSHELL` (script-block content), `LOLBIN-*`,
+  `LSASS-DUMP`, `CREDENTIAL-HIVE-EXPORT`, `INHIBIT-RECOVERY`, `SUSPICIOUS-SERVICE`,
+  `SUSPICIOUS-SCHEDULED-TASK`, `PRIVILEGED-GROUP-CHANGE`, `EXTERNAL-RDP-LOGON`,
+  `NEW-CREDENTIALS-LOGON`, and aggregate `BRUTE-FORCE`/`BRUTE-FORCE-SUCCESS`,
+  `PASSWORD-SPRAY`, `KERBEROASTING`. Each names its ATT&CK technique. No false
+  positives on a real Windows 11 System/PowerShell log.
+- **Narrative stages for host activity**: initial access, execution, persistence,
+  privilege escalation, defense evasion, lateral movement and impact, with matching
+  assessments (shadow-copy deletion leads as likely ransomware preparation) and
+  stage chips in the web UI.
 - **Windows Security / System / PowerShell EVTX mapping** (`parsers/windows_events.py`).
   Previously only five Sysmon event IDs were understood and a Security log arrived
   as opaque `windows_event:*` records. Now ~25 event IDs map to named event types
@@ -18,6 +30,9 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (1102/104) are read. EVTX ingestion now streams instead of building a list.
 
 ### Fixed
+- **`OFFENSIVE-TOOL-NAME` never fired on real Windows evidence.** It compared the whole
+  `process_name` against bare names like `mimikatz.exe`, but Sysmon `Image` and
+  Security 4688 `NewProcessName` are full paths. It now matches the basename.
 - **One unreadable EVTX record no longer discards the whole log.** python-evtx
   cannot render some record types written by current Windows (e.g. substitution
   type 132 in a stock Windows 11 System log); that used to fail the entire file,
