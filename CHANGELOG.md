@@ -7,6 +7,12 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`netforensic demo`** — builds the synthetic incident capture, creates a case,
+  analyzes it and prints the story in one command; `--open` then opens it in the web
+  UI. The generator moved into the package (`netforensicai/demo.py`) so this works
+  from a PyPI install; `samples/generate_incident.py` remains as a thin wrapper.
+- **README screenshots** of the web UI (story, overview, detections, timeline),
+  captured from the demo case. `samples/capture_screenshots.py` regenerates them.
 - **CI coverage gate** — a `coverage` job runs the full suite with tshark and all
   extras and fails under 85% line coverage (baseline ~89%), so coverage can't
   silently erode. `RELEASING.md` documents the PyPI/Docker release process.

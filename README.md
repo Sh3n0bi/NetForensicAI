@@ -39,6 +39,35 @@ It runs entirely on your machine. **No cloud backend, no daemon, no database ser
 | **Interfaces** | CLI (`netforensic`) and a local web UI — both over the same core |
 | **Requires** | Python 3.9+. Wireshark optional but recommended. |
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Sh3n0bi/NetForensicAI/NetForensicAI/docs/images/story.png" alt="The What happened view of the demo case: a critical assessment, the intrusion stages it passed through, and each finding with the events it cites" width="900">
+</p>
+
+**See it on your own machine in one command** — no evidence of your own needed:
+
+```bash
+pip install "netforensicai[pcap,web]"
+netforensic demo --open
+```
+
+<details>
+<summary><b>More screenshots</b> — overview, detections, timeline</summary>
+
+<br>
+
+**Overview** — the story up front, then the counts.
+<img src="https://raw.githubusercontent.com/Sh3n0bi/NetForensicAI/NetForensicAI/docs/images/overview.png" alt="Case overview dashboard with the story summary and KPI tiles" width="900">
+
+**Detections** — offline, deterministic rules, each pointing at the event it matched.
+<img src="https://raw.githubusercontent.com/Sh3n0bi/NetForensicAI/NetForensicAI/docs/images/detections.png" alt="Detections table with severities, rules, events and descriptions" width="900">
+
+**Timeline** — every source normalized into one chronological view.
+<img src="https://raw.githubusercontent.com/Sh3n0bi/NetForensicAI/NetForensicAI/docs/images/timeline.png" alt="Timeline of normalized DNS, HTTP, flow and anomaly events" width="900">
+
+<sub>All screenshots are of `netforensic demo`: fabricated traffic, no real hosts or data.</sub>
+
+</details>
+
 ---
 
 
@@ -210,7 +239,14 @@ netforensic report generate --case INC-0001 --format html
 
 ### Try it without evidence of your own
 
-`samples/generate_incident.py` builds a synthetic capture containing a complete incident — a lookup of a cheap-TLD domain, an executable pulled over cleartext HTTP, a credential posted in the clear, a private key retrieved, the same password reused on FTP, a customer CSV uploaded in chunks, then eight beacons — plus ordinary browsing, so the capture is not made entirely of findings.
+```bash
+netforensic demo            # build a synthetic incident, analyze it, print the story
+netforensic demo --open     # ...then open it in the web UI
+```
+
+`netforensic demo` builds a synthetic capture containing a complete incident — a lookup of a cheap-TLD domain, an executable pulled over cleartext HTTP, a credential posted in the clear, a private key retrieved, the same password reused on FTP, a customer CSV uploaded in chunks, then eight beacons — plus ordinary browsing, so the capture is not made entirely of findings. It creates a new case (named *Demo incident (synthetic)*) each time it runs, so it never touches an existing one. It needs the `pcap` extra.
+
+The same steps by hand, if you want the capture file itself:
 
 ```bash
 python samples/generate_incident.py -o incident.pcap
