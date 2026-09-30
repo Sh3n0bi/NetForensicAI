@@ -88,7 +88,10 @@ RETRY_BACKOFF_SECONDS = 2.0
 
 MAX_TOKENS = 4096
 MAX_EVENTS = 50
-DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+# 127.0.0.1, not "localhost": Ollama listens on IPv4 loopback only, and on
+# Windows "localhost" tries IPv6 ::1 first and takes ~2 s to give up on it -
+# added to every single request to a local model.
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 SYSTEM_PROMPT = """You are assisting a digital forensics and incident response (DFIR) investigator.
 You will be given a set of normalized forensic events, already parsed and extracted from real evidence.
