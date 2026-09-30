@@ -644,6 +644,21 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
             related = store.related_entities(entity_id)
         return jsonify({"entity": entity, "related": related})
 
+    @app.route("/api/cases/<case_id>/entities/<entity_id>/dossier")
+    def host_dossier(case_id, entity_id):
+        """Everything one host did, on one screen: its traffic totals, the
+        findings that fired on it, who it talked to, the services and
+        domains it reached, files seen with it, and any threat intel. Read
+        -only aggregation - host (IP) entities only."""
+        from netforensicai.core import host_dossier as dossier
+
+        case = _load_case(case_id)
+        with locked_store(_case_dir(case)) as store:
+            data = dossier.build(store, entity_id)
+        if data is None:
+            raise ApiError("No host found for that id (the dossier is for IP addresses).", 404)
+        return jsonify(data)
+
     # --- investigate ---
 
     @app.route("/api/cases/<case_id>/investigate")

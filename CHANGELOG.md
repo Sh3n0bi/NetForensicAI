@@ -7,11 +7,19 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- **Hosts in the story link to their graph.** The IP addresses named under each finding
-  in *What happened* (and the subjects line) are now links to that host's entity graph
-  and evidence, instead of plain text. Only hosts that exist as entities are linked, so a
-  link never leads to a missing page; the narrative resolves each host to its entity id
-  server-side (`GET /cases/<id>/narrative` gains `host_entities`).
+- **A host on one screen.** A new *Host* view answers "what did this machine do" - its
+  traffic totals (events, bytes sent vs received, first/last seen), the findings that
+  fired on it, who it talked to (peers with per-direction byte counts, on-network or
+  external, each linking to its own host view), the services and domains it reached, the
+  files seen with it, and any threat-intel verdict. Read-only aggregation over the case,
+  no model and no network. New `GET /cases/<id>/entities/<entity_id>/dossier`
+  (`core/host_dossier.py`), for IP entities.
+- **Hosts in the story are clickable.** The IP addresses named under each finding in
+  *What happened* (and the subjects line) now link to that host's view, instead of being
+  plain text. Only hosts that exist as entities are linked, so a link never leads to a
+  missing page; the narrative resolves each host to its entity id server-side
+  (`GET /cases/<id>/narrative` gains `host_entities`). The entity graph's investigate
+  panel links to the host view too.
 
 ## [0.6.0] — 2026-09-30
 
