@@ -233,6 +233,14 @@ Optional, explicit, cached VirusTotal lookups for IPs and file hashes. Never aut
 ## AI assistant
 Optional, never on the critical path. Four interchangeable providers — **Anthropic, OpenAI, Ollama (fully local), Google Gemini** — selected per request. See [AI safety model](#ai-safety-model).
 
+**Choosing where it runs.** The first-run screen and the top of **Settings** ask one question - *how should the AI assistant run?* - with three answers:
+
+- **On this computer (local AI)** - private (evidence never leaves the machine) and free. The page detects whether Ollama is running and lists the installed models to pick from; if it is not, it gives the setup steps (install Ollama, `ollama pull llama3.1:8b`, check again) with recommended models and their download size and RAM needs.
+- **With an AI service (API key)** - pick Anthropic, OpenAI or Gemini, paste one key, **Save and test** (one real request confirms the service accepts it), with a link to where that service issues keys.
+- **No AI for now** - the page says plainly what still works without it: detections, What happened, recovered files, conversations, the timeline and reports.
+
+The status bar always shows where the assistant runs (*AI: local (qwen2.5:7b)*, *AI: Google Gemini*, *AI: not set up*) and links to change it. Detection comes from `GET /api/ai/status`, which never returns a key and checks an Ollama address through the same loopback-only guard as every Ollama call. The default Ollama address is `http://127.0.0.1:11434`: on Windows `localhost` tries IPv6 first and costs about two seconds per request.
+
 Two shapes, one contract. `investigate --ai` hands a fixed set of events to the model and gets back one hedged hypothesis. `chat` lets the model **retrieve** instead:
 
 ```bash

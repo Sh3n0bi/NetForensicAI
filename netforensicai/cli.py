@@ -710,7 +710,7 @@ def investigate(
         None, "--model", help="Model name override for --ai (defaults to a sane per-provider default)"
     ),
     ollama_url: str = typer.Option(
-        None, "--ollama-url", help="Ollama server URL for --ai-provider ollama (default http://localhost:11434)"
+        None, "--ollama-url", help="Ollama server URL for --ai-provider ollama (default http://127.0.0.1:11434)"
     ),
     cases_dir: str = typer.Option(
         DEFAULT_CASES_DIR,

@@ -278,7 +278,7 @@ A generator rather than a checked-in `.pcap`, deliberately: a binary in a reposi
 netforensic web --cases-dir cases      # then open http://127.0.0.1:8000
 ```
 
-1. **Settings** *(top right)* — optionally add VirusTotal / AI keys and press **Test**. Everything except threat intel and the AI assistant works with no keys at all.
+1. **Choose how the AI assistant runs** *(optional - on the first screen, or Settings)* — on this computer with **local AI** (Ollama: private and free; the page detects it and lists your models) or with an **API key** (Anthropic, OpenAI or Gemini, saved and tested in one step). Everything except threat intel and the AI assistant works with no AI and no keys at all.
 2. **New investigation** — name the case, drop in your evidence (pcap, pcapng, evtx, JSON, CSV) and press **Create and analyze**. It uploads, hashes, analyzes and opens on the story in one step.
 3. **What happened** — read the account of the case before the counts: the assessment, the stages
    it passed through, and each finding with the events it rests on.
@@ -326,7 +326,7 @@ Stated plainly, because a forensics tool that hides its weaknesses is worse than
 - **The custody hash chain** detects corruption and casual editing, not an attacker who owns the machine.
 - **Live capture needs Npcap/libpcap and elevated privileges**, which this tool does not install or grant.
 - **Ingest is the scaling limit, not dissection.** tshark reads a 1M-packet capture in 46 seconds; putting those events and their entity links into the store takes about fourteen minutes, and throughput degrades with case size (4,497 events/s at 100k against 1,907/s at 1M) because every entity-link insert probes a growing index. For very large captures the workflow is to **search and slice first, then ingest the slice** — search and `wireshark slice` read the capture file and scale to gigabytes.
-- **The assistant has not been exercised against a live provider in this repository's testing.** Its rendering, its tool loop and its refusal path are covered against a scripted model; the HTTP round trip to Anthropic, OpenAI, Gemini or Ollama is not.
+- **The assistant has not been exercised against a live provider in this repository's testing.** Its tool loop and refusal path are covered against a scripted model, and the request each provider receives is tested with only the network call faked - which is how a bug that stopped chat and the investigation team working on *every* real provider was found and fixed. A round trip to a real Anthropic, OpenAI, Gemini or Ollama server is not part of the suite.
 - **The two pcap engines do not produce identical output.** That is the point — tshark sees protocols the scapy engine cannot — but it means a case re-analyzed under a different engine will not have identical events. Each event records the engine that produced it, and `--engine` pins one when reproducibility matters.
 - **tshark object export runs as a second pass** over the capture. It keeps the streaming parse's memory profile intact, at the cost of reading the file twice when an output directory is given.
 - **Exported objects carry no timestamp.** tshark's object export reports the recovered file but not the frame it completed on, so `file_transfer` events from it sort at the end of the timeline as `unknown` rather than in position. A wrong timestamp on forensic evidence is worse than an absent one, so none is invented — the parent flow's events carry the timing.

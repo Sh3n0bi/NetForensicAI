@@ -824,3 +824,24 @@ details.tech > div { margin-top: 4px; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
 }
+/* --- AI setup --- */
+.ai-setup-card { margin-top: 16px; }
+.ai-setup-card > h2 { margin-top: 0; }
+.ai-current { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px 13px; margin-bottom: 12px; }
+.ai-current.is-ready { border-color: rgba(76, 175, 80, 0.45); background: rgba(76, 175, 80, 0.07); }
+.ai-current.not-ready { border-color: rgba(224, 178, 82, 0.45); background: rgba(224, 178, 82, 0.07); }
+.ai-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.ai-choice { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; background: var(--surface); min-width: 0; }
+.ai-choice.chosen { border-color: var(--accent-dim); background: var(--accent-soft); }
+.ai-choice h3 { margin: 0 0 6px; }
+.ai-choice p { margin: 0 0 10px; }
+.ai-choice .filter-bar { flex-wrap: wrap; }
+.ai-choice input[type="password"] { flex: 1 1 160px; min-width: 0; }
+.ai-ok { color: var(--good, #4caf50); font-size: 13px; margin-bottom: 8px; }
+.ai-steps { margin: 10px 0; font-size: 13px; }
+.ai-steps summary { cursor: pointer; }
+.ai-steps ol { padding-left: 20px; line-height: 1.55; }
+.ai-recs { padding-left: 18px; margin: 4px 0; }
+.ai-steps code { font-size: 12px; }
+.statusbar a.item { color: inherit; text-decoration: none; }
+.statusbar a.item:hover { text-decoration: underline; }
