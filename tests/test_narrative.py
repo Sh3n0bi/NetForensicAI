@@ -151,6 +151,31 @@ def test_a_chunked_upload_is_not_also_reported_as_a_beacon(store):
 # --- the narrative ------------------------------------------------------
 
 
+def test_host_entities_link_named_hosts_to_their_entity_pages(store):
+    """A host named in a beat resolves to the same entity id the entities
+    view uses, so the UI can link it to its graph - and only hosts that
+    exist as entities are included, never a dangling link."""
+    from netforensicai.core.entities import generate_entity_id
+
+    events = [
+        _event(i, offset=i * 2, src_ip="10.0.0.5", dst_ip="104.21.7.19", dst_port=20,
+               raw_event_reference={"byte_count": 1_500})
+        for i in range(8)
+    ]
+    _seed(store, events)
+
+    narrative = narrative_module.build(store)
+    payload = narrative.to_dict()
+
+    # The internal host is the subject of the exfil beat and is an entity.
+    assert "10.0.0.5" in narrative.host_entities
+    assert narrative.host_entities["10.0.0.5"] == generate_entity_id("ip_address", "10.0.0.5")
+    assert payload["host_entities"]["10.0.0.5"] == narrative.host_entities["10.0.0.5"]
+    # Every mapped value points at an ip_address entity that exists.
+    for value, entity_id in narrative.host_entities.items():
+        assert store.get_entity(entity_id) is not None
+
+
 def test_a_case_with_no_detections_says_so_rather_than_claiming_nothing_happened(store):
     _seed(store, [_event(1, src_ip="10.0.0.5", dst_ip="10.0.0.9")])
 
