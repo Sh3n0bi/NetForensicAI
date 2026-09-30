@@ -107,6 +107,9 @@ _SCRIPT_EXTENSIONS = {".ps1", ".vbs", ".js", ".jse", ".bat", ".cmd", ".hta", ".w
 _EXPORT_EMAIL_SUFFIX = re.compile(r"\s*(\(\d+\))?\.eml$", re.IGNORECASE)
 _EMAIL = re.compile(rb"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PRIVATE_KEY = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+# Protocol-level logins: FTP/POP3/IMAP-style "PASS <secret>" on its own line,
+# IMAP "LOGIN user secret", and HTTP Basic auth.
+_PROTOCOL_LOGIN = re.compile(rb"(?im)^\s*(pass\s+\S+|a?\d*\s*login\s+\S+\s+\S+|authorization:\s*basic\s+\S+)")
 _PASSWORDISH = re.compile(rb"(?i)\b(pass(word|wd)?|pwd)\s*[=:]")
 
 
@@ -209,6 +212,8 @@ def _content_notes(head, kind):
         notes.append(f"Contains {emails}+ email addresses - may be personal data.")
     if kind in ("text", "csv", "email") and _PASSWORDISH.search(head):
         notes.append("Mentions a password field - may contain credentials.")
+    if _PROTOCOL_LOGIN.search(head):
+        notes.append("Contains a login (username and password) sent as plain text.")
     return notes
 
 

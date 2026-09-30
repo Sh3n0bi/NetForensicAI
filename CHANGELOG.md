@@ -7,6 +7,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Plain language for newcomers** (`core/explain.py`). Conversations (formerly Streams)
+  lead with a sentence - "10.10.4.17 (on your network) sent 5.0 KB to 104.21.7.19 (on the
+  internet) using FTP-DATA" - plus whether it could be read on the wire and whether data
+  mostly left the network, with the Wireshark details folded underneath. A glossary of
+  ~50 protocols explains every protocol name in Conversations and Triage; Timeline event
+  types read as plain labels with labelled UTC times. Opening a conversation shows
+  content hints (email addresses, plain-text logins, private keys) and an optional
+  **Explain this conversation with AI**. `netforensic stream list` prints the sentence
+  too. New `GET /api/glossary`; stream summaries gain per-direction byte counts.
 - **Recovered files you can open.** A new *Recovered files* view lists every file pulled
   from traffic with what it really is (by content, not name - a disguised program is
   called out), where it came from ("Sent from A to B over FTP", the URL, a link to the
@@ -24,6 +33,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recovery does not cover. Backed by a byte-exact raw-mode stream reader.
 
 ### Fixed
+- Animations now honour the system's reduced-motion setting.
 - **A capture with emailed files could fail to analyze at all.** Wireshark names an
   exported email after its subject, percent-escaped and MIME-encoded; on a real HawkEye
   keylogger capture that name ran to ~200 characters, the write failed on Windows'

@@ -66,6 +66,10 @@ class StreamSummary:
     bytes: int
     first_frame: Optional[int]
     applications: list = field(default_factory=list)
+    # Frame bytes each way: endpoint_a -> endpoint_b, and the reply. What
+    # turns "5 KB between two hosts" into "one host uploaded 5 KB".
+    bytes_a_to_b: int = 0
+    bytes_b_to_a: int = 0
 
     def to_dict(self):
         return {
@@ -75,6 +79,8 @@ class StreamSummary:
             "endpoint_b": self.endpoint_b,
             "packets": self.packets,
             "bytes": self.bytes,
+            "bytes_a_to_b": self.bytes_a_to_b,
+            "bytes_b_to_a": self.bytes_b_to_a,
             "first_frame": self.first_frame,
             "applications": self.applications,
         }
@@ -185,9 +191,17 @@ def list_streams(pcap_path, protocol=TCP, display_filter=None, limit=DEFAULT_STR
             )
         summary.packets += 1
         try:
-            summary.bytes += int(_first(layers, "frame.len") or 0)
+            length = int(_first(layers, "frame.len") or 0)
         except (TypeError, ValueError):
-            pass
+            length = 0
+        summary.bytes += length
+        src = _first(layers, "ip.src") or _first(layers, "ipv6.src")
+        sport = _first(layers, f"{protocol}.srcport")
+        sender = f"{src}:{sport}" if src and sport else src
+        if sender == summary.endpoint_a:
+            summary.bytes_a_to_b += length
+        else:
+            summary.bytes_b_to_a += length
         application = _first(layers, "_ws.col.protocol")
         if application and application not in summary.applications:
             summary.applications.append(application)

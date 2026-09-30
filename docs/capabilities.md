@@ -271,6 +271,15 @@ netforensic team --case INC-0001 --json
 
 The loop is JSON the model returns rather than four native tool-calling integrations. Each provider expresses tool use differently, so native support would put the safety-critical path in four places and leave **Ollama** — the only provider that keeps an investigation entirely off the network — worst supported. The transport is not what makes this safe; the ledger is.
 
+## Plain language for newcomers
+
+Wireshark's vocabulary is exact and, to someone new, opaque. `core/explain.py` is the one place that turns it into words - deterministic and offline, so it can be trusted the way the detections are:
+
+- **Every conversation says what it was**, e.g. *"10.10.4.17 (on your network) sent 5.0 KB to 104.21.7.19 (on the internet) using FTP-DATA."* - who talked to whom, whether each side is local, on the internet or a reserved address, and which way the data mostly went (bytes are counted per direction). Supporting points say what the protocol is for, whether the content can be read on the wire, and when data mostly left the network.
+- **A glossary of ~50 protocols** - every protocol name in Conversations and Triage opens to a one-line explanation and whether it is encrypted. Event types read as plain labels in the Timeline (*"Unusual packet (statistical outlier)"* instead of `anomaly`), and times are shown as labelled UTC.
+- **Opening a conversation** shows the explanation, hints about what it carried (email addresses, a login sent as plain text, a private key), **Explain this conversation with AI** (the cited assistant - optional), and the Wireshark details (stream index, filter, packet counts) folded underneath rather than first.
+- `netforensic stream list` prints the same sentence under each row.
+
 ## Recovered files
 
 Every file the analysis recovers from traffic is listed under **Recovered files**, in words someone new can follow:
@@ -281,7 +290,7 @@ Every file the analysis recovers from traffic is listed under **Recovered files*
 - **Look inside safely** — text, CSV as a table, PNG/JPEG/GIF/WebP images, or a hex dump for anything else. Nothing is ever run or rendered as HTML: SVG and HTML are shown as text, and only raster images are served inline.
 - **Download a copy** — always as an attachment (`application/octet-stream`, `nosniff`, a sandboxing CSP), with a second confirmation for anything that can run code. Each download is recorded in the chain of custody (`artifact.exported`) with the file's SHA-256.
 
-Any conversation can also be saved byte-for-byte from **Streams** (*Save what … sent*), for files in protocols the automatic recovery does not cover; that is recorded too (`stream.exported`).
+Any conversation can also be saved byte-for-byte from **Conversations** (*Save what … sent*), for files in protocols the automatic recovery does not cover; that is recorded too (`stream.exported`).
 
 ## Findings & reporting
 Investigator-owned findings (`Open` / `Investigating` / `Confirmed` / `Rejected` / `False Positive` / `Resolved`), each citing specific evidence + event pairs, creatable from CLI or web UI. Reports render to **Markdown, JSON, and HTML**, every section traceable to evidence, with a stated limitations section.
@@ -294,7 +303,7 @@ The rail groups destinations by the stage of an investigation rather than listin
 | | |
 |---|---|
 | **Evidence** | Evidence · Recovered files · Live capture |
-| **Dig** | Search · Streams · Triage |
+| **Dig** | Search · Conversations · Triage |
 | **Analysis** | Timeline · Entities · Detections · ATT&CK |
 | **Conclude** | Findings · Reports · Chain of custody |
 | **Assistant** | Ask (cited) · Investigation team |
