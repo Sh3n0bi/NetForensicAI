@@ -177,6 +177,13 @@ async function renderSettings(app) {
     })
   );
 
+  const aiPanel = el("section", { class: "panel ai-setup-card", "aria-labelledby": "ai-setup-title" });
+  aiPanel.appendChild(el("h2", { id: "ai-setup-title", text: "How should the AI assistant run?" }));
+  const aiBody = el("div");
+  aiPanel.appendChild(aiBody);
+  app.appendChild(aiPanel);
+  renderAiSetup(aiBody, { onDone: () => renderStatusBar(null) });
+
   const panel = el("div", { class: "panel" });
   app.appendChild(panel);
   panel.appendChild(el("div", { class: "loading", text: "Loading…" }));
@@ -254,7 +261,7 @@ async function renderSettings(app) {
   const ollamaInput = el("input", {
     type: "text",
     value: data.preferences.ollama_base_url || "",
-    placeholder: "http://localhost:11434",
+    placeholder: "http://127.0.0.1:11434",
   });
   ollamaRow.appendChild(ollamaInput);
   ollamaRow.appendChild(el("span", { class: "setting-status", text: "" }));
@@ -501,6 +508,14 @@ async function renderCaseList(app) {
     // buttons on an otherwise empty screen compete for no reason.
     headActions.hidden = true;
     body.appendChild(renderOnboarding());
+    // Optional, and after the main call to action: the question every new
+    // user has about AI, answered before they meet it inside a case.
+    const aiCard = el("section", { class: "panel ai-setup-card", "aria-labelledby": "ai-setup-title" });
+    aiCard.appendChild(el("h2", { id: "ai-setup-title", text: "How should the AI assistant run? (optional)" }));
+    const aiBody = el("div");
+    aiCard.appendChild(aiBody);
+    body.appendChild(aiCard);
+    renderAiSetup(aiBody);
     return;
   }
 
@@ -2130,7 +2145,7 @@ async function renderInvestigatePanel(panel, c, result) {
     style: "width:100%; margin-bottom:6px;",
   });
   const aiBaseUrlInput = el("input", {
-    placeholder: "Ollama server URL (default http://localhost:11434)",
+    placeholder: "Ollama server URL (default http://127.0.0.1:11434)",
     style: "width:100%; margin-bottom:6px; display:none;",
   });
   panel.appendChild(aiModelInput);
@@ -3984,6 +3999,171 @@ async function renderFiles(app, c, focusPath) {
   }
 }
 
+// --- AI setup: local model or API key --------------------------------------
+//
+// One component, used on the first-run screen and at the top of Settings.
+// It asks the question a newcomer actually has - "where does the AI run?" -
+// and makes each answer concrete: local AI shows whether Ollama is running
+// and which models are installed; a service asks for one key and tests it;
+// "no AI" says plainly what still works. Detection comes from /api/ai/status
+// (core/ai_setup.py), which never returns a key.
+
+const AI_CLOUD_ORDER = ["anthropic", "openai", "gemini"];
+
+async function renderAiSetup(container, opts) {
+  const options = opts || {};
+  const refresh = options.refresh ? "?refresh=1" : "";
+  container.innerHTML = "";
+  container.appendChild(el("div", { class: "loading", text: "Checking how the AI assistant is set up…" }));
+  let s;
+  try {
+    s = await apiGet("/ai/status" + refresh);
+  } catch (e) {
+    container.innerHTML = "";
+    container.appendChild(el("div", { class: "error-box", text: "Could not check the AI setup: " + e.message }));
+    return;
+  }
+  container.innerHTML = "";
+
+  const current = el("div", { class: "ai-current " + (s.ready ? "is-ready" : "not-ready"), role: "status" });
+  const where = s.mode === "local" ? `on this computer with ${s.model}` : `through ${(s.cloud[s.provider] || {}).name || s.provider}`;
+  current.appendChild(
+    el("b", { text: s.ready ? `The AI assistant runs ${where}.` : `The AI assistant is not ready yet.` })
+  );
+  if (!s.ready && s.not_ready_reason) current.appendChild(el("div", { class: "dim", text: s.not_ready_reason }));
+  if (s.ready && s.mode === "cloud") current.appendChild(el("div", { class: "dim", text: "A key is saved. Use Test to confirm the service accepts it." }));
+  container.appendChild(current);
+
+  const choices = el("div", { class: "ai-choices" });
+  container.appendChild(choices);
+
+  // --- 1. local ---
+  const local = el("section", { class: "ai-choice" + (s.mode === "local" ? " chosen" : ""), "aria-labelledby": "ai-local-h" });
+  local.appendChild(el("h3", { id: "ai-local-h", text: "On this computer (local AI)" }));
+  local.appendChild(
+    el("p", {
+      class: "dim",
+      text: "Private: evidence never leaves this machine. Free. Uses Ollama to run an open model; answers are slower than a cloud service and depend on your hardware.",
+    })
+  );
+  if (s.local.reachable) {
+    local.appendChild(el("div", { class: "ai-ok", text: `Ollama is running at ${s.local.base_url}.` }));
+    if (s.local.models.length) {
+      const pick = el("select", { "aria-label": "Local model" });
+      for (const m of s.local.models) {
+        const o = el("option", { value: m.name, text: `${m.name}${m.parameters ? ` (${m.parameters})` : ""} - ${m.size_gb} GB` });
+        if (m.name === s.model || m.name === `${s.model}:latest`) o.setAttribute("selected", "selected");
+        pick.appendChild(o);
+      }
+      const use = el("button", { type: "button", text: "Use local AI" });
+      use.addEventListener("click", async () => {
+        use.disabled = true;
+        try {
+          await apiPost("/settings", { ai_provider: "ollama", ai_model: pick.value });
+          toast(`The assistant will now run on this computer with ${pick.value}.`);
+          await renderAiSetup(container, options);
+          if (options.onDone) options.onDone();
+        } catch (e) {
+          toast("Could not save: " + e.message, true);
+          use.disabled = false;
+        }
+      });
+      local.appendChild(el("div", { class: "filter-bar" }, [el("label", { class: "dim", text: "Model" }), pick, use]));
+    } else {
+      local.appendChild(el("div", { class: "file-note", text: "No models are installed yet. Download one (see below), then check again." }));
+    }
+  } else {
+    local.appendChild(el("div", { class: "dim", text: s.local.error || "Ollama was not found." }));
+  }
+  const steps = el("details", { class: "ai-steps" + (s.local.reachable ? "" : " open-hint") });
+  if (!s.local.reachable) steps.setAttribute("open", "");
+  steps.appendChild(el("summary", { text: s.local.reachable ? "Add another model" : "How to set up local AI (about 10 minutes)" }));
+  const ol = el("ol");
+  if (!s.local.reachable) {
+    ol.appendChild(el("li", {}, [document.createTextNode("Install Ollama from "), el("a", { href: "https://ollama.com/download", target: "_blank", rel: "noopener noreferrer", text: "ollama.com/download" }), document.createTextNode(" and start it.")]));
+  }
+  const rec = s.recommended_local_models[0];
+  ol.appendChild(el("li", {}, [document.createTextNode("Download a model - in a terminal run "), el("code", { text: `ollama pull ${rec.name}`, translate: "no" }), document.createTextNode(".")]));
+  const recList = el("ul", { class: "ai-recs" });
+  for (const m of s.recommended_local_models) recList.appendChild(el("li", {}, [el("code", { text: m.name, translate: "no" }), document.createTextNode(` - ${m.why}`)]));
+  ol.appendChild(el("li", {}, [document.createTextNode("Good choices for this tool:"), recList]));
+  ol.appendChild(el("li", { text: "Come back here and press Check again." }));
+  steps.appendChild(ol);
+  local.appendChild(steps);
+  const recheck = el("button", { type: "button", class: "secondary", text: "Check again" });
+  recheck.addEventListener("click", () => renderAiSetup(container, { ...options, refresh: true }));
+  local.appendChild(recheck);
+  choices.appendChild(local);
+
+  // --- 2. cloud ---
+  const cloud = el("section", { class: "ai-choice" + (s.mode === "cloud" && s.ready ? " chosen" : ""), "aria-labelledby": "ai-cloud-h" });
+  cloud.appendChild(el("h3", { id: "ai-cloud-h", text: "With an AI service (API key)" }));
+  cloud.appendChild(
+    el("p", {
+      class: "dim",
+      text: "Fast and capable. The evidence the assistant retrieves for a question is sent to the service you choose, and every request is recorded in the chain of custody. Needs an API key from that service.",
+    })
+  );
+  const provider = el("select", { "aria-label": "AI service" });
+  for (const slug of AI_CLOUD_ORDER) {
+    const info = s.cloud[slug];
+    const o = el("option", { value: slug, text: `${info.name}${info.key_set ? " - key saved" : ""}` });
+    if (slug === s.provider) o.setAttribute("selected", "selected");
+    provider.appendChild(o);
+  }
+  const key = el("input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: "Paste the API key…" });
+  const getKey = el("a", { target: "_blank", rel: "noopener noreferrer" });
+  const syncHint = () => {
+    const info = s.cloud[provider.value];
+    getKey.href = info.get_key_url;
+    getKey.textContent = `Get an API key from ${info.name}`;
+    key.placeholder = info.key_set ? `Saved (${info.key_hint}) - paste a new one to replace it…` : "Paste the API key…";
+  };
+  provider.addEventListener("change", syncHint);
+  syncHint();
+  const save = el("button", { type: "button", text: "Save and test" });
+  const result = el("div", { class: "dim", "aria-live": "polite" });
+  save.addEventListener("click", async () => {
+    const slug = provider.value;
+    const info = s.cloud[slug];
+    if (!key.value.trim() && !info.key_set) {
+      result.textContent = "Paste an API key first.";
+      return;
+    }
+    save.disabled = true;
+    result.textContent = "Saving and testing…";
+    try {
+      const body = { ai_provider: slug, ai_model: "" };
+      if (key.value.trim()) body[`${slug}_api_key`] = key.value.trim();
+      await apiPost("/settings", body);
+      key.value = "";
+      const t = await apiPost("/settings/test", { target: slug });
+      result.textContent = t.ok ? `${info.name} works - the assistant will use it.` : `Saved, but the test failed: ${t.message}`;
+      if (t.ok && options.onDone) options.onDone();
+      toast(t.ok ? `${info.name} is set up.` : `${info.name}: ${t.message}`, !t.ok);
+    } catch (e) {
+      result.textContent = "Could not save: " + e.message;
+    } finally {
+      save.disabled = false;
+    }
+  });
+  cloud.appendChild(el("div", { class: "filter-bar" }, [provider, key, save]));
+  cloud.appendChild(getKey);
+  cloud.appendChild(result);
+  choices.appendChild(cloud);
+
+  // --- 3. none ---
+  const none = el("section", { class: "ai-choice", "aria-labelledby": "ai-none-h" });
+  none.appendChild(el("h3", { id: "ai-none-h", text: "No AI for now" }));
+  none.appendChild(
+    el("p", {
+      class: "dim",
+      text: "Everything except the assistant works without AI: the detections, What happened, recovered files, conversations, the timeline and reports. You can set up AI here any time.",
+    })
+  );
+  choices.appendChild(none);
+}
+
 // --- Application shell: rail, case switcher, status bar --------------
 //
 // The rail, the switcher and the status bar are chrome: they persist
@@ -4184,12 +4364,19 @@ function formatDuration(seconds) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+// Each redraw is stamped; after every await, a redraw that has been
+// superseded stops. Two overlapping redraws (navigation plus a settings
+// change) would otherwise both append, duplicating items.
+let _statusBarRender = 0;
+
 async function renderStatusBar(c) {
+  const stamp = ++_statusBarRender;
   const bar = document.getElementById("statusbar");
+  const tshark = await wiresharkStatus();
+  if (stamp !== _statusBarRender) return;
   bar.innerHTML = "";
   bar.appendChild(el("span", { text: "NetForensicAI" }));
 
-  const tshark = await wiresharkStatus();
   bar.appendChild(
     el("span", { class: "item" }, [
       el("span", { class: "dot " + (tshark.available ? "ok" : "bad") }),
@@ -4198,6 +4385,23 @@ async function renderStatusBar(c) {
   );
   if (tshark.dumpcap) {
     bar.appendChild(el("span", { class: "item" }, [el("span", { class: "dot ok" }), el("span", { text: "dumpcap" })]));
+  }
+  try {
+    const ai = await apiGet("/ai/status");
+    if (stamp !== _statusBarRender) return;
+    const label = !ai.ready
+      ? "AI: not set up"
+      : ai.mode === "local"
+        ? `AI: local (${ai.model})`
+        : `AI: ${(ai.cloud[ai.provider] || {}).name || ai.provider}`;
+    bar.appendChild(
+      el("a", { class: "item", href: "#/settings", title: ai.not_ready_reason || "Change how the AI assistant runs" }, [
+        el("span", { class: "dot " + (ai.ready ? "ok" : "bad") }),
+        el("span", { text: label }),
+      ])
+    );
+  } catch (e) {
+    /* the status bar never blocks on the AI check */
   }
   if (c) {
     bar.appendChild(el("span", { class: "right", text: `cases/${c.case_id}` }));

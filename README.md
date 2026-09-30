@@ -278,7 +278,7 @@ A generator rather than a checked-in `.pcap`, deliberately: a binary in a reposi
 netforensic web --cases-dir cases      # then open http://127.0.0.1:8000
 ```
 
-1. **Settings** *(top right)* — optionally add VirusTotal / AI keys and press **Test**. Everything except threat intel and the AI assistant works with no keys at all.
+1. **Choose how the AI assistant runs** *(optional - on the first screen, or Settings)* — on this computer with **local AI** (Ollama: private and free; the page detects it and lists your models) or with an **API key** (Anthropic, OpenAI or Gemini, saved and tested in one step). Everything except threat intel and the AI assistant works with no AI and no keys at all.
 2. **New investigation** — name the case, drop in your evidence (pcap, pcapng, evtx, JSON, CSV) and press **Create and analyze**. It uploads, hashes, analyzes and opens on the story in one step.
 3. **What happened** — read the account of the case before the counts: the assessment, the stages
    it passed through, and each finding with the events it rests on.

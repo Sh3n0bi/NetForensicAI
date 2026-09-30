@@ -7,6 +7,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Choose where the AI assistant runs** - on the first-run screen and at the top of
+  Settings: *on this computer* (local AI with Ollama: detects whether it is running,
+  lists installed models, and gives setup steps with recommended models when it is
+  not), *with an AI service* (pick Anthropic / OpenAI / Gemini, paste one key, save and
+  test in one step), or *no AI for now* (says what still works). The status bar always
+  shows where the assistant runs and links to change it. New `GET /api/ai/status`
+  (`core/ai_setup.py`), which never returns a key and checks Ollama addresses through
+  the loopback-only guard; the local probe is cached briefly so the single-threaded
+  server never stalls on it.
 - **Recovered files you can open.** A new *Recovered files* view lists every file pulled
   from traffic with what it really is (by content, not name - a disguised program is
   called out), where it came from ("Sent from A to B over FTP", the URL, a link to the
@@ -24,6 +33,10 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recovery does not cover. Backed by a byte-exact raw-mode stream reader.
 
 ### Fixed
+- **Every request to a local model paid about two extra seconds on Windows.** The
+  default Ollama address was `http://localhost:11434`; Windows tries IPv6 `::1` first,
+  Ollama listens on IPv4 only, and the failed attempt takes ~2 s. The default is now
+  `http://127.0.0.1:11434` (a saved address is unchanged).
 - **A capture with emailed files could fail to analyze at all.** Wireshark names an
   exported email after its subject, percent-escaped and MIME-encoded; on a real HawkEye
   keylogger capture that name ran to ~200 characters, the write failed on Windows'
