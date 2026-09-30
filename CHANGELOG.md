@@ -6,6 +6,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-30
+
+A plain-language layer over Wireshark for newcomers, files recovered from traffic
+that you can safely look inside and download, and a first-run choice between local
+AI and an API key. Also fixes chat and the investigation team, which could not work
+with any real AI provider, and makes the web UI usable with a screen reader and
+keyboard.
+
 ### Added
 - **Plain language for newcomers** (`core/explain.py`). Conversations (formerly Streams)
   lead with a sentence - "10.10.4.17 (on your network) sent 5.0 KB to 104.21.7.19 (on the
@@ -269,7 +277,8 @@ accredited against any forensic standard; correlation is not causality;
 ingestion is the scaling bottleneck on very large captures; and the AI paths
 have not been exercised against a live provider in CI.
 
-[Unreleased]: https://github.com/Sh3n0bi/NetForensicAI/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Sh3n0bi/NetForensicAI/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Sh3n0bi/NetForensicAI/releases/tag/v0.3.0
