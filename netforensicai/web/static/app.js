@@ -1628,7 +1628,8 @@ function beatRow(c, beat, opts) {
   const extra = (beat.event_ids || []).length - 6;
   if (extra > 0) cite.appendChild(el("span", { class: "dim", text: "+" + extra + " more" }));
   if (beat.hosts && beat.hosts.length) {
-    const hostMap = (opts && opts.hostEntities) || {};
+    // opts is guaranteed truthy here - the early return above bails when it isn't.
+    const hostMap = opts.hostEntities || {};
     const hostWrap = el("span", { class: "beat-hosts dim" });
     hostWrap.appendChild(el("span", { text: "· " }));
     beat.hosts.forEach((host, i) => {
