@@ -763,3 +763,38 @@ button.lg { padding: 10px 20px; font-size: 14px; border-radius: var(--r-md); }
 .team-finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .team-assessment { color: var(--text-dim); margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .team-results h2 { margin-top: 18px; }
+
+/* --- Recovered files --- */
+.files-layout { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; gap: 16px; align-items: start; }
+.files-list { display: flex; flex-direction: column; gap: 8px; }
+.file-item { display: block; width: 100%; text-align: left; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 11px 13px; box-shadow: none; font-weight: 400; }
+.file-item:hover { background: var(--surface-2); filter: none; box-shadow: none; }
+.file-item.active { border-color: var(--accent-dim); background: var(--accent-soft); }
+.file-item-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; margin-bottom: 3px; }
+.file-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.file-journey { font-size: 13px; color: var(--text-dim); margin-top: 3px; overflow-wrap: anywhere; }
+.file-note { font-size: 12px; color: var(--warn, #e0b252); margin-top: 4px; }
+.files-detail { min-width: 0; }
+.file-title { margin: 0 0 4px; overflow-wrap: anywhere; }
+.risk-box { border-radius: var(--r-sm); padding: 10px 13px; margin: 12px 0; font-size: 13px; border: 1px solid var(--border); }
+.risk-box ul { margin: 6px 0 0; padding-left: 18px; }
+.risk-high { border-color: rgba(240, 97, 106, 0.45); background: rgba(240, 97, 106, 0.08); }
+.risk-medium { border-color: rgba(224, 178, 82, 0.45); background: rgba(224, 178, 82, 0.07); }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 12px 0; font-size: 13px; }
+.facts dt { color: var(--text-dim); }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.hash-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hash { font-size: 12px; overflow-wrap: anywhere; }
+button.small { padding: 3px 9px; font-size: 12px; }
+.button-link { display: inline-flex; align-items: center; padding: 7px 14px; border-radius: var(--r-sm); background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; border: 1px solid transparent; }
+.button-link:hover { filter: brightness(1.08); }
+.button-link.secondary { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+.file-preview .table-wrap { overflow-x: auto; max-height: 420px; }
+.file-text { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.file-image { max-width: 100%; max-height: 420px; border-radius: var(--r-sm); border: 1px solid var(--border); }
+.empty-state { max-width: 640px; }
+@media (max-width: 860px) { .files-layout { grid-template-columns: 1fr; } }
+.files-column { min-width: 0; }
+.files-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.files-tools input[type="search"] { flex: 1 1 200px; min-width: 0; }
+.file-item-top .badge { flex-shrink: 0; white-space: nowrap; }

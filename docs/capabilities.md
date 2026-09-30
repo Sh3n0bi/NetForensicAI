@@ -53,7 +53,7 @@ Also handled: VLAN (802.1Q) tags, IP fragments, pcapng containers, truncated cap
 |---|---|
 | `authentication` | **Kerberos and NTLM attempts** — principal, realm, workstation. Lateral movement *is* authentication traffic; to the scapy engine a Kerberoasting run is an unremarkable TCP flow to port 88. |
 | `file_access` | SMB file opens, reads and writes, naming the share path touched. |
-| `file_transfer` | **Real object export** (HTTP, SMB, FTP-DATA, TFTP, IMF) — the dissector knows where each object begins and ends, rather than inferring it from magic bytes. |
+| `file_transfer` | **Real object export** (HTTP, SMB, FTP-DATA, TFTP, IMF) — the dissector knows where each object begins and ends, rather than inferring it from magic bytes. When Wireshark cannot tie an FTP data connection to a file (no `PASV`/`PORT` in the capture), NetForensicAI pairs the `STOR`/`RETR` command with its data connection itself and recovers the file byte-exact, named from the command. |
 | `network_connection` | Wireshark's own protocol stack per flow (`eth:ethertype:ip:tcp:tls:http2`), so an unfamiliar flow is identifiable without reopening the capture. |
 
 Everything else — DNS, HTTP request/response pairing, TLS SNI, flow aggregation, anomaly scoring — is produced by both engines, **under the same event-type names**, so a timeline filter or a detection rule behaves identically whichever engine ran. Every event also records which engine produced it in `raw_event_reference.engine`, because *"which dissector found this"* is a question a report has to answer months later.
@@ -271,6 +271,18 @@ netforensic team --case INC-0001 --json
 
 The loop is JSON the model returns rather than four native tool-calling integrations. Each provider expresses tool use differently, so native support would put the safety-critical path in four places and leave **Ollama** — the only provider that keeps an investigation entirely off the network — worst supported. The transport is not what makes this safe; the ledger is.
 
+## Recovered files
+
+Every file the analysis recovers from traffic is listed under **Recovered files**, in words someone new can follow:
+
+- **What it really is**, decided from its content, not its name — a `report.pdf` that starts with `MZ` is called out as a disguised Windows program.
+- **Where it came from** — *"Sent from 10.10.4.17 to 104.21.7.19 over FTP"*, the URL for web downloads, and a link to the conversation it travelled in.
+- **How risky it is to open** — *Could run code* (programs, scripts, disguised or double-extension files), *Handle with care* (PDFs, Office files with possible macros, archives, HTML/SVG), *Low risk* — each with the reason. Content hints flag private keys, lists of email addresses and password fields.
+- **Look inside safely** — text, CSV as a table, PNG/JPEG/GIF/WebP images, or a hex dump for anything else. Nothing is ever run or rendered as HTML: SVG and HTML are shown as text, and only raster images are served inline.
+- **Download a copy** — always as an attachment (`application/octet-stream`, `nosniff`, a sandboxing CSP), with a second confirmation for anything that can run code. Each download is recorded in the chain of custody (`artifact.exported`) with the file's SHA-256.
+
+Any conversation can also be saved byte-for-byte from **Streams** (*Save what … sent*), for files in protocols the automatic recovery does not cover; that is recorded too (`stream.exported`).
+
 ## Findings & reporting
 Investigator-owned findings (`Open` / `Investigating` / `Confirmed` / `Rejected` / `False Positive` / `Resolved`), each citing specific evidence + event pairs, creatable from CLI or web UI. Reports render to **Markdown, JSON, and HTML**, every section traceable to evidence, with a stated limitations section.
 
@@ -281,7 +293,7 @@ The rail groups destinations by the stage of an investigation rather than listin
 
 | | |
 |---|---|
-| **Evidence** | Evidence · Live capture |
+| **Evidence** | Evidence · Recovered files · Live capture |
 | **Dig** | Search · Streams · Triage |
 | **Analysis** | Timeline · Entities · Detections · ATT&CK |
 | **Conclude** | Findings · Reports · Chain of custody |

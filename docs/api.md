@@ -15,7 +15,11 @@ State-changing requests need an `X-Requested-With: NetForensicAI` header. That i
 | `DELETE /api/cases/<id>` | irreversible; body must echo `{"confirm": "<id>"}` |
 | `GET · POST /api/cases/<id>/evidence` | list and upload |
 | `POST /api/cases/<id>/analyze` | parse, correlate, scan rules |
-| `GET /api/cases/<id>/timeline` · `/entities` · `/detections` · `/attack` · `/findings` · `/audit` · `/artifacts` | the case, read back |
+| `GET /api/cases/<id>/timeline` · `/entities` · `/detections` · `/attack` · `/findings` · `/audit` | the case, read back |
+| `GET /api/cases/<id>/artifacts` | recovered files: real type, risk and reasons, content hints, SHA-256, where each came from |
+| `GET /api/cases/<id>/artifacts/preview?path=` | a safe look inside: `text`, `table` (CSV), `image`, `hex` or `empty` — never HTML |
+| `GET /api/cases/<id>/artifacts/content?path=[&inline=1]` | the file as a download (audited); `inline=1` only for PNG/JPEG/GIF/WebP |
+| `GET /api/cases/<id>/streams/<n>/data?direction=a\|b` | what one side of a conversation sent, byte-exact, as a download (audited) |
 | `GET · POST · DELETE /api/cases/<id>/iocs` | list indicators (with match state), import a feed (multipart `file`, optional `source`; re-runs detections), remove all or one `source` |
 | `POST /api/cases/<id>/search` | content search over a capture |
 | `GET /api/cases/<id>/streams` · `/streams/<n>` | list conversations, reassemble one |

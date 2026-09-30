@@ -302,3 +302,81 @@ def _is_real_endpoint(node):
         return False
     node = node.strip()
     return bool(node) and not node.startswith(":") and node != "0"
+
+
+# The byte-exact read below backs "save this conversation" and file
+# recovery, so it gets a far larger ceiling than the on-screen view. It is
+# still bounded: a single stream is held in memory to be returned.
+DEFAULT_MAX_PAYLOAD_BYTES = 256 * 1024 * 1024
+
+
+@dataclass
+class StreamPayload:
+    """The exact bytes each side of one conversation sent."""
+
+    stream: int
+    protocol: str
+    node_a: Optional[str]
+    node_b: Optional[str]
+    a_to_b: bytes = b""
+    b_to_a: bytes = b""
+    truncated: bool = False
+
+
+def stream_bytes(pcap_path, protocol=TCP, index=0, max_bytes=DEFAULT_MAX_PAYLOAD_BYTES):
+    """One conversation's payload, byte for byte, split by direction.
+
+    follow_stream() uses tshark's ASCII mode, which is right for reading on
+    screen and wrong for anything saved: every non-printable byte becomes a
+    dot, so a recovered file would not match the original or its hash. This
+    uses raw mode instead - one hex line per segment, a leading TAB marking
+    the reply direction - and decodes it back to the exact bytes.
+    """
+    protocol = _check_protocol(protocol)
+    _require_tshark("Reading a stream's data")
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        raise StreamError(f"Stream index must be a number, got '{index}'.")
+    if index < 0:
+        raise StreamError("Stream index must not be negative.")
+
+    completed = wireshark._run(
+        [wireshark.tshark_path(), "-r", str(pcap_path), "-q", "-z", f"follow,{protocol},raw,{index}"],
+        wireshark.SLICE_TIMEOUT_SECONDS,
+        check=False,
+        text=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or b"").decode("utf-8", errors="replace").strip().splitlines()
+        raise StreamError(detail[0] if detail else f"tshark exited {completed.returncode}")
+    return _parse_raw_follow((completed.stdout or b"").decode("ascii", errors="replace"), protocol, index, max_bytes)
+
+
+def _parse_raw_follow(output, protocol, index, max_bytes):
+    payload = StreamPayload(stream=index, protocol=protocol, node_a=None, node_b=None)
+    forward, reply = bytearray(), bytearray()
+    for line in output.split("\n"):
+        stripped = line.rstrip("\r")
+        if not stripped.strip() or stripped.startswith((_SEPARATOR, "Follow:", "Filter:")):
+            continue
+        node = _HEADER_NODE.match(stripped)
+        if node:
+            if node.group(1) == "0":
+                payload.node_a = node.group(2).strip()
+            else:
+                payload.node_b = node.group(2).strip()
+            continue
+        try:
+            chunk = bytes.fromhex(stripped.strip())
+        except ValueError:
+            continue  # not a data line
+        if len(forward) + len(reply) + len(chunk) > max_bytes:
+            payload.truncated = True
+            break
+        (reply if stripped.startswith("\t") else forward).extend(chunk)
+
+    if not forward and not reply and not _is_real_endpoint(payload.node_a):
+        raise StreamError(f"No {protocol} stream {index} in this capture.")
+    payload.a_to_b, payload.b_to_a = bytes(forward), bytes(reply)
+    return payload
