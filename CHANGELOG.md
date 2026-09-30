@@ -6,6 +6,13 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Hosts in the story link to their graph.** The IP addresses named under each finding
+  in *What happened* (and the subjects line) are now links to that host's entity graph
+  and evidence, instead of plain text. Only hosts that exist as entities are linked, so a
+  link never leads to a missing page; the narrative resolves each host to its entity id
+  server-side (`GET /cases/<id>/narrative` gains `host_entities`).
+
 ## [0.6.0] — 2026-09-30
 
 A plain-language layer over Wireshark for newcomers, files recovered from traffic

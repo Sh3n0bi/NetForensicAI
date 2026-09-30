@@ -1628,10 +1628,32 @@ function beatRow(c, beat, opts) {
   const extra = (beat.event_ids || []).length - 6;
   if (extra > 0) cite.appendChild(el("span", { class: "dim", text: "+" + extra + " more" }));
   if (beat.hosts && beat.hosts.length) {
-    cite.appendChild(el("span", { class: "dim", text: " · " + beat.hosts.join(", ") }));
+    // opts is guaranteed truthy here - the early return above bails when it isn't.
+    const hostMap = opts.hostEntities || {};
+    const hostWrap = el("span", { class: "beat-hosts dim" });
+    hostWrap.appendChild(el("span", { text: "· " }));
+    beat.hosts.forEach((host, i) => {
+      if (i > 0) hostWrap.appendChild(el("span", { text: ", " }));
+      hostWrap.appendChild(hostEl(c, host, hostMap));
+    });
+    cite.appendChild(hostWrap);
   }
   row.appendChild(cite);
   return row;
+}
+
+// A host in the story: a link to its entity graph when it has one, plain
+// dim text otherwise (an external IP that never became an entity). The map
+// comes from the narrative, so we never link to a page that does not exist.
+function hostEl(c, host, hostMap) {
+  const entityId = hostMap && hostMap[host];
+  if (!entityId) return el("span", { class: "dim mono", text: host });
+  return el("a", {
+    class: "host-link mono",
+    href: `#/case/${c.case_id}/entities/${entityId}`,
+    text: host,
+    title: `See ${host} in the entity graph`,
+  });
 }
 
 // The pivot to packets. Read-only: it resolves the display filter and the
@@ -1680,11 +1702,19 @@ function narrativeBody(c, n, opts) {
   assess.appendChild(el("div", { class: "nar-statement", text: n.assessment }));
   wrap.appendChild(assess);
 
-  const bits = [n.headline];
+  const hostEntities = n.host_entities || {};
+  const meta = el("div", { class: "nar-meta" });
   const window_ = n.window || [null, null];
-  if (window_[0]) bits.push(beatTime(window_[0]) + " → " + beatTime(window_[1]));
-  if (n.subjects && n.subjects.length) bits.push(n.subjects.join(", "));
-  wrap.appendChild(el("div", { class: "nar-meta", text: bits.filter(Boolean).join("  ·  ") }));
+  const leading = [n.headline, window_[0] ? beatTime(window_[0]) + " → " + beatTime(window_[1]) : null].filter(Boolean);
+  meta.appendChild(el("span", { text: leading.join("  ·  ") }));
+  if (n.subjects && n.subjects.length) {
+    meta.appendChild(el("span", { text: "  ·  " }));
+    n.subjects.forEach((host, i) => {
+      if (i > 0) meta.appendChild(el("span", { text: ", " }));
+      meta.appendChild(hostEl(c, host, hostEntities));
+    });
+  }
+  wrap.appendChild(meta);
 
   const phases = n.phases || [];
   if (!phases.length) return wrap;
@@ -1695,7 +1725,7 @@ function narrativeBody(c, n, opts) {
     for (const phase of phases) {
       const sec = el("div", { class: "nar-phase" });
       sec.appendChild(el("div", { class: "nar-phase-title", text: phase.title }));
-      for (const beat of phase.beats) sec.appendChild(beatRow(c, beat, { full: true }));
+      for (const beat of phase.beats) sec.appendChild(beatRow(c, beat, { full: true, hostEntities }));
       wrap.appendChild(sec);
     }
     return wrap;
@@ -1706,7 +1736,7 @@ function narrativeBody(c, n, opts) {
   const flat = phases.reduce((acc, p) => acc.concat(p.beats), []);
   const shown = flat.slice(0, 4);
   const list = el("div", { class: "nar-beats" });
-  for (const beat of shown) list.appendChild(beatRow(c, beat, { full: false }));
+  for (const beat of shown) list.appendChild(beatRow(c, beat, { full: false, hostEntities }));
   wrap.appendChild(list);
   const hidden = flat.length - shown.length;
   if (hidden > 0) {

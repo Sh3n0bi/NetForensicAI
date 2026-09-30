@@ -237,6 +237,10 @@ class Narrative:
     phases: list = field(default_factory=list)
     subjects: list = field(default_factory=list)
     window: tuple = (None, None)
+    # {host value: entity_id} for the hosts named in beats and subjects,
+    # limited to those that exist as entities in this case - so the UI can
+    # link a host to its graph, and never link one that has no page.
+    host_entities: dict = field(default_factory=dict)
 
     def to_dict(self):
         return {
@@ -244,6 +248,7 @@ class Narrative:
             "severity": self.severity,
             "headline": self.headline,
             "subjects": self.subjects,
+            "host_entities": self.host_entities,
             "window": [t.isoformat() if t else None for t in self.window],
             "phases": [
                 {"phase": key, "title": title, "beats": [b.to_dict() for b in beats]}
@@ -341,6 +346,20 @@ def build(store):
     subjects = sorted({host for beat in beats for host in beat.hosts})
     times = [b.first_seen for b in beats if b.first_seen]
 
+    # Resolve the hosts we name to their entity pages, matching on the same
+    # normalization generate_entity_id() uses, so "192.168.0.5" links even
+    # when the entity was stored from a differently-cased or padded value.
+    # Only IP entities that actually exist are included.
+    named_hosts = set(subjects) | {host for beat in beats for host in beat.hosts}
+    by_normalized = {
+        str(e["value"]).strip().lower(): e["entity_id"] for e in store.list_entities(entity_type="ip_address")
+    }
+    host_entities = {}
+    for host in named_hosts:
+        entity_id = by_normalized.get(str(host).strip().lower())
+        if entity_id:
+            host_entities[host] = entity_id
+
     return Narrative(
         assessment=assessment,
         severity=severity,
@@ -349,6 +368,7 @@ def build(store):
         phases=phases,
         subjects=subjects,
         window=(min(times) if times else None, max(times) if times else None),
+        host_entities=host_entities,
     )
 
 
