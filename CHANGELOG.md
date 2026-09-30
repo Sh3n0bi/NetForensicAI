@@ -43,6 +43,17 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - Animations now honour the system's reduced-motion setting.
+- **Screen-reader and keyboard use of the web UI.** Notifications were silent to screen
+  readers; they are now announced (errors immediately, the rest politely). Moving to a
+  page names it in the browser title and moves focus to its heading rather than leaving
+  it in the rail - unless the user has already moved on while it loaded. A *Skip to main
+  content* link is the first Tab stop. Entity rows and the search hit's *copy filter*
+  could only be used with a mouse; they are now real buttons.
+- **The default Anthropic model is now `claude-opus-5-5`** (was `claude-opus-5`); a saved
+  model choice is unchanged. Current Claude models always think before answering and the
+  thinking counts against the token limit, so Anthropic requests now allow 16,000 tokens
+  (was 4,096) and an answer cut off at the limit is reported as that, not as unreadable
+  JSON.
 - **Chat and the investigation team could not work with any real AI provider.** Every
   provider call (Anthropic, OpenAI, Gemini and local Ollama) was forced into the
   AI-hypothesis response schema, so a real model could only answer with a hypothesis -

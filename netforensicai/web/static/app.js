@@ -97,12 +97,63 @@ function toast(message, isError) {
   toast._t = setTimeout(() => {
     t.hidden = true;
   }, 4000);
+  announce(message, isError);
+}
+
+// Speak a message to screen-reader users. The text is cleared first and
+// set a moment later so that the same message twice is announced twice.
+function announce(message, urgent) {
+  const region = document.getElementById(urgent ? "announce-urgent" : "announce-polite");
+  if (!region) return;
+  region.textContent = "";
+  clearTimeout(region._t);
+  region._t = setTimeout(() => {
+    region.textContent = message;
+  }, 60);
 }
 
 // --- Router ---
 
-window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", route);
+window.addEventListener("hashchange", () => {
+  const target = location.hash;
+  route().then(() => {
+    // A slow page can finish after the user has moved on - to another
+    // page, or into this one. Only take focus if they have not.
+    const active = document.activeElement;
+    const userMoved = active && active !== document.body && document.getElementById("app").contains(active);
+    afterNavigate(location.hash === target && !userMoved);
+  });
+});
+window.addEventListener("DOMContentLoaded", () => route().then(() => afterNavigate(false)));
+window.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("skip-link")?.addEventListener("click", (ev) => {
+    ev.preventDefault(); // "#app" is not a route
+    focusMain();
+  });
+});
+
+function focusMain() {
+  const app = document.getElementById("app");
+  // The page heading when there is one, so a screen reader starts by
+  // reading where the user is; otherwise the page itself.
+  const heading = app.querySelector("h1");
+  if (heading) {
+    heading.setAttribute("tabindex", "-1");
+    heading.focus();
+  } else {
+    app.focus();
+  }
+}
+
+// A single-page app does not tell a screen reader that the page changed:
+// name the page in the title and, when the user navigated, move focus to
+// it instead of leaving it on the link they followed in the rail.
+function afterNavigate(moveFocus) {
+  const heading = document.querySelector("#app h1");
+  const name = heading ? heading.textContent.trim() : "";
+  document.title = name ? `${name} · NetForensicAI` : "NetForensicAI";
+  if (moveFocus) focusMain();
+}
 
 function parseHash() {
   return location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
@@ -2010,8 +2061,16 @@ async function renderEntities(app, c, focusEntityId) {
       table.innerHTML = "<tr><th>Type</th><th>Value</th></tr>";
       listPanel.appendChild(table);
       for (const item of items.slice(0, 200)) {
+        // The whole row answers a mouse; the value is a real button so the
+        // row can be reached and opened from the keyboard too (its click
+        // bubbles to the row - one handler, not two).
         const tr = el("tr", { class: "clickable", onclick: () => selectEntity(item) });
-        tr.innerHTML = `<td>${escapeHtml(item.entity_type)}</td><td class="mono">${escapeHtml(item.value)}</td>`;
+        tr.appendChild(el("td", { text: item.entity_type }));
+        tr.appendChild(
+          el("td", {}, [
+            el("button", { type: "button", class: "cell-button mono", text: item.value, "aria-label": `Open ${item.entity_type} ${item.value}` }),
+          ])
+        );
         table.appendChild(tr);
       }
     } catch (e) {
@@ -3083,8 +3142,9 @@ function pivotBar(c, hit) {
   }
   const filter = `frame.number == ${hit.frame_number}`;
   bar.appendChild(
-    el("span", {
-      class: "clickable dim",
+    el("button", {
+      type: "button",
+      class: "cell-button dim",
       text: "copy filter",
       title: filter,
       onclick: () => {
