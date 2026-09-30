@@ -563,6 +563,26 @@ a.host-link { color: var(--text-dim); text-decoration: none; border-bottom: 1px 
 a.host-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
 a.host-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 
+/* --- Host dossier --- */
+.dossier-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.dossier-ip { font-size: 20px; font-weight: 600; }
+.dossier-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.dossier-stat { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px 12px; background: var(--surface); }
+.dossier-stat-v { font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+.dossier-stat-l { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+.dossier-actions { margin-bottom: 16px; }
+.dossier-section { margin-top: 20px; }
+.dossier-section > h3 { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.dossier-count { font-size: 12px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; }
+.dossier-finding { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.dossier-finding:last-child { border-bottom: none; }
+.dossier-finding-title { flex: 1; }
+.dossier-domains { line-height: 1.9; }
+.dossier-files { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.dossier-file { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; color: var(--text-dim); background: var(--surface); }
+
 /* --- threat intel ----------------------------------------------------- */
 .ioc-import { margin-bottom: 14px; }
 .ioc-import-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

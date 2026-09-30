@@ -441,6 +441,7 @@ async function renderCaseTab(app, c, tab, rest) {
   if (tab === "files") return renderFiles(app, c, rest.length ? decodeURIComponent(rest.join("/")) : undefined);
   if (tab === "timeline") return renderTimeline(app, c);
   if (tab === "entities") return renderEntities(app, c, rest[0]);
+  if (tab === "host") return renderHostDossier(app, c, rest[0]);
   if (tab === "findings") return renderFindings(app, c);
   if (tab === "audit") return renderAudit(app, c);
   if (tab === "detections") return renderDetections(app, c);
@@ -1650,9 +1651,9 @@ function hostEl(c, host, hostMap) {
   if (!entityId) return el("span", { class: "dim mono", text: host });
   return el("a", {
     class: "host-link mono",
-    href: `#/case/${c.case_id}/entities/${entityId}`,
+    href: `#/case/${c.case_id}/host/${entityId}`,
     text: host,
-    title: `See ${host} in the entity graph`,
+    title: `Everything ${host} did`,
   });
 }
 
@@ -2159,6 +2160,17 @@ async function renderInvestigatePanel(panel, c, result) {
       Evidence: ${result.evidence_ids.map(escapeHtml).join(", ") || "none"} &middot; Events: ${result.timeline.length}
     </div>`;
 
+  // For a host, the dossier is the fuller view - offer the jump.
+  if (result.entity.entity_type === "ip_address") {
+    panel.appendChild(
+      el("a", {
+        class: "button-link secondary",
+        href: `#/case/${c.case_id}/host/${result.entity.entity_id}`,
+        text: "See everything this host did →",
+      })
+    );
+  }
+
   panel.appendChild(el("h3", { text: "Potential Investigation Leads" }));
   const leadsBox = el("div");
   if (result.leads.length) {
@@ -2379,6 +2391,177 @@ function colorForType(t) {
     url: "#c084fc",
   };
   return colors[t] || "#9aa0b4";
+}
+
+// --- Host dossier: everything one host did, on one screen ---------------
+
+async function renderHostDossier(app, c, entityId) {
+  app.appendChild(el("h1", { text: "Host" }));
+  const panel = el("div", { class: "panel" });
+  app.appendChild(panel);
+
+  if (!entityId) {
+    panel.appendChild(el("div", { class: "empty", text: "No host selected." }));
+    return;
+  }
+
+  await loadInto(panel, () => apiGet(`/cases/${c.case_id}/entities/${entityId}/dossier`), (d) =>
+    hostDossierBody(c, d)
+  );
+}
+
+function hostDossierBody(c, d) {
+  const wrap = el("div", { class: "dossier" });
+  const s = d.summary;
+  const onNet = d.entity.on_network;
+
+  // Retitle the page with the host itself now that we have it.
+  const h1 = document.querySelector("#app h1");
+  if (h1) h1.textContent = d.entity.value;
+
+  const head = el("div", { class: "dossier-head" });
+  head.appendChild(el("span", { class: "mono dossier-ip", text: d.entity.value }));
+  head.appendChild(
+    el("span", {
+      class: "badge " + (onNet ? "badge-medium" : "badge-none"),
+      text: onNet ? "On your network" : "External",
+    })
+  );
+  const ti = (d.threat_intel || []).find((t) => t.malicious);
+  if (ti) head.appendChild(el("span", { class: "badge badge-critical", text: "Flagged by threat intel" }));
+  wrap.appendChild(head);
+
+  // The numbers that characterise the host at a glance.
+  const stats = el("div", { class: "dossier-stats" });
+  const stat = (label, value) =>
+    el("div", { class: "dossier-stat" }, [
+      el("div", { class: "dossier-stat-v", text: value }),
+      el("div", { class: "dossier-stat-l", text: label }),
+    ]);
+  stats.appendChild(stat("events", String(s.events)));
+  stats.appendChild(stat("peers", String(s.peer_count)));
+  stats.appendChild(stat("sent", fmtBytes(s.bytes_sent) || "0 B"));
+  stats.appendChild(stat("received", fmtBytes(s.bytes_received) || "0 B"));
+  if (s.first_seen) stats.appendChild(stat("first seen", timelineTime(s.first_seen)));
+  if (s.last_seen) stats.appendChild(stat("last seen", timelineTime(s.last_seen)));
+  wrap.appendChild(stats);
+
+  const actions = el("div", { class: "dossier-actions" });
+  actions.appendChild(
+    el("a", { class: "button-link secondary", href: `#/case/${c.case_id}/entities/${d.entity.entity_id}`, text: "Open in entity graph →" })
+  );
+  wrap.appendChild(actions);
+
+  // Findings that fired on this host - the first thing to read.
+  wrap.appendChild(dossierSection("Findings on this host", d.findings.length,
+    d.findings.length
+      ? d.findings.map((f) => {
+          const row = el("div", { class: "dossier-finding sev-" + cssClass(f.severity) });
+          row.appendChild(el("span", { class: "badge badge-" + cssClass(f.severity), text: f.severity }));
+          row.appendChild(el("span", { class: "dossier-finding-title", text: f.title }));
+          if (f.occurrences > 1) row.appendChild(el("span", { class: "dim", text: "×" + f.occurrences }));
+          return row;
+        })
+      : [el("div", { class: "dim", text: "No detections fired on this host." })]
+  ));
+
+  // Who it talked to.
+  wrap.appendChild(dossierSection("Who it talked to", d.peer_total,
+    d.peers.length
+      ? [peerTable(c, d.peers)].concat(
+          d.peer_total > d.peers.length
+            ? [el("div", { class: "dim", text: `Showing the top ${d.peers.length} of ${d.peer_total} by volume.` })]
+            : []
+        )
+      : [el("div", { class: "dim", text: "No peers recorded." })]
+  ));
+
+  // Services it reached.
+  if (d.services.length) {
+    wrap.appendChild(dossierSection("Services it reached", d.services.length,
+      [chipRow(d.services.map((sv) => `${sv.port}${sv.protocol ? "/" + sv.protocol : ""} · ${sv.events}`))]
+    ));
+  }
+
+  // Domains.
+  if (d.domains.length) {
+    wrap.appendChild(dossierSection("Domains", d.domains.length,
+      [el("div", { class: "dossier-domains" }, d.domains.map((dm, i) => {
+        const frag = el("span", {});
+        if (i > 0) frag.appendChild(el("span", { text: ", " }));
+        if (dm.entity_id) {
+          frag.appendChild(el("a", { class: "host-link mono", href: `#/case/${c.case_id}/entities/${dm.entity_id}`, text: dm.value }));
+        } else {
+          frag.appendChild(el("span", { class: "mono dim", text: dm.value }));
+        }
+        frag.appendChild(el("span", { class: "dim", text: ` (${dm.events})` }));
+        return frag;
+      }))]
+    ));
+  }
+
+  // Files seen with this host.
+  if (d.files.length) {
+    wrap.appendChild(dossierSection("Files seen with this host", d.files.length,
+      [el("div", { class: "dossier-files" }, d.files.slice(0, 30).map((f) =>
+        el("div", { class: "dossier-file" }, [
+          el("span", { class: "badge badge-none", text: f.direction }),
+          el("span", { class: "mono", text: f.name || f.hash || "(unnamed)" }),
+        ])
+      ))].concat([el("div", { class: "dim" }, [
+        el("a", { href: `#/case/${c.case_id}/files`, text: "Open Recovered files →" }),
+      ])])
+    ));
+  }
+
+  return wrap;
+}
+
+function dossierSection(title, count, children) {
+  const sec = el("div", { class: "dossier-section" });
+  const h = el("h3", {}, [
+    el("span", { text: title }),
+    count ? el("span", { class: "dossier-count", text: String(count) }) : null,
+  ].filter(Boolean));
+  sec.appendChild(h);
+  for (const child of children) sec.appendChild(child);
+  return sec;
+}
+
+function peerTable(c, peers) {
+  const table = el("table");
+  const thead = el("tr", {}, [
+    el("th", { text: "Host" }),
+    el("th", { text: "Where" }),
+    el("th", { text: "Events" }),
+    el("th", { text: "Sent" }),
+    el("th", { text: "Received" }),
+  ]);
+  table.appendChild(thead);
+  for (const p of peers) {
+    const nameCell = el("td", {});
+    if (p.entity_id) {
+      nameCell.appendChild(el("a", { class: "host-link mono", href: `#/case/${c.case_id}/host/${p.entity_id}`, text: p.value }));
+    } else {
+      nameCell.appendChild(el("span", { class: "mono dim", text: p.value }));
+    }
+    table.appendChild(
+      el("tr", {}, [
+        nameCell,
+        el("td", {}, [el("span", { class: "badge " + (p.external ? "badge-none" : "badge-medium"), text: p.external ? "external" : "on network" })]),
+        el("td", { text: String(p.events) }),
+        el("td", { class: "mono", text: fmtBytes(p.bytes_sent) || "0 B" }),
+        el("td", { class: "mono", text: fmtBytes(p.bytes_received) || "0 B" }),
+      ])
+    );
+  }
+  return table;
+}
+
+function chipRow(labels) {
+  const row = el("div", { class: "chip-row" });
+  for (const label of labels) row.appendChild(el("span", { class: "chip mono", text: label }));
+  return row;
 }
 
 // --- Chain of custody (append-only; this view is strictly read-only) ---
