@@ -18,7 +18,7 @@ identically, regardless of which provider answered:
   - only normalized Event data is sent to the provider - never raw
     evidence file contents, and only the events the investigator's query
     selected
-  - every provider is asked for the same Hypothesis JSON schema; the
+  - every provider is held to the same Hypothesis JSON schema; the
     response is validated by pydantic AND every cited (evidence_id,
     event_id) pair is checked against the events actually given to it
     after the response comes back - in one central code path each
@@ -192,8 +192,17 @@ def _validate_ollama_base_url(base_url):
     )
 
 
-def call_model(system_prompt, user_prompt, provider="anthropic", api_key=None, model=None, base_url=None):
+def call_model(system_prompt, user_prompt, provider="anthropic", api_key=None, model=None, base_url=None,
+               schema=None):
     """Send one prompt to a provider and return its parsed JSON response.
+
+    `schema` is the pydantic model the caller expects back. With one, the
+    provider is held to that exact schema (structured output). Without one,
+    the provider is only asked for a JSON object - which is what the chat
+    loop and the investigation team need, because their replies take several
+    shapes ({"action": "tool" | "answer" | "findings", ...}). Forcing every
+    call into the hypothesis schema, as this once did, meant a real provider
+    could never produce a tool call: chat and the team always failed.
 
     Extracted so every AI-backed feature - the single-shot hypothesis here
     and the tool-calling chat in core/chat.py - shares one path for
@@ -237,12 +246,12 @@ def call_model(system_prompt, user_prompt, provider="anthropic", api_key=None, m
 
     def call_provider():
         if provider == "anthropic":
-            return _call_anthropic(system_prompt, user_prompt, api_key, model)
+            return _call_anthropic(system_prompt, user_prompt, api_key, model, schema)
         if provider == "openai":
-            return _call_openai(system_prompt, user_prompt, api_key, model)
+            return _call_openai(system_prompt, user_prompt, api_key, model, schema)
         if provider == "ollama":
-            return _call_ollama(system_prompt, user_prompt, model, base_url or DEFAULT_OLLAMA_BASE_URL)
-        return _call_gemini(system_prompt, user_prompt, api_key, model)
+            return _call_ollama(system_prompt, user_prompt, model, base_url or DEFAULT_OLLAMA_BASE_URL, schema)
+        return _call_gemini(system_prompt, user_prompt, api_key, model, schema)
 
     return _with_transient_retry(call_provider, provider)
 
@@ -275,7 +284,7 @@ def generate_hypothesis(events, provider="anthropic", api_key=None, model=None, 
     )
 
     raw = call_model(
-        SYSTEM_PROMPT, prompt, provider=provider, api_key=api_key, model=model, base_url=base_url
+        SYSTEM_PROMPT, prompt, provider=provider, api_key=api_key, model=model, base_url=base_url, schema=Hypothesis
     )
 
     try:
@@ -350,7 +359,29 @@ def _rejected_message(provider, how_to_set):
     )
 
 
-def _call_anthropic(system_prompt, user_prompt, api_key, model):
+def _json_from_text(text):
+    """The JSON object in a model's reply. JSON mode usually returns just the
+    object, but models also wrap it in a ```json fence or a sentence; take the
+    outermost {...}. Anything that is not a JSON object is a format failure."""
+    import json
+
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rsplit("```", 1)[0]
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end < start:
+        raise AssistantError("AI response did not contain a JSON object.")
+    try:
+        value = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as e:
+        raise AssistantError(f"AI response could not be parsed as JSON: {e}") from e
+    if not isinstance(value, dict):
+        raise AssistantError("AI response was not a JSON object.")
+    return value
+
+
+def _call_anthropic(system_prompt, user_prompt, api_key, model, schema=None):
     try:
         import anthropic
     except ImportError as e:
@@ -361,13 +392,21 @@ def _call_anthropic(system_prompt, user_prompt, api_key, model):
     )
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.parse(
-            model=model,
-            max_tokens=MAX_TOKENS,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            output_format=Hypothesis,
-        )
+        if schema is None:
+            response = client.messages.create(
+                model=model,
+                max_tokens=MAX_TOKENS,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+        else:
+            response = client.messages.parse(
+                model=model,
+                max_tokens=MAX_TOKENS,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                output_format=schema,
+            )
     except TypeError as e:
         # The SDK raises a plain TypeError - not an API exception, since no
         # request was ever sent - when it can't resolve any credential
@@ -389,13 +428,15 @@ def _call_anthropic(system_prompt, user_prompt, api_key, model):
     except anthropic.APIConnectionError as e:
         raise AssistantError(f"AI request failed: network error - {e}") from e
 
-    hypothesis = response.parsed_output
-    if hypothesis is None:
+    if schema is None:
+        return _json_from_text("".join(getattr(block, "text", "") for block in response.content))
+    parsed = response.parsed_output
+    if parsed is None:
         raise AssistantError("AI response could not be parsed into the expected format.")
-    return hypothesis.model_dump()
+    return parsed.model_dump()
 
 
-def _call_openai(system_prompt, user_prompt, api_key, model):
+def _call_openai(system_prompt, user_prompt, api_key, model, schema=None):
     try:
         import openai
     except ImportError as e:
@@ -410,15 +451,24 @@ def _call_openai(system_prompt, user_prompt, api_key, model):
         # alias, deliberately: it's been stable since openai>=1.40, giving
         # a much wider compatible version range than pinning to whatever
         # SDK version first promoted it out of beta.
-        response = client.beta.chat.completions.parse(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format=Hypothesis,
-            max_completion_tokens=MAX_TOKENS,
-        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        if schema is None:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                response_format={"type": "json_object"},
+                max_completion_tokens=MAX_TOKENS,
+            )
+        else:
+            response = client.beta.chat.completions.parse(
+                model=model,
+                messages=messages,
+                response_format=schema,
+                max_completion_tokens=MAX_TOKENS,
+            )
     except openai.AuthenticationError as e:
         raise AssistantError(_rejected_message("OpenAI", "--api-key or OPENAI_API_KEY")) from e
     except openai.OpenAIError as e:
@@ -434,13 +484,15 @@ def _call_openai(system_prompt, user_prompt, api_key, model):
         raise AssistantError(f"AI request failed: {e.message}") from e
 
     message = response.choices[0].message
+    if schema is None:
+        return _json_from_text(message.content)
     if message.parsed is None:
         refusal = f" ({message.refusal})" if getattr(message, "refusal", None) else ""
         raise AssistantError(f"AI response could not be parsed into the expected format.{refusal}")
     return message.parsed.model_dump()
 
 
-def _call_gemini(system_prompt, user_prompt, api_key, model):
+def _call_gemini(system_prompt, user_prompt, api_key, model, schema=None):
     try:
         from google import genai
         from google.genai import errors as genai_errors
@@ -459,7 +511,7 @@ def _call_gemini(system_prompt, user_prompt, api_key, model):
             config=genai_types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 response_mime_type="application/json",
-                response_schema=Hypothesis,
+                response_schema=schema,
                 # This module never passes tools, so automatic function
                 # calling has nothing to do - but the SDK enables it by
                 # default and logs a warning on every single call, which
@@ -481,12 +533,14 @@ def _call_gemini(system_prompt, user_prompt, api_key, model):
     except genai_errors.ServerError as e:
         raise AssistantError(f"AI request failed: {e.message or e}") from e
 
+    if schema is None:
+        return _json_from_text(response.text)
     if response.parsed is None:
         raise AssistantError("AI response could not be parsed into the expected format.")
     return response.parsed.model_dump()
 
 
-def _call_ollama(system_prompt, user_prompt, model, base_url):
+def _call_ollama(system_prompt, user_prompt, model, base_url, schema=None):
     """Ollama runs locally, needs no API key, and needs no dedicated SDK -
     just its documented /api/chat HTTP endpoint with a JSON schema in
     `format` for structured output (Ollama >=0.5). Uses `requests`, which
@@ -511,7 +565,9 @@ def _call_ollama(system_prompt, user_prompt, model, base_url):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "format": Hypothesis.model_json_schema(),
+                # A JSON schema when the caller has one; otherwise plain JSON
+                # mode, so a tool call or an answer can come back.
+                "format": schema.model_json_schema() if schema is not None else "json",
                 "stream": False,
             },
             timeout=120,
@@ -529,12 +585,7 @@ def _call_ollama(system_prompt, user_prompt, model, base_url):
     content = response.json().get("message", {}).get("content")
     if not content:
         raise AssistantError("AI response could not be parsed into the expected format.")
-    try:
-        import json
-
-        return json.loads(content)
-    except json.JSONDecodeError as e:
-        raise AssistantError(f"AI response could not be parsed into the expected format: {e}") from e
+    return _json_from_text(content)
 
 
 def record_hypothesis_request(case_dir, *, provider, model, entity_type, value, events_sent, outcome, actor=None,

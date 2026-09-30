@@ -33,6 +33,16 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recovery does not cover. Backed by a byte-exact raw-mode stream reader.
 
 ### Fixed
+- **Chat and the investigation team could not work with any real AI provider.** Every
+  provider call (Anthropic, OpenAI, Gemini and local Ollama) was forced into the
+  AI-hypothesis response schema, so a real model could only answer with a hypothesis -
+  never the tool calls and answers chat and the team need. Chat always ended "No answer
+  after N tool calls" and every team role "no findings within the step budget"; only the
+  single-shot hypothesis worked. `call_model()` now takes the schema from its caller: the
+  hypothesis keeps its exact schema, chat and the team use each provider's plain JSON
+  mode (Ollama `format: "json"`, OpenAI `json_object`, Gemini JSON MIME type, Anthropic
+  text parsed as JSON), and the callers validate the reply as before. The tests had
+  replaced `call_model()` itself; new tests go through each provider's request code.
 - **Every request to a local model paid about two extra seconds on Windows.** The
   default Ollama address was `http://localhost:11434`; Windows tries IPv6 `::1` first,
   Ollama listens on IPv4 only, and the failed attempt takes ~2 s. The default is now
