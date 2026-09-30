@@ -1629,12 +1629,16 @@ def stream_list(
     header = f"{'STREAM':<8} {'ENDPOINTS':<46} {'PKTS':>7} {'BYTES':>10}  PROTOCOLS"
     typer.echo(header)
     typer.echo("-" * len(header))
+    from netforensicai.core import explain
+
     for summary in found:
         endpoints = f"{summary.endpoint_a} -> {summary.endpoint_b}"
         typer.echo(
             f"{summary.stream:<8} {endpoints:<46} {summary.packets:>7,} {summary.bytes:>10,}  "
             f"{', '.join(summary.applications)}"
         )
+        # The same sentence the web UI leads with, for anyone new to this.
+        typer.echo(f"{'':<8} {explain.describe_stream(summary)['headline']}")
 
 
 @stream_app.command("follow")

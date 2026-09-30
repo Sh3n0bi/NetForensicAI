@@ -1252,7 +1252,7 @@ async function renderOverview(app, c) {
         el("tr", {}, [
           el("td", {}, [el("a", { class: "mono", href: `#/case/${c.case_id}/files/${encodeURIComponent(f.path)}`, text: f.name })]),
           el("td", { class: "dim", text: f.missing ? "missing" : (f.type && f.type.label) || f.protocol }),
-          el("td", { class: "mono dim", text: fmtBytes(f.size_bytes) }),
+          el("td", { class: "mono dim", text: f.missing ? "missing" : fmtBytes(f.size_bytes) }),
         ])
       );
     }
@@ -1866,7 +1866,16 @@ async function renderEvidence(app, c) {
 
 // --- Timeline ---
 
+// "2023-11-14T22:13:19.050000+00:00" -> "2023-11-14 22:13:19 UTC". Evidence
+// times stay in UTC (a case mixes machines in different zones), but say so.
+function timelineTime(iso) {
+  if (!iso) return "unknown time";
+  const m = String(iso).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
+  return m ? `${m[1]} ${m[2]} UTC` : String(iso);
+}
+
 async function renderTimeline(app, c) {
+  await glossary();
   app.appendChild(el("h1", { text: "Timeline" }));
   const fields = ["user", "ip", "hostname", "process", "file", "type", "evidence"];
   const filterBar = el("div", { class: "filter-bar" });
@@ -1906,8 +1915,8 @@ async function renderTimeline(app, c) {
         entries
           .map(
             (e) => `<tr>
-          <td class="mono">${escapeHtml(e.timestamp || "unknown")}</td>
-          <td>${escapeHtml(e.event_type)}</td>
+          <td class="mono" title="${escapeHtml(e.timestamp || "")}">${escapeHtml(timelineTime(e.timestamp))}</td>
+          <td title="${escapeHtml(e.event_type)}">${escapeHtml(eventLabel(e.event_type))}</td>
           <td>${escapeHtml(e.source)}</td>
           <td class="mono">${escapeHtml(e.evidence_id)}</td>
           <td>${escapeHtml(summarizeEntry(e))}</td>
@@ -3184,58 +3193,157 @@ async function renderSearch(app, c) {
 
 // --- Streams ---
 
+// --- Plain-language helpers ------------------------------------------------
+//
+// The glossary (core/explain.py via /api/glossary) is fetched once and used to
+// explain Wireshark's vocabulary wherever it appears. A term is a native
+// <details> element: keyboard-operable and announced correctly with no script.
+
+let _glossary = null;
+
+async function glossary() {
+  if (_glossary === null) {
+    try {
+      _glossary = await apiGet("/glossary");
+    } catch (e) {
+      _glossary = { protocols: {}, event_types: {} };
+    }
+  }
+  return _glossary;
+}
+
+function protocolKey(name) {
+  const n = String(name || "").trim().toLowerCase().split("/")[0];
+  if (_glossary && _glossary.protocols[n]) return n;
+  const stripped = n.replace(/v?\d+(\.\d+)*$/, "").replace(/v$/, "");
+  return _glossary && _glossary.protocols[stripped] ? stripped : n;
+}
+
+// A protocol name that opens to a one-line explanation; plain text when the
+// glossary does not know it.
+function termEl(name) {
+  const entry = _glossary && _glossary.protocols[protocolKey(name)];
+  if (!entry) return el("span", { class: "term-plain", text: name });
+  // Say whether it is encrypted - unless the description already does.
+  const saysIt = /encrypt/i.test(entry.what);
+  const lock = saysIt ? "" : entry.encrypted === true ? "Encrypted. " : entry.encrypted === false ? "Not encrypted. " : "";
+  return el("details", { class: "term" }, [
+    el("summary", { text: name, title: `What is ${entry.name}?` }),
+    el("span", { class: "term-what", text: `${lock}${entry.what}` }),
+  ]);
+}
+
+function eventLabel(type) {
+  if (_glossary && _glossary.event_types[type]) return _glossary.event_types[type];
+  if (String(type).startsWith("windows_event:")) return `Windows event (${type.split(":")[1]})`;
+  const t = String(type || "event").replace(/_/g, " ");
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
 async function renderStreams(app, c, focus) {
-  app.appendChild(el("h1", { text: "Streams" }));
+  app.appendChild(el("h1", { text: "Conversations" }));
   app.appendChild(
     el("div", {
       class: "subtitle",
-      text: "Conversations reassembled by Wireshark. A credential or a flag rarely lives in one packet.",
+      text:
+        "Each row is one conversation between two computers, put back together from its packets. Start with the plain description; the Wireshark details are underneath for when you need them.",
     })
   );
+  await glossary();
 
   const layout = el("div", { class: "two-col reverse" });
   const list = el("div", { class: "panel" });
-  const reader = el("div", { class: "panel" });
+  const reader = el("div", { class: "panel", "aria-live": "polite" });
   layout.appendChild(list);
   layout.appendChild(reader);
   app.appendChild(layout);
 
-  reader.appendChild(el("div", { class: "empty", text: "Select a conversation to read it." }));
+  reader.appendChild(el("div", { class: "empty", text: "Choose a conversation to read it." }));
+
+  const byStream = new Map();
 
   async function follow(index) {
     reader.innerHTML = "";
-    reader.appendChild(el("div", { class: "loading", text: "Reassembling…" }));
+    reader.appendChild(el("div", { class: "loading", text: "Putting the conversation back together…" }));
+    history.replaceState(null, "", `#/case/${c.case_id}/streams/${index}`);
     try {
       const s = await apiGet(`/cases/${c.case_id}/streams/${index}`);
+      const summary = byStream.get(Number(index));
       reader.innerHTML = "";
-      reader.appendChild(el("h3", { text: `tcp stream ${s.stream}` }));
-      reader.appendChild(el("div", { class: "mono dim", text: `${s.node_a} ↔ ${s.node_b}` }));
-      const saveBar = el("div", { class: "filter-bar" });
+      reader.appendChild(el("h2", { class: "stream-title", text: summary ? summary.plain.headline : `Conversation ${s.stream}` }));
+      if (summary) {
+        const ul = el("ul", { class: "plain-points" });
+        for (const p of summary.plain.points) ul.appendChild(el("li", { text: p }));
+        reader.appendChild(ul);
+      }
+      for (const h of s.hints || []) reader.appendChild(el("div", { class: "file-note", text: h }));
+
+      const actions = el("div", { class: "filter-bar" });
+      const explain = el("button", { type: "button", class: "secondary", text: "Explain this conversation with AI" });
+      actions.appendChild(explain);
       const dataUrl = (dir) => `${API}/cases/${c.case_id}/streams/${s.stream}/data?direction=${dir}`;
-      saveBar.appendChild(el("a", { class: "button-link secondary", href: dataUrl("a"), download: "", text: `Save what ${s.node_a} sent` }));
-      saveBar.appendChild(el("a", { class: "button-link secondary", href: dataUrl("b"), download: "", text: `Save what ${s.node_b} sent` }));
-      saveBar.appendChild(el("span", { class: "dim", text: "Exact bytes, for files the automatic recovery missed." }));
-      reader.appendChild(saveBar);
+      actions.appendChild(el("a", { class: "button-link secondary", href: dataUrl("a"), download: "", text: `Save what ${s.node_a} sent` }));
+      actions.appendChild(el("a", { class: "button-link secondary", href: dataUrl("b"), download: "", text: `Save what ${s.node_b} sent` }));
+      reader.appendChild(actions);
+      const aiBox = el("div", { class: "ai-explain" });
+      reader.appendChild(aiBox);
+      explain.addEventListener("click", async () => {
+        explain.disabled = true;
+        aiBox.innerHTML = "";
+        aiBox.appendChild(el("div", { class: "loading", text: "Asking the assistant to explain it…" }));
+        try {
+          const question =
+            `Explain TCP conversation (stream) ${s.stream} to someone new to network forensics. ` +
+            "Follow the stream, then say in plain language what the two computers did, what was sent, " +
+            "whether anything in it is sensitive or suspicious, and what to check next.";
+          const r = await apiPost(`/cases/${c.case_id}/chat`, { question });
+          aiBox.innerHTML = "";
+          aiBox.appendChild(el("div", { class: "answer", text: r.answer }));
+          const cites = el("div", { class: "cites" }, [el("span", { class: "dim", text: "Based on:" })]);
+          for (const cit of r.citations || []) cites.appendChild(el("span", { class: "cite", text: `${cit.kind} ${cit.reference}` }));
+          aiBox.appendChild(cites);
+          aiBox.appendChild(el("div", { class: "dim", text: "AI-written and checked against the evidence it cites. Recorded in the chain of custody." }));
+        } catch (e) {
+          aiBox.innerHTML = "";
+          const refused = /refused/i.test(e.message);
+          aiBox.appendChild(
+            el("div", {
+              class: refused ? "refused" : "error-box",
+              text: refused
+                ? "The assistant's answer was refused because it cited something it had not actually retrieved. " + e.message
+                : `The assistant is not available: ${e.message} Set up an AI provider (a local model or an API key) in Settings.`,
+            })
+          );
+        } finally {
+          explain.disabled = false;
+        }
+      });
+
+      const tech = el("details", { class: "tech" }, [el("summary", { text: "Wireshark details" })]);
+      tech.appendChild(el("div", { class: "mono dim", text: `TCP stream ${s.stream} · ${s.node_a} ↔ ${s.node_b}` }));
+      if (summary) tech.appendChild(el("div", { class: "mono dim", text: `${summary.packets} packets · ${summary.bytes} bytes · ${(summary.applications || []).join(", ")}` }));
+      tech.appendChild(el("div", { class: "mono dim", text: `Wireshark filter: tcp.stream eq ${s.stream}` }));
+      reader.appendChild(tech);
+
+      reader.appendChild(el("h3", { text: "What was said" }));
+      reader.appendChild(
+        el("div", { class: "dim", text: "Each block is one side talking. Unreadable bytes show as dots; save the data above to get it exactly." })
+      );
       for (const turn of s.turns) {
         const fromA = turn.sender === "a";
         const box = el("div", { class: "turn " + (fromA ? "turn-a" : "turn-b") });
-        box.appendChild(
-          el("div", {
-            class: "turn-head",
-            text: `${fromA ? s.node_a + " →" : "← " + s.node_b} · ${turn.byte_count} bytes`,
-          })
-        );
+        box.appendChild(el("div", { class: "turn-head", text: `${fromA ? s.node_a : s.node_b} said (${fmtBytes(turn.byte_count)})` }));
         box.appendChild(el("pre", { text: turn.text }));
         reader.appendChild(box);
       }
-      if (s.truncated) reader.appendChild(el("div", { class: "dim", text: "Truncated." }));
+      if (s.truncated) reader.appendChild(el("div", { class: "dim", text: "Only the start is shown - save the data to see all of it." }));
     } catch (e) {
       reader.innerHTML = "";
-      reader.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+      reader.appendChild(el("div", { class: "error-box", text: "Could not read this conversation: " + e.message }));
     }
   }
 
-  list.appendChild(el("div", { class: "loading", text: "Loading conversations…" }));
+  list.appendChild(el("div", { class: "loading", text: "Finding conversations…" }));
   try {
     const res = await apiGet(`/cases/${c.case_id}/streams`);
     list.innerHTML = "";
@@ -3243,42 +3351,40 @@ async function renderStreams(app, c, focus) {
       list.appendChild(el("div", { class: "empty", text: "No TCP conversations in this capture." }));
       return;
     }
-    const table = el("table");
-    table.innerHTML = "<thead><tr><th>Stream</th><th>Endpoints</th><th>Volume</th><th>Proto</th></tr></thead>";
-    const tbody = el("tbody");
+    list.appendChild(el("div", { class: "dim", text: `${res.streams.length} largest conversations, biggest first` }));
+    const items = el("div", { class: "stream-list", role: "list" });
     for (const s of res.streams) {
-      const row = el("tr", { class: "clickable" }, [
-        el("td", { class: "mono", text: s.stream }),
-        el("td", { class: "mono dim", text: `${s.endpoint_a} → ${s.endpoint_b}` }),
-        el("td", { class: "dim", text: `${s.packets} pkts · ${s.bytes} B` }),
-        el("td", { text: (s.applications || []).join(", ") }),
-      ]);
-      row.onclick = () => follow(s.stream);
-      // Rows are the only way into a conversation, so they must work from the
-      // keyboard too, not just with a mouse.
-      row.setAttribute("tabindex", "0");
-      row.setAttribute("role", "button");
-      row.setAttribute("aria-label", `Open conversation ${s.stream}: ${s.endpoint_a} to ${s.endpoint_b}`);
-      row.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter" || ev.key === " ") {
-          ev.preventDefault();
-          follow(s.stream);
-        }
-      });
-      tbody.appendChild(row);
+      byStream.set(Number(s.stream), s);
+      const wrap = el("div", { role: "listitem" });
+      const item = el("button", { type: "button", class: "stream-item" });
+      item.appendChild(el("div", { class: "stream-plain", text: s.plain.headline }));
+      const lock =
+        s.plain.encrypted === true
+          ? el("span", { class: "badge badge-low", text: "Encrypted" })
+          : s.plain.encrypted === false
+            ? el("span", { class: "badge badge-medium", text: "Readable" })
+            : null;
+      const meta = el("div", { class: "stream-meta" });
+      if (lock) meta.appendChild(lock);
+      meta.appendChild(el("span", { class: "mono dim", text: `stream ${s.stream} · ${s.packets} packets` }));
+      item.appendChild(meta);
+      item.addEventListener("click", () => follow(s.stream));
+      wrap.appendChild(item);
+      const terms = el("div", { class: "stream-terms" });
+      for (const p of (s.applications || []).filter((p, i, all) => all.indexOf(p) === i)) terms.appendChild(termEl(p));
+      wrap.appendChild(terms);
+      items.appendChild(wrap);
     }
-    table.appendChild(tbody);
-    list.appendChild(table);
+    list.appendChild(items);
     if (focus !== undefined && focus !== null && focus !== "") follow(focus);
   } catch (e) {
     list.innerHTML = "";
-    list.appendChild(el("div", { class: "error-box", text: "Error: " + e.message }));
+    list.appendChild(el("div", { class: "error-box", text: "Could not list conversations: " + e.message }));
   }
 }
 
-// --- Triage ---
-
 async function renderTriage(app, c) {
+  await glossary();
   app.appendChild(el("h1", { text: "Triage" }));
   app.appendChild(
     el("div", {
@@ -3303,8 +3409,8 @@ async function renderTriage(app, c) {
     protoPanel.appendChild(el("h3", { text: "Protocols" }));
     for (const p of r.protocols) {
       const row = el("div", { class: "proto-row", style: `padding-left:${p.depth * 14}px` });
-      row.appendChild(el("span", { class: "mono", text: p.protocol }));
-      if (p.note) row.appendChild(el("span", { class: "badge badge-medium", text: "cleartext" }));
+      row.appendChild(termEl(p.protocol));
+      if (p.note) row.appendChild(el("span", { class: "badge badge-medium", text: "readable" }));
       row.appendChild(el("span", { class: "dim right", text: p.frames }));
       protoPanel.appendChild(row);
       if (p.note) protoPanel.appendChild(el("div", { class: "proto-note", style: `padding-left:${p.depth * 14}px`, text: p.note }));
@@ -3710,18 +3816,8 @@ async function renderTeam(app, c) {
 const RISK_LABEL = { high: "Could run code", medium: "Handle with care", low: "Low risk" };
 const RISK_BADGE = { high: "high", medium: "medium", low: "low" };
 
-function fmtBytes(n) {
-  if (n == null) return "missing";
-  const units = ["bytes", "KB", "MB", "GB"];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  const num = new Intl.NumberFormat(undefined, { maximumFractionDigits: i ? 1 : 0 }).format(v);
-  return `${num} ${units[i]}`;
-}
+// Sizes use the shared fmtBytes() near the top of this file; a second
+// definition here once silently replaced it for the whole page.
 
 function fmtUtc(iso) {
   if (!iso) return "unknown time";
@@ -4225,7 +4321,7 @@ const RAIL = [
   [null, "files", "Recovered files", "file"],
   [null, "capture", "Live capture", "capture"],
   ["Dig", "search", "Search", "search"],
-  [null, "streams", "Streams", "streams"],
+  [null, "streams", "Conversations", "streams"],
   [null, "triage", "Triage", "triage"],
   ["Analysis", "timeline", "Timeline", "timeline"],
   [null, "entities", "Entities", "entities"],

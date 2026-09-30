@@ -7,6 +7,15 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Plain language for newcomers** (`core/explain.py`). Conversations (formerly Streams)
+  lead with a sentence - "10.10.4.17 (on your network) sent 5.0 KB to 104.21.7.19 (on the
+  internet) using FTP-DATA" - plus whether it could be read on the wire and whether data
+  mostly left the network, with the Wireshark details folded underneath. A glossary of
+  ~50 protocols explains every protocol name in Conversations and Triage; Timeline event
+  types read as plain labels with labelled UTC times. Opening a conversation shows
+  content hints (email addresses, plain-text logins, private keys) and an optional
+  **Explain this conversation with AI**. `netforensic stream list` prints the sentence
+  too. New `GET /api/glossary`; stream summaries gain per-direction byte counts.
 - **Choose where the AI assistant runs** - on the first-run screen and at the top of
   Settings: *on this computer* (local AI with Ollama: detects whether it is running,
   lists installed models, and gives setup steps with recommended models when it is
@@ -33,6 +42,7 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recovery does not cover. Backed by a byte-exact raw-mode stream reader.
 
 ### Fixed
+- Animations now honour the system's reduced-motion setting.
 - **Chat and the investigation team could not work with any real AI provider.** Every
   provider call (Anthropic, OpenAI, Gemini and local Ollama) was forced into the
   AI-hypothesis response schema, so a real model could only answer with a hypothesis -

@@ -297,7 +297,7 @@ Each of these is covered properly in [the capability reference](docs/capabilitie
 | **Chain of custody** | Every action appended to a hash-chained log. `case audit --verify` reports whether it has been altered. |
 | **Parsers** | `.pcap`/`.pcapng` (tshark or scapy), `.json`, Suricata `eve.json`, `.csv`, `.evtx` — all normalized into one Common Event Model. |
 | **Search** | Content search over a capture's raw bytes: text, regex, or hex. ~6s across 1,000,000 packets. |
-| **Streams** | Conversations reassembled by Wireshark, ranked by volume. |
+| **Conversations** | Conversations reassembled by Wireshark, each described in plain words (who sent what to whom, and whether it could be read), with a protocol glossary and an optional AI explanation. |
 | **Triage** | The first questions worth asking an unfamiliar capture: protocols, flags, credentials, secrets, recoverable files. |
 | **Entities & correlation** | Deterministic IDs join the same real-world thing across evidence sources. Links are `related` or `possible_relationship`, never "caused". |
 | **Detections** | Offline rules — no AI, no network — for web scans, network intrusions and Windows hosts (brute force, Kerberoasting, LSASS dumps, LOLBins, log clearing, ransomware prep…), run automatically on every `analyze`. |

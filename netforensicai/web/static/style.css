@@ -799,6 +799,31 @@ button.small { padding: 3px 9px; font-size: 12px; }
 .files-tools input[type="search"] { flex: 1 1 200px; min-width: 0; }
 .file-item-top .badge { flex-shrink: 0; white-space: nowrap; }
 
+/* --- Plain language: glossary terms and conversations --- */
+.term { display: inline-block; margin: 2px 6px 2px 0; font-size: 12px; }
+.term > summary { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; list-style: none; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-weight: 600; }
+.term > summary::-webkit-details-marker { display: none; }
+.term > summary::after { content: "?"; font-size: 10px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 50%; width: 13px; height: 13px; display: inline-flex; align-items: center; justify-content: center; }
+.term[open] > summary { border-color: var(--accent-dim); background: var(--accent-soft); color: var(--accent); }
+.term-what { display: block; margin: 5px 0 4px; padding: 7px 10px; max-width: 46ch; font-size: 12.5px; line-height: 1.45; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.term-plain { display: inline-block; margin: 2px 6px 2px 0; font-size: 12px; color: var(--text-dim); }
+.stream-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.stream-item { display: block; width: 100%; text-align: left; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px 12px; box-shadow: none; font-weight: 400; }
+.stream-item:hover { background: var(--surface-2); filter: none; box-shadow: none; }
+.stream-plain { font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.stream-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+.stream-meta .badge { white-space: nowrap; }
+.stream-terms { padding: 4px 2px 0; }
+.stream-title { font-size: 17px; line-height: 1.4; margin: 0 0 8px; overflow-wrap: anywhere; }
+.plain-points { margin: 0 0 10px; padding-left: 18px; font-size: 13px; line-height: 1.5; color: var(--text-dim); }
+.plain-points li { margin: 3px 0; }
+details.tech { margin: 10px 0; font-size: 12px; }
+details.tech > summary { cursor: pointer; color: var(--text-dim); }
+details.tech > div { margin-top: 4px; overflow-wrap: anywhere; }
+.ai-explain .answer { white-space: pre-wrap; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
 /* --- AI setup --- */
 .ai-setup-card { margin-top: 16px; }
 .ai-setup-card > h2 { margin-top: 0; }

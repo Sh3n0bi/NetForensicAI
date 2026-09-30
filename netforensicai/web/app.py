@@ -758,6 +758,14 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
 
         raise ApiError(f"Unknown test target '{target}'.")
 
+    @app.route("/api/glossary")
+    def glossary():
+        """Plain-language names for protocols and event types - see
+        core/explain.py. Static, so the UI fetches it once."""
+        from netforensicai.core import explain
+
+        return jsonify(explain.glossary())
+
     @app.route("/api/ai/status")
     def ai_status():
         """How the AI assistant is set up: the current choice and whether it
@@ -1222,7 +1230,16 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
             )
         except streams_module.StreamError as e:
             raise ApiError(str(e))
-        return jsonify({"evidence_id": evidence.evidence_id, "streams": [s.to_dict() for s in found]})
+        from netforensicai.core import explain
+
+        rows = []
+        for summary in found:
+            row = summary.to_dict()
+            # Plain words first, for someone new; the fields above stay for
+            # everyone who wants the Wireshark view.
+            row["plain"] = explain.describe_stream(summary)
+            rows.append(row)
+        return jsonify({"evidence_id": evidence.evidence_id, "streams": rows})
 
     @app.route("/api/cases/<case_id>/streams/<int:index>")
     def follow_case_stream(case_id, index):
@@ -1241,6 +1258,12 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
             raise ApiError(str(e), 404)
         data = followed.to_dict()
         data["evidence_id"] = evidence.evidence_id
+        # Leads about what the conversation carried (email addresses, a
+        # password field, a private key) - the same hints recovered files get.
+        from netforensicai.core.artifacts import _content_notes
+
+        text = "\n".join(turn.text for turn in followed.turns)[:65536].encode("utf-8", errors="replace")
+        data["hints"] = _content_notes(text, "text")
         return jsonify(data)
 
     @app.route("/api/cases/<case_id>/streams/<int:index>/data")
