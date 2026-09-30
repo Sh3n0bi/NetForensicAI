@@ -63,7 +63,7 @@ SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "gemini")
 # answered in 8 seconds. A default that intermittently fails is worse
 # than one that fails once, clearly, years from now.
 DEFAULT_MODELS = {
-    "anthropic": "claude-opus-5",
+    "anthropic": "claude-opus-5-5",
     "openai": "gpt-4o-mini",
     "ollama": "llama3.1",
     "gemini": "gemini-3.6-flash",
@@ -87,6 +87,10 @@ MAX_TRANSIENT_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 2.0
 
 MAX_TOKENS = 4096
+# Current Claude models always think before answering, and the thinking
+# counts against max_tokens - at 4096 a long case summary could use it all
+# and leave the JSON answer cut off.
+ANTHROPIC_MAX_TOKENS = 16000
 MAX_EVENTS = 50
 # 127.0.0.1, not "localhost": Ollama listens on IPv4 loopback only, and on
 # Windows "localhost" tries IPv6 ::1 first and takes ~2 s to give up on it -
@@ -395,14 +399,14 @@ def _call_anthropic(system_prompt, user_prompt, api_key, model, schema=None):
         if schema is None:
             response = client.messages.create(
                 model=model,
-                max_tokens=MAX_TOKENS,
+                max_tokens=ANTHROPIC_MAX_TOKENS,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
             )
         else:
             response = client.messages.parse(
                 model=model,
-                max_tokens=MAX_TOKENS,
+                max_tokens=ANTHROPIC_MAX_TOKENS,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
                 output_format=schema,
@@ -428,6 +432,9 @@ def _call_anthropic(system_prompt, user_prompt, api_key, model, schema=None):
     except anthropic.APIConnectionError as e:
         raise AssistantError(f"AI request failed: network error - {e}") from e
 
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise AssistantError("The AI's answer was cut off before it finished. Try again, or narrow the question.")
+    # Thinking blocks carry no .text, so only the answer is joined.
     if schema is None:
         return _json_from_text("".join(getattr(block, "text", "") for block in response.content))
     parsed = response.parsed_output

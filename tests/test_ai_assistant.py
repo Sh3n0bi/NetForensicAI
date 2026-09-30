@@ -186,7 +186,17 @@ def test_prompt_includes_normalized_fields_and_request_uses_expected_model():
     prompt_text = call_kwargs["messages"][0]["content"]
     assert "cmd /c whoami" in prompt_text
     assert call_kwargs["output_format"] is Hypothesis
-    assert call_kwargs["model"] == "claude-opus-5"
+    assert call_kwargs["model"] == "claude-opus-5-5"
+    # Room for the model's thinking as well as the JSON answer.
+    assert call_kwargs["max_tokens"] >= 16000
+
+
+def test_answer_cut_off_at_token_limit_is_a_clear_error():
+    mock_client = _mock_client(_valid_hypothesis([]))
+    mock_client.messages.parse.return_value.stop_reason = "max_tokens"
+    with patch("anthropic.Anthropic", return_value=mock_client):
+        with pytest.raises(AssistantError, match="cut off"):
+            generate_hypothesis([_event("EVT-0001")], api_key="fake-key")
 
 
 def test_model_override_is_passed_through():
