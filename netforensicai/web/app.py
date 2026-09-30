@@ -761,13 +761,12 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
     @app.route("/api/ai/status")
     def ai_status():
         """How the AI assistant is set up: the current choice and whether it
-        is ready, whether local AI (Ollama) is running here and which models
-        it has, and which cloud providers have a key. Never returns a key.
-        `?base_url=` checks an Ollama address before it is saved; it passes
-        the same loopback-only guard as every Ollama call."""
+        is ready, whether local AI (Ollama) is running at the saved address
+        and which models it has, and which cloud providers have a key. Never
+        returns a key, and never probes an address taken from the request."""
         from netforensicai.core import ai_setup
 
-        response = jsonify(ai_setup.status(request.args.get("base_url") or None, refresh=bool(request.args.get("refresh"))))
+        response = jsonify(ai_setup.status(refresh=bool(request.args.get("refresh"))))
         response.headers["Cache-Control"] = "no-store"  # live state; never a stale copy
         return response
 

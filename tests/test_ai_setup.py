@@ -66,12 +66,14 @@ def test_local_not_running_is_explained(ollama):
     s = ai_setup.local_status()
     assert s["reachable"] is False
     assert "not answering" in s["error"] and "installed and running" in s["error"]
+    assert "ConnectionError" not in s["error"]  # no exception detail in what the user sees
 
 
-def test_remote_ollama_address_is_refused_without_a_request(ollama):
-    s = ai_setup.local_status("http://10.0.0.5:11434")
+def test_saved_remote_ollama_address_is_refused_without_a_request(ollama):
+    config.save_settings({"ollama_base_url": "http://10.0.0.5:11434"})
+    s = ai_setup.local_status()
     assert s["reachable"] is False
-    assert "Refusing" in s["error"]
+    assert "not on this computer" in s["error"]
     assert ollama.calls == []  # the SSRF guard stops it before any request
 
 
@@ -124,7 +126,9 @@ def test_status_route(ollama):
     body = client.get("/api/ai/status").get_json()
     assert body["local"]["reachable"] is True
     assert body["recommended_local_models"][0]["name"] == "llama3.1:8b"
+    # An address in the request is ignored: only the saved setting is probed.
     body = client.get("/api/ai/status?base_url=http://192.168.1.9:11434").get_json()
-    assert "Refusing" in body["local"]["error"]
+    assert body["local"]["base_url"] == "http://127.0.0.1:11434"
     client.get("/api/ai/status?refresh=1")
-    assert len(ollama.calls) == 2  # first status + the refresh; the refused URL made none
+    assert all(call.startswith("http://127.0.0.1:11434") for call in ollama.calls)
+    assert len(ollama.calls) == 2  # first status + the refresh (the second one was cached)

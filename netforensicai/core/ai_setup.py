@@ -15,7 +15,11 @@ The detections, the story and file recovery need no AI at all; the assistant is
 the optional layer on top.
 """
 
+import logging
+
 from netforensicai.core import ai_assistant, config
+
+logger = logging.getLogger(__name__)
 
 # Local models known to follow the JSON protocol the assistant and the team
 # speak. Suggestions, not requirements: any installed model can be chosen.
@@ -39,11 +43,16 @@ LOCAL_STATUS_TTL_SECONDS = 20
 _local_cache = {}  # base_url -> (monotonic time, status)
 
 
-def local_status(base_url=None, refresh=False):
-    """Cached wrapper over _probe_local (see LOCAL_STATUS_TTL_SECONDS)."""
+def local_status(refresh=False):
+    """Cached wrapper over _probe_local (see LOCAL_STATUS_TTL_SECONDS).
+
+    Probes only the address the operator saved in Settings (or the default) -
+    never an address taken from a request. A web request that could name the
+    address would make the server a probe for whatever it names.
+    """
     import time
 
-    base_url = base_url or config.get_plain("ollama_base_url") or ai_assistant.DEFAULT_OLLAMA_BASE_URL
+    base_url = config.get_plain("ollama_base_url") or ai_assistant.DEFAULT_OLLAMA_BASE_URL
     cached = _local_cache.get(base_url)
     if cached and not refresh and time.monotonic() - cached[0] < LOCAL_STATUS_TTL_SECONDS:
         return dict(cached[1])
@@ -53,17 +62,22 @@ def local_status(base_url=None, refresh=False):
 
 
 def _probe_local(base_url):
-    """Whether Ollama answers at `base_url` (default: saved setting, then
-    localhost), and the models it has installed.
+    """Whether Ollama answers at `base_url`, and the models it has installed.
 
-    `base_url` can come from a web request, so it goes through the same
-    guard as every Ollama call: loopback only, unless the operator opted in.
+    Still held to the same guard as every Ollama call (loopback only unless
+    the operator opted in), since the saved setting is itself editable from
+    the web UI. Errors shown to the user are fixed sentences; the exception
+    detail only goes to the server log.
     """
     status = {"base_url": base_url, "reachable": False, "models": [], "error": None}
     try:
         ai_assistant._validate_ollama_base_url(base_url)
     except ai_assistant.AssistantError as e:
-        status["error"] = str(e)
+        logger.info(f"Ollama address rejected: {e}")
+        status["error"] = (
+            "The saved Ollama address is not on this computer. Ollama runs locally; to use a remote "
+            f"server you trust, set {ai_assistant.OLLAMA_ALLOW_REMOTE_ENV}=1."
+        )
         return status
     try:
         import requests
@@ -75,7 +89,8 @@ def _probe_local(base_url):
         response.raise_for_status()
         payload = response.json()
     except Exception as e:  # not running, wrong port, not Ollama - all mean "not available here"
-        status["error"] = f"Ollama is not answering at {base_url}. Is it installed and running? ({type(e).__name__})"
+        logger.info(f"Ollama probe at {base_url} failed: {e!r}")
+        status["error"] = f"Ollama is not answering at {base_url}. Is it installed and running?"
         return status
     status["reachable"] = True
     for model in payload.get("models") or []:
@@ -89,7 +104,7 @@ def _probe_local(base_url):
     return status
 
 
-def status(base_url=None, refresh=False):
+def status(refresh=False):
     """Everything the setup screen shows: the current choice, whether it is
     ready to use, local AI detection, and which cloud providers have a key."""
     provider = config.get_plain("ai_provider")
@@ -105,7 +120,7 @@ def status(base_url=None, refresh=False):
         }
         for slug, info in CLOUD_PROVIDERS.items()
     }
-    local = local_status(base_url, refresh=refresh)
+    local = local_status(refresh=refresh)
 
     if provider == "ollama":
         installed = {m["name"] for m in local["models"]}
