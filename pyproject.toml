@@ -80,7 +80,7 @@ dev = [
     # Linter; configured in [tool.ruff] below. Pinned to match the version
     # the CI lint gate uses (.github/workflows/tests.yml) so `ruff check`
     # gives contributors the same result locally as in CI.
-    "ruff==0.16.9",
+    "ruff==0.16.10",
 ]
 build = [
     "build>=1.0",
