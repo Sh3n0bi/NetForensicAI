@@ -8,10 +8,12 @@
 `INC-####` IDs, one directory per case, a status lifecycle (`open` / `investigating` / `closed`, settable from the CLI or the dashboard), indexes over evidence, findings and artifacts, and irreversible deletion behind a typed confirmation.
 
 ## Evidence integrity
-Every item is copied in, SHA-256 hashed from the stored copy, set read-only, and recorded in a manifest with its original path and modification time.
+Every item is copied in, SHA-256 hashed from the stored copy, set read-only, and recorded in a manifest with its original path and modification time. `evidence verify` re-hashes the stored copies on demand, and `analyze` re-checks each item before parsing it: an item that no longer matches is **not parsed**, the failure is written to the custody log, and `analyze` exits with status 2.
 
 ## Chain of custody
-Every action — case created, evidence added, evidence parsed, analysis run, finding created or updated, report generated, capture started or stopped, threat intel checked, AI hypothesis requested, evidence sliced — is appended to a **hash-chained** `audit.log`. `case audit --verify` reports whether the record has been altered since it was written.
+Every action — case created, evidence added, evidence parsed, analysis run, finding created or updated, report generated, capture started or stopped, threat intel checked, AI hypothesis requested, evidence sliced — is appended to a **hash-chained** `audit.log`. `case audit --verify` reports whether the record has been altered since it was written, and whether its newest entries have been deleted (a small `audit.head` file records the newest entry, so cutting off the tail no longer looks like a valid shorter chain).
+
+For protection against someone with access to the disk, note the head hash that `--verify` prints somewhere outside the case (a ticket, a notebook) and check it later with `case audit --verify --expect-head <hash>` — that value is not on the disk to be rewritten.
 
 > This detects accidental corruption and casual after-the-fact editing. It does **not** stop an attacker who controls the machine, who could recompute the whole chain.
 

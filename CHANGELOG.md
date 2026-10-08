@@ -6,6 +6,14 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`netforensic evidence verify`** re-hashes stored evidence against the SHA-256 recorded at ingest (all items, or one by ID) and exits 1 on a mismatch or a missing file. Each run is recorded in the custody log.
+- **`case audit --expect-head <hash>`** checks a head hash the investigator noted outside the case; `case audit --verify` now prints the current head to note.
+
+### Fixed
+- **Deleting the newest custody-log entries is now detected.** The hash chain could not see its own tail being cut off; an `audit.head` file now records the newest entry and `verify` compares the log against it.
+- **`analyze` (and the web UI and live capture) no longer parse evidence that fails its hash check.** Previously a modified file was analysed silently; it is now skipped, recorded as `evidence.integrity_failed`, and `analyze` exits 2.
+
 ## [0.7.0] — 2026-09-30
 
 Follow the hosts. The IP addresses in the story are now links, and a new Host

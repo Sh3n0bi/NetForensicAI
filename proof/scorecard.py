@@ -253,12 +253,16 @@ def check_module_size():
 
 GAP_LABELS = {
     "test_audit_tail_truncation_is_detected": ("Custody log: deleting newest entry is detected", "integrity"),
-    "test_cli_has_an_evidence_verify_command_that_catches_tampering": (
+    "test_expected_head_catches_truncation_even_when_the_head_file_is_rewritten": (
+        "Custody log: externally noted head hash (--expect-head) catches truncation",
+        "integrity",
+    ),
+    "test_evidence_verify_catches_modified_evidence": (
         "CLI `evidence verify` catches modified evidence",
         "integrity",
     ),
-    "test_analyze_flags_evidence_modified_after_ingest": (
-        "`analyze` flags evidence modified after ingest",
+    "test_analyze_refuses_modified_evidence_and_exits_nonzero": (
+        "`analyze` refuses evidence modified after ingest (exit 2)",
         "integrity",
     ),
     "test_web_throttles_repeated_failed_auth": ("Web: failed token guesses are throttled", "web"),
@@ -269,14 +273,16 @@ GAP_LABELS = {
 
 @guarded
 def check_known_gaps():
-    """Each gap is defined once, in tests/test_proof_gaps.py. --runxfail makes
-    the expected failures real so a PASS here means the behaviour exists."""
+    """Each claim is a test: gaps still open live in tests/test_proof_gaps.py,
+    fixed ones in tests/test_integrity.py. --runxfail makes the expected
+    failures real so a PASS here means the behaviour exists."""
     _, out = run(
         [
             sys.executable,
             "-m",
             "pytest",
             "tests/test_proof_gaps.py",
+            "tests/test_integrity.py",
             "--runxfail",
             "-rA",
             "-q",
@@ -286,7 +292,8 @@ def check_known_gaps():
         ],
         timeout=300,
     )
-    seen = {name: state for state, name in re.findall(r"^(PASSED|FAILED) tests/test_proof_gaps\.py::(\w+)", out, re.M)}
+    pattern = r"^(PASSED|FAILED) tests/test_(?:proof_gaps|integrity)\.py::(\w+)"
+    seen = {name: state for state, name in re.findall(pattern, out, re.M)}
     for test, (label, area) in GAP_LABELS.items():
         state = seen.get(test)
         if state is None:

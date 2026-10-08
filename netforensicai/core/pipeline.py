@@ -43,18 +43,40 @@ def parse_evidence_item(evidence, case_dir, case_manager, case_id, store, parse_
     options they don't recognize (BaseParser takes **options), so a
     pcap-specific knob reaching a JSON evidence item is harmless.
 
+    The stored copy is re-hashed against the SHA-256 recorded at ingest first,
+    and an item that no longer matches is NOT parsed: findings drawn from a
+    file that differs from the one that was hashed could not be defended.
+    The failure is returned as the error and written to the custody log.
+
     Returns (event_count, entity_count, error). error is None on success.
     """
     parse_options = {k: v for k, v in (parse_options or {}).items() if v is not None}
 
+    from netforensicai.core import audit
     from netforensicai.core.entities import extract_and_store_ids
-    from netforensicai.core.evidence import EvidenceManager
+    from netforensicai.core.evidence import EvidenceError, EvidenceManager
     from netforensicai.parsers import base, load_parsers
 
     load_parsers()
     parser = base.get_parser(evidence.evidence_type)
     if parser is None:
         return None, None, f"No parser registered for evidence type '{evidence.evidence_type}'"
+
+    try:
+        intact = EvidenceManager(case_dir).verify(evidence.evidence_id)
+        problem = "the stored copy no longer matches the SHA-256 recorded when it was ingested"
+    except EvidenceError as e:
+        intact, problem = False, str(e)
+    if not intact:
+        audit.record(
+            case_dir,
+            audit.EVIDENCE_INTEGRITY_FAILED,
+            {"evidence_id": evidence.evidence_id, "recorded_sha256": evidence.sha256, "detail": problem},
+        )
+        return None, None, (
+            f"INTEGRITY CHECK FAILED - {problem} (possible tampering or corruption). "
+            f"Not parsed; run `netforensic evidence verify` for details."
+        )
 
     stored_path = EvidenceManager(case_dir).stored_file_path(evidence.evidence_id)
     output_dir = case_dir / "artifacts" / evidence.evidence_id

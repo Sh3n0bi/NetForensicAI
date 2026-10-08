@@ -11,7 +11,7 @@ Every command supports `--help` and `--cases-dir` (env `NETFORENSIC_CASES_DIR`, 
 netforensic case create --name "Incident" [--description "..."] [--investigator "..."]
 netforensic case list
 netforensic case status --case INC-0001 open|investigating|closed
-netforensic case audit  --case INC-0001 [--verify]
+netforensic case audit  --case INC-0001 [--verify] [--expect-head <hash>]
 netforensic case export --case INC-0001 [--output INC-0001.zip]
 netforensic case import ./INC-0001.zip [--cases-dir other_cases]
 netforensic case delete --case INC-0001              # irreversible; see below
@@ -23,6 +23,7 @@ netforensic case delete --case INC-0001              # irreversible; see below
 ```bash
 netforensic evidence add ./file --case INC-0001     # .pcap/.pcapng/.json/.csv/.evtx
 netforensic evidence list --case INC-0001
+netforensic evidence verify --case INC-0001 [EV-0001]   # re-hash against the SHA-256 recorded at ingest; exit 1 on mismatch
 netforensic parse --case INC-0001 --evidence EV-0001 [--engine auto|tshark|scapy] [--display-filter '...']
 ```
 

@@ -261,6 +261,11 @@ def case_audit_cmd(
     verify: bool = typer.Option(
         False, "--verify", help="Only check the hash chain and report whether it is intact"
     ),
+    expect_head: str = typer.Option(
+        None,
+        "--expect-head",
+        help="A head hash you noted outside the case (12+ hex characters). Fails if it is no longer in the log.",
+    ),
     cases_dir: str = typer.Option(
         DEFAULT_CASES_DIR,
         "--cases-dir",
@@ -272,9 +277,12 @@ def case_audit_cmd(
     and when, in order.
 
     Entries are hash-chained, so `--verify` reports whether the record has
-    been altered since it was written. That detects accidental corruption
-    and casual after-the-fact editing - not an attacker who controls the
-    machine, who could recompute the whole chain.
+    been altered since it was written, and whether its newest entries have
+    been deleted. That detects accidental corruption and casual
+    after-the-fact editing - not an attacker who controls the machine, who
+    could recompute the whole chain. To close that gap, note the head hash
+    that `--verify` prints somewhere outside the case and pass it back later
+    with `--expect-head`: that value is not on the disk to be rewritten.
     """
     from netforensicai.core import audit
     from netforensicai.core.case import CaseError, CaseManager
@@ -287,12 +295,16 @@ def case_audit_cmd(
         raise typer.Exit(code=1)
 
     case_dir = Path(cases_dir) / case.case_id
-    ok, problems = audit.verify(case_dir)
+    ok, problems = audit.verify(case_dir, expected_head=expect_head)
 
     if verify:
         if ok:
             entries = audit.read_entries(case_dir)
             typer.echo(f"Chain of custody intact: {len(entries)} entr(ies) verified for {case.case_id}.")
+            newest = audit.latest(case_dir)
+            if newest:
+                typer.echo(f"Head: entry {newest[0]}, hash {newest[1]}")
+                typer.echo("  Note this hash outside the case; later, check it with --expect-head.")
             return
         typer.echo(f"CHAIN OF CUSTODY BROKEN for {case.case_id}:", err=True)
         for problem in problems:
@@ -407,6 +419,72 @@ def evidence_list_cmd(
         )
 
 
+@evidence_app.command("verify")
+def evidence_verify_cmd(
+    evidence_id: str = typer.Argument(None, help="Evidence ID to check (default: every item in the case)"),
+    case_id: str = typer.Option(..., "--case", help="Case ID whose evidence to verify"),
+    cases_dir: str = typer.Option(
+        DEFAULT_CASES_DIR,
+        "--cases-dir",
+        envvar="NETFORENSIC_CASES_DIR",
+        help="Root directory for case storage",
+    ),
+):
+    """Re-hash stored evidence and compare it with the SHA-256 recorded at ingest.
+
+    Exits 1 if any item no longer matches or its file is missing, so it can
+    gate a script or a hand-over. A run is recorded in the chain of custody.
+    """
+    from netforensicai.core import audit
+    from netforensicai.core.case import CaseError, CaseManager
+    from netforensicai.core.evidence import EvidenceError, EvidenceManager
+
+    case_manager = CaseManager(cases_dir)
+    try:
+        case = case_manager.load(case_id)
+    except CaseError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    case_dir = Path(cases_dir) / case.case_id
+    evidence_manager = EvidenceManager(case_dir)
+    if evidence_id:
+        try:
+            items = [evidence_manager.load(evidence_id)]
+        except EvidenceError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(code=1)
+    else:
+        items = evidence_manager.list()
+    if not items:
+        typer.echo(f"No evidence recorded for {case.case_id}.")
+        return
+
+    header = f"{'EVIDENCE ID':<12} {'RESULT':<32} FILENAME"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    failed = []
+    for evidence in items:
+        try:
+            result = "verified" if evidence_manager.verify(evidence.evidence_id) else "MISMATCH - possible tampering"
+        except EvidenceError:
+            result = "MISSING - stored file not found"
+        if result != "verified":
+            failed.append(evidence.evidence_id)
+        typer.echo(f"{evidence.evidence_id:<12} {result:<32} {evidence.filename}")
+
+    audit.record(
+        case_dir,
+        audit.EVIDENCE_INTEGRITY_FAILED if failed else audit.EVIDENCE_VERIFIED,
+        {"checked": [e.evidence_id for e in items], "failed": failed},
+    )
+    typer.echo("")
+    if failed:
+        typer.echo(f"INTEGRITY CHECK FAILED for {', '.join(failed)}.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"All {len(items)} evidence item(s) match their recorded SHA-256.")
+
+
 def _parse_one_evidence(evidence, case_dir, case_manager, case_id, store, parse_options=None):
     """Thin wrapper kept for callers already importing this name; the real
     logic lives in core/pipeline.py so cli.py, the web UI, and the live
@@ -507,6 +585,7 @@ def analyze_case(
     from netforensicai.core.detections import scan_case as scan_detections
 
     total_events = 0
+    integrity_failures = []
     with CaseStore(case_dir) as store:
         for evidence in items:
             event_count, entity_count, error = _parse_one_evidence(
@@ -514,6 +593,8 @@ def analyze_case(
             )
             if error:
                 typer.echo(f"  {evidence.evidence_id} ({evidence.evidence_type}): skipped - {error}")
+                if error.startswith("INTEGRITY CHECK FAILED"):
+                    integrity_failures.append(evidence.evidence_id)
                 continue
             typer.echo(f"  {evidence.evidence_id} ({evidence.evidence_type}): {event_count} events, {entity_count} entities")
             total_events += event_count
@@ -551,6 +632,16 @@ def analyze_case(
         typer.echo(f"Detections: {len(detections)} rule match(es) ({severity_summary}) - see `netforensic detections list --case {case.case_id}`")
     else:
         typer.echo("Detections: none.")
+
+    if integrity_failures:
+        # The rest of the case was analysed, but the result is incomplete in a way
+        # a script must be able to see: exit non-zero rather than looking clean.
+        typer.echo(
+            f"WARNING - {', '.join(integrity_failures)} failed the integrity check and were NOT analysed; "
+            f"results above exclude them.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
 
 timeline_app = typer.Typer(help="Build and view the case timeline.", no_args_is_help=True)
