@@ -1,0 +1,201 @@
+{
+  "environment": {
+    "python": "3.13.16",
+    "platform": "Linux-6.18.44-fc-v80-x86_64-with-glibc2.39",
+    "git": "proof/scorecard@e2b9c26",
+    "tshark_installed": false
+  },
+  "summary": {
+    "PASS": 5,
+    "WARN": 8,
+    "FAIL": 6,
+    "INFO": 4,
+    "SKIP": 0
+  },
+  "results": [
+    {
+      "category": "tests",
+      "check": "suite result",
+      "value": "999 passed, 78 skipped, 6 xfailed, 1 warning in 131.19s (0:02:11)",
+      "target": "0 failed",
+      "status": "PASS",
+      "note": ""
+    },
+    {
+      "category": "tests",
+      "check": "tests passed",
+      "value": "999",
+      "target": ">0",
+      "status": "INFO",
+      "note": ""
+    },
+    {
+      "category": "tests",
+      "check": "tests skipped",
+      "value": "78",
+      "target": "0",
+      "status": "WARN",
+      "note": "tshark not installed: its tests only run in the project's CI `wireshark` job"
+    },
+    {
+      "category": "tests",
+      "check": "suite runtime (s)",
+      "value": "133",
+      "target": "-",
+      "status": "INFO",
+      "note": ""
+    },
+    {
+      "category": "tests",
+      "check": "line coverage %",
+      "value": "78.1",
+      "target": ">= 85 (CI gate)",
+      "status": "WARN",
+      "note": "CI gate assumes the tshark tests run; locally they skip"
+    },
+    {
+      "category": "tests",
+      "check": "least-covered modules",
+      "value": "pcap_tshark.py 31%; wireshark.py 41%; search.py 47%",
+      "target": "-",
+      "status": "INFO",
+      "note": ""
+    },
+    {
+      "category": "quality",
+      "check": "ruff check",
+      "value": "clean",
+      "target": "clean",
+      "status": "PASS",
+      "note": ""
+    },
+    {
+      "category": "quality",
+      "check": "files failing `ruff format`",
+      "value": "80",
+      "target": "0",
+      "status": "WARN",
+      "note": "formatting is not enforced in CI"
+    },
+    {
+      "category": "quality",
+      "check": "functions with return annotation %",
+      "value": "0 (0/709)",
+      "target": ">= 80",
+      "status": "WARN",
+      "note": ""
+    },
+    {
+      "category": "quality",
+      "check": "arguments annotated %",
+      "value": "15 (192/1254)",
+      "target": ">= 80",
+      "status": "WARN",
+      "note": ""
+    },
+    {
+      "category": "quality",
+      "check": "py.typed marker present",
+      "value": "False",
+      "target": "True",
+      "status": "WARN",
+      "note": ""
+    },
+    {
+      "category": "quality",
+      "check": "mypy errors",
+      "value": "36",
+      "target": "0",
+      "status": "WARN",
+      "note": "weak signal while few functions are annotated"
+    },
+    {
+      "category": "quality",
+      "check": "modules over 1000 lines",
+      "value": "3",
+      "target": "0",
+      "status": "WARN",
+      "note": "netforensicai/cli.py (2695); netforensicai/web/app.py (1564); netforensicai/parsers/pcap_tshark.py (1032)"
+    },
+    {
+      "category": "security/static",
+      "check": "bandit HIGH findings",
+      "value": "0",
+      "target": "0",
+      "status": "PASS",
+      "note": ""
+    },
+    {
+      "category": "security/static",
+      "check": "bandit MEDIUM findings",
+      "value": "11",
+      "target": "0",
+      "status": "INFO",
+      "note": "reviewed manually: the SQL ones interpolate constant column names only, values are parameterised"
+    },
+    {
+      "category": "security/integrity",
+      "check": "Custody log: deleting newest entry is detected",
+      "value": "no",
+      "target": "yes",
+      "status": "FAIL",
+      "note": ""
+    },
+    {
+      "category": "security/integrity",
+      "check": "CLI `evidence verify` catches modified evidence",
+      "value": "no",
+      "target": "yes",
+      "status": "FAIL",
+      "note": ""
+    },
+    {
+      "category": "security/integrity",
+      "check": "`analyze` flags evidence modified after ingest",
+      "value": "no",
+      "target": "yes",
+      "status": "FAIL",
+      "note": ""
+    },
+    {
+      "category": "security/web",
+      "check": "Web: failed token guesses are throttled",
+      "value": "no",
+      "target": "yes",
+      "status": "FAIL",
+      "note": ""
+    },
+    {
+      "category": "security/web",
+      "check": "Web: UI sends CSP / frame / nosniff headers",
+      "value": "no",
+      "target": "yes",
+      "status": "FAIL",
+      "note": ""
+    },
+    {
+      "category": "security/web",
+      "check": "Web: token not accepted in URL query",
+      "value": "no",
+      "target": "yes",
+      "status": "FAIL",
+      "note": ""
+    },
+    {
+      "category": "robustness",
+      "check": "analyze survives 7 malformed/hostile inputs",
+      "value": "yes",
+      "target": "yes",
+      "status": "PASS",
+      "note": ""
+    },
+    {
+      "category": "robustness",
+      "check": "HTML report escapes attacker-controlled evidence",
+      "value": "no raw tags",
+      "target": "no raw tags",
+      "status": "PASS",
+      "note": ""
+    }
+  ]
+}
