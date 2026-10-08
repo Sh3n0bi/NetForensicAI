@@ -22,7 +22,7 @@ if [ "$1" = "web" ]; then
         echo "     ${NETFORENSIC_WEB_TOKEN}"
         echo
         echo " Open (through your mapped port, e.g. -p 8000:8000):"
-        echo "     http://localhost:8000/?token=${NETFORENSIC_WEB_TOKEN}"
+        echo "     http://localhost:8000/#token=${NETFORENSIC_WEB_TOKEN}"
         echo
         echo " Set NETFORENSIC_WEB_TOKEN yourself to pin a stable token."
         echo "============================================================"

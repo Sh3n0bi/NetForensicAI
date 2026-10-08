@@ -2556,8 +2556,9 @@ def web(
             f"ERROR: refusing to bind to {host} without authentication.\n"
             "Set a shared secret with --auth-token or the NETFORENSIC_WEB_TOKEN "
             "environment variable, then open the UI once as "
-            f"http://{host}:{port}/?token=YOUR_TOKEN (the token is then stored "
-            "in a cookie). Only expose this on a trusted network.",
+            f"http://{host}:{port}/#token=YOUR_TOKEN (the part after # is never sent "
+            "to a server; the token is then stored in a cookie). Only expose this on "
+            "a trusted network.",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -2571,8 +2572,8 @@ def web(
     flask_app = create_app(cases_dir, auth_token=auth_token, allowed_hosts=allow_host or None)
     scheme = "http"
     entry = f"{scheme}://{host}:{port}"
-    if auth_token and not is_loopback:
-        entry += "/?token=<your token>"
+    if auth_token:
+        entry += "/#token=<your token>"
     typer.echo(f"NetForensicAI web UI running at {entry} (Ctrl+C to stop)")
 
     # Single-threaded deliberately: CaseStore/DuckDB is single-writer, and

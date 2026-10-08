@@ -6,6 +6,21 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **Wrong web-UI tokens are throttled.** Previously a client could try thousands of tokens a second. After 10 wrong
+  guesses in a minute from one address (100 across all addresses) the server returns `429` with `Retry-After` and
+  refuses even the correct token until the window passes. Requests with no credential do not count; refused
+  requests do not extend the lockout. `X-Forwarded-For` is ignored.
+- **The access token is no longer accepted in the URL query string**, where it landed in logs, browser history and
+  `Referer` headers. A new sign-in page and `POST /api/login` exchange the token for an httponly cookie; a browser
+  can open `/#token=…` (the fragment is never sent to a server) and is signed in automatically. `netforensic web`
+  and the Docker entrypoint print the new form.
+- **Security headers on every response:** a restrictive `Content-Security-Policy` (own-origin scripts only, no
+  inline script or `eval`, no framing), `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`,
+  cross-origin isolation headers, and `Cache-Control: no-store` on API responses. Routes that set their own policy
+  (recovered artifacts) keep it.
+- A non-ASCII token in a header or login body no longer causes a server error (`hmac.compare_digest` raised on it).
+
 ### Added
 - **`netforensic evidence verify`** re-hashes stored evidence against the SHA-256 recorded at ingest (all items, or one by ID) and exits 1 on a mismatch or a missing file. Each run is recorded in the custody log.
 - **`case audit --expect-head <hash>`** checks a head hash the investigator noted outside the case; `case audit --verify` now prints the current head to note.

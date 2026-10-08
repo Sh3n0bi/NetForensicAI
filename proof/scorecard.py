@@ -265,35 +265,42 @@ GAP_LABELS = {
         "`analyze` refuses evidence modified after ingest (exit 2)",
         "integrity",
     ),
-    "test_web_throttles_repeated_failed_auth": ("Web: failed token guesses are throttled", "web"),
-    "test_web_ui_sends_security_headers": ("Web: UI sends CSP / frame / nosniff headers", "web"),
-    "test_web_does_not_accept_the_token_in_the_query_string": ("Web: token not accepted in URL query", "web"),
+    "test_wrong_tokens_are_throttled_with_retry_after": ("Web: failed token guesses are throttled (429)", "web"),
+    "test_the_correct_token_is_refused_while_locked_out_and_works_after": (
+        "Web: lockout also refuses the right token, then recovers",
+        "web",
+    ),
+    "test_error_and_login_responses_carry_the_headers_too": (
+        "Web: CSP / frame / nosniff headers on every response",
+        "web",
+    ),
+    "test_the_token_in_the_query_string_is_not_accepted": ("Web: token not accepted in URL query", "web"),
+    "test_login_sets_an_httponly_samesite_cookie_that_authenticates": (
+        "Web: cookie login works (HttpOnly, SameSite)",
+        "web",
+    ),
+    "test_app_js_uses_nothing_the_csp_blocks": ("Web: UI assets stay compatible with the CSP", "web"),
 }
+
+# Gaps still open live in tests/test_proof_gaps.py (strict xfail); a fixed gap
+# moves into an ordinary regression test file. Only files that exist are run.
+GAP_TEST_FILES = ["test_proof_gaps", "test_integrity", "test_web_hardening"]
 
 
 @guarded
 def check_known_gaps():
-    """Each claim is a test: gaps still open live in tests/test_proof_gaps.py,
-    fixed ones in tests/test_integrity.py. --runxfail makes the expected
-    failures real so a PASS here means the behaviour exists."""
+    """Each claim is a test. --runxfail makes any still-open gap a real failure,
+    so a PASS here means the behaviour exists."""
+    files = [f"tests/{name}.py" for name in GAP_TEST_FILES if (ROOT / "tests" / f"{name}.py").exists()]
     _, out = run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "tests/test_proof_gaps.py",
-            "tests/test_integrity.py",
-            "--runxfail",
-            "-rA",
-            "-q",
-            "-p",
-            "no:cacheprovider",
-            "--tb=no",
-        ],
+        [sys.executable, "-m", "pytest", *files, "--runxfail", "-rA", "-q", "-p", "no:cacheprovider", "--tb=no"],
         timeout=300,
     )
-    pattern = r"^(PASSED|FAILED) tests/test_(?:proof_gaps|integrity)\.py::(\w+)"
-    seen = {name: state for state, name in re.findall(pattern, out, re.M)}
+    pattern = r"^(PASSED|FAILED) tests/test_(?:" + "|".join(n[len("test_") :] for n in GAP_TEST_FILES) + r")\.py::(\w+)"
+    seen = {}
+    for state, name in re.findall(pattern, out, re.M):
+        # A parametrized test has several results under one name; any failure counts.
+        seen[name] = "FAILED" if "FAILED" in (state, seen.get(name)) else "PASSED"
     for test, (label, area) in GAP_LABELS.items():
         state = seen.get(test)
         if state is None:

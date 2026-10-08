@@ -71,6 +71,7 @@ from netforensicai.core.investigate import investigate_entity
 from netforensicai.core.report import RENDERERS, build_report
 from netforensicai.core.store import locked_store
 from netforensicai.core.timeline import build_timeline, filter_timeline
+from netforensicai.web.ratelimit import FailureLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -93,14 +94,55 @@ MAX_INVESTIGATOR = 120
 CSRF_HEADER = "X-Requested-With"
 CSRF_HEADER_VALUE = "NetForensicAI"
 
-# Optional shared-secret auth (see create_app's auth_token). The token may
-# arrive as this header (programmatic callers), this cookie (set after the
-# token is first supplied in the URL), or a `?token=` query parameter (the
-# one-time bootstrap a browser can use). It is the credential itself, not a
-# session id: there are no sessions to manage in a single-user local tool.
+# Optional shared-secret auth (see create_app's auth_token). The token arrives
+# as this header (programmatic callers) or this cookie (set by POST
+# /api/login, which is what the browser login page calls). It is deliberately
+# NOT accepted in the URL query string: a query string lands in server and
+# proxy logs, browser history and the Referer header. A browser bootstraps
+# from the URL *fragment* instead (`/#token=...`) - fragments are never sent
+# to any server - and login.js trades it for the cookie. The token is the
+# credential itself, not a session id: there are no sessions to manage in a
+# single-user local tool.
 AUTH_HEADER = "X-Auth-Token"
 AUTH_COOKIE = "nf_auth"
-AUTH_QUERY_PARAM = "token"
+LOGIN_PATH = "/api/login"
+
+# Reachable without credentials when auth is on: the page that collects the
+# token, the script it needs, and the endpoint that checks it.
+PUBLIC_PATHS = frozenset({"/login.js", LOGIN_PATH})
+# Navigations to these get the login page rather than a bare JSON 401.
+LOGIN_PAGE_PATHS = frozenset({"/", "/index.html"})
+
+# What the UI itself needs and nothing more: scripts only from this origin (no
+# inline script, no eval), connections only back to this origin, no framing,
+# no plugins, no <base>. `style-src 'unsafe-inline'` is there because the UI
+# sets style attributes from script; `fonts.googleapis.com` / `fonts.gstatic.com`
+# are the Google Fonts the UI stylesheet links to today. Routes that set their
+# own Content-Security-Policy (recovered artifacts) keep theirs.
+UI_CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src https://fonts.gstatic.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-src 'self' about:; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "object-src 'none'; "
+    "frame-ancestors 'none'"
+)
+
+# Sent on every response unless the route already set the header.
+DEFAULT_SECURITY_HEADERS = {
+    "Content-Security-Policy": UI_CONTENT_SECURITY_POLICY,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
 
 # Host names always accepted by the DNS-rebinding guard (see the module
 # docstring). Compared against the Host header with port and IPv6 brackets
@@ -139,31 +181,45 @@ def _ai_settings(payload):
 
 
 class ApiError(Exception):
-    def __init__(self, message, status_code=400):
+    def __init__(self, message, status_code=400, headers=None):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+        self.headers = headers or {}
 
 
-def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
+def _token_matches(supplied, expected):
+    """Constant-time comparison that cannot raise on odd input. Comparing as
+    bytes matters: hmac.compare_digest raises TypeError for a str containing
+    non-ASCII characters, which a client can send in a header or JSON body."""
+    if not isinstance(supplied, str) or not supplied:
+        return False
+    return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+
+
+def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None, auth_limiter=None):
     """Build the Flask app.
 
     auth_token: when set, every request must carry this secret (via the
-    X-Auth-Token header, the nf_auth cookie, or a one-time `?token=` query
-    parameter). This is what makes a deliberately non-loopback deployment
-    defensible - the CLI refuses to bind off-loopback without one. When it
-    is None (the default) the app is unauthenticated, for local single-user
-    use on 127.0.0.1, and only answers requests addressed to a loopback
-    host name (the DNS-rebinding guard - see the module docstring).
+    X-Auth-Token header or the nf_auth cookie that POST /api/login sets). It
+    is not accepted in the URL query string. This is what makes a deliberately
+    non-loopback deployment defensible - the CLI refuses to bind off-loopback
+    without one. When it is None (the default) the app is unauthenticated, for
+    local single-user use on 127.0.0.1, and only answers requests addressed to
+    a loopback host name (the DNS-rebinding guard - see the module docstring).
 
     allowed_hosts: extra Host names to accept on top of LOOPBACK_HOSTS, e.g.
     the name a local reverse proxy forwards. Passing it also turns the Host
     check on when auth_token is set.
+
+    auth_limiter: a ratelimit.FailureLimiter throttling wrong tokens; a default
+    one is created when auth_token is set. Mainly a seam for tests.
     """
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
     auth_token = auth_token or None
     case_manager = CaseManager(cases_dir)
+    limiter = auth_limiter or FailureLimiter()
 
     if allowed_hosts:
         permitted_hosts = LOOPBACK_HOSTS | {_hostname(h) for h in allowed_hosts}
@@ -172,16 +228,25 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
     else:
         permitted_hosts = LOOPBACK_HOSTS
 
-    def _request_is_authenticated():
-        if not auth_token:
-            return True
-        supplied = (
-            request.headers.get(AUTH_HEADER)
-            or request.cookies.get(AUTH_COOKIE)
-            or request.args.get(AUTH_QUERY_PARAM)
-        )
-        # Constant-time compare so a wrong token can't be recovered by timing.
-        return bool(supplied) and hmac.compare_digest(str(supplied), str(auth_token))
+    def _client_key():
+        # The socket peer, never X-Forwarded-For: that header is client-supplied,
+        # so trusting it would let an attacker pick a fresh identity per guess.
+        return request.remote_addr or "unknown"
+
+    def _refuse_if_throttled():
+        wait = limiter.blocked_for(_client_key())
+        if wait:
+            raise ApiError(
+                f"Too many failed authentication attempts. Try again in {wait} seconds.",
+                429,
+                {"Retry-After": str(wait)},
+            )
+
+    def _login_page():
+        response = send_from_directory(STATIC_DIR, "login.html")
+        response.status_code = 401
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     def _load_case(case_id):
         try:
@@ -194,7 +259,7 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
 
     @app.errorhandler(ApiError)
     def handle_api_error(err):
-        return jsonify({"error": err.message}), err.status_code
+        return jsonify({"error": err.message}), err.status_code, err.headers
 
     @app.before_request
     def _require_permitted_host():
@@ -213,23 +278,54 @@ def create_app(cases_dir="cases", auth_token=None, allowed_hosts=None):
         # Runs before the CSRF check: an unauthenticated caller should be
         # turned away regardless of method, and should not learn anything
         # about the CSRF contract. No-op when auth_token is unset.
-        if not _request_is_authenticated():
-            raise ApiError(
-                "Authentication required. Supply the token via the "
-                f"'{AUTH_HEADER}' header, the '{AUTH_COOKIE}' cookie, or a "
-                f"'?{AUTH_QUERY_PARAM}=' query parameter.",
-                401,
-            )
+        if not auth_token or request.path in PUBLIC_PATHS:
+            return None
+
+        supplied = request.headers.get(AUTH_HEADER) or request.cookies.get(AUTH_COOKIE)
+        if supplied:
+            # Checked BEFORE the comparison, so a throttled client is refused even
+            # with the right token - see web/ratelimit.py for why.
+            _refuse_if_throttled()
+            if _token_matches(supplied, auth_token):
+                return None
+            limiter.record_failure(_client_key())
+
+        # A browser navigating to the UI gets the page that collects the token;
+        # everything else (API, assets) gets a plain 401.
+        if request.method == "GET" and request.path in LOGIN_PAGE_PATHS:
+            return _login_page()
+        raise ApiError(
+            f"Authentication required. Supply the token in the '{AUTH_HEADER}' header, or log in "
+            f"through the browser UI (the token is not accepted in the URL query string).",
+            401,
+        )
+
+    @app.route(LOGIN_PATH, methods=["POST"])
+    def login():
+        """Trade the token for an httponly cookie, so the browser UI never has
+        to put it in a URL. The CSRF header check applies as to any POST."""
+        if not auth_token:
+            raise ApiError("Authentication is not enabled on this server.", 404)
+        _refuse_if_throttled()
+        payload = request.get_json(silent=True)
+        supplied = payload.get("token") if isinstance(payload, dict) else None
+        if not supplied or not isinstance(supplied, str):
+            raise ApiError("A token is required.", 401)  # an empty form is not a guess
+        if not _token_matches(supplied, auth_token):
+            limiter.record_failure(_client_key())
+            raise ApiError("Invalid token.", 401)
+        response = jsonify({"ok": True})
+        response.set_cookie(AUTH_COOKIE, auth_token, httponly=True, samesite="Strict", secure=request.is_secure)
+        return response
 
     @app.after_request
-    def _persist_auth_cookie(response):
-        # When a valid token first arrives as a query parameter (a browser
-        # opening the UI), pin it as an httponly cookie so subsequent asset
-        # and API requests carry it without the token staying in the URL bar.
-        if auth_token and request.args.get(AUTH_QUERY_PARAM) and _request_is_authenticated():
-            response.set_cookie(
-                AUTH_COOKIE, auth_token, httponly=True, samesite="Strict", secure=request.is_secure
-            )
+    def _add_security_headers(response):
+        # setdefault: a route that sets its own header (recovered artifacts
+        # carry a sandboxing CSP) keeps it.
+        for name, value in DEFAULT_SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        if request.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     @app.before_request

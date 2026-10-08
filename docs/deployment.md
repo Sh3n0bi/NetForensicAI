@@ -109,11 +109,15 @@ netforensic web --host 0.0.0.0
 
 # allowed: a token is required on every request
 NETFORENSIC_WEB_TOKEN=$(openssl rand -hex 24) netforensic web --host 0.0.0.0
-# then open the UI once as  http://<host>:8000/?token=<the token>
-# the token is stored in an httponly cookie for subsequent requests.
+# then open the UI once as  http://<host>:8000/#token=<the token>
+# the browser trades it for an httponly cookie and the address bar is cleared.
 ```
 
-Supply the token as the `X-Auth-Token` header (programmatic callers), the `nf_auth` cookie, or a one-time `?token=` query parameter. When bound off loopback the app also serves through **waitress** (a production WSGI server) instead of the Werkzeug development server, when it is installed (`pip install 'netforensicai[web]'`).
+In a browser, open the UI and either use the `#token=` link above or paste the token into the sign-in page. Everything after `#` stays in the browser — it is never sent to a server, a proxy log or a `Referer` header — which is why the token is **not accepted in the URL query string** (`?token=`) any more. Programmatic callers send the `X-Auth-Token` header, or `POST /api/login` with `{"token": "…"}` (and the `X-Requested-With` header) to receive the `nf_auth` cookie.
+
+**Wrong tokens are throttled.** After 10 wrong guesses in a minute from one client address (or 100 across all clients) the server answers `429` with a `Retry-After` header — and refuses even the *correct* token until the window passes, so guessing cannot watch for the one request that succeeds. Requests with no credential at all (loading the sign-in page) do not count. Clients behind one reverse proxy share its address, so a bad actor can lock everyone out for a minute; that fails closed and clears itself. This slows guessing, it does not replace a long random token — use one (`openssl rand -hex 24`).
+
+Every response carries `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The policy allows scripts only from the UI's own origin (no inline script, no `eval`) and no framing. Set `Strict-Transport-Security` at your TLS reverse proxy. The UI stylesheet currently loads its fonts from Google Fonts, so the policy allows `fonts.googleapis.com` and `fonts.gstatic.com`; the sign-in page loads nothing external. When bound off loopback the app also serves through **waitress** (a production WSGI server) instead of the Werkzeug development server, when it is installed (`pip install 'netforensicai[web]'`).
 
 > **Even with a token, still front it with TLS.** The token is a bearer secret; over plain HTTP on an untrusted network it can be sniffed. Put an HTTPS reverse proxy in front, or keep the app on loopback and reach it over an SSH tunnel.
 

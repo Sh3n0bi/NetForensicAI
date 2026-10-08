@@ -6,6 +6,8 @@
 
 The web UI is a client of this API, not a second implementation — every route calls the same core modules the CLI does. It is served on `127.0.0.1` by default and has **no authentication**; see [Limitations](../README.md#limitations).
 
+When the server is started with a token (`--auth-token`), send it as the `X-Auth-Token` header, or `POST /api/login` with `{"token": "…"}` to receive the `nf_auth` cookie. The token is not accepted in the URL query string, and repeated wrong tokens get `429` with `Retry-After`. See [Deployment](deployment.md).
+
 State-changing requests need an `X-Requested-With: NetForensicAI` header. That is not a session token — the app has no sessions — it is there so a cross-origin form or `fetch` from a malicious page cannot reach these routes blind.
 
 | | |

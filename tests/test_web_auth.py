@@ -1,11 +1,13 @@
 """The optional shared-secret auth that guards a non-loopback web deployment.
 
-When create_app is given an auth_token, every request must carry it (header,
-cookie, or one-time query param); without a token the app stays open for local
-single-user use. These tests pin both halves of that contract.
+When create_app is given an auth_token, every request must carry it (header or
+the cookie POST /api/login sets - never the URL query string); without a token
+the app stays open for local single-user use. These tests pin both halves of
+that contract. The login flow, throttling and security headers are covered in
+test_web_hardening.py.
 """
 
-from netforensicai.web.app import AUTH_COOKIE, AUTH_HEADER, create_app
+from netforensicai.web.app import AUTH_COOKIE, AUTH_HEADER, CSRF_HEADER, CSRF_HEADER_VALUE, create_app
 
 
 def test_no_token_means_open_app(tmp_path):
@@ -32,9 +34,9 @@ def test_correct_token_via_header_is_accepted(tmp_path):
     assert resp.status_code == 200
 
 
-def test_query_token_bootstraps_a_cookie(tmp_path):
+def test_login_bootstraps_a_cookie(tmp_path):
     client = create_app(tmp_path / "cases", auth_token="s3cret").test_client()
-    resp = client.get("/api/cases?token=s3cret")
+    resp = client.post("/api/login", json={"token": "s3cret"}, headers={CSRF_HEADER: CSRF_HEADER_VALUE})
     assert resp.status_code == 200
     cookies = resp.headers.getlist("Set-Cookie")
     assert any(AUTH_COOKIE in c for c in cookies)
